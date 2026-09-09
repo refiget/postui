@@ -86,7 +86,6 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
 }
 
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
-    tracing::debug!(column, row, "处理鼠标左键点击");
     if app.dropdown_open {
         click_dropdown(app, column, row, areas.dropdown);
         return;
@@ -863,11 +862,6 @@ fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .iter()
             .map(|extract| {
                 let target = format!("{{{{{}}}}}", extract.variable);
-                let label = if extract.name.trim().is_empty() {
-                    target
-                } else {
-                    format!("{}  {target}", extract.name)
-                };
                 let action = if can_extract {
                     if action_width >= 8 { "提取" } else { "提" }
                 } else {
@@ -879,7 +873,7 @@ fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 };
                 Row::new(vec![
                     Cell::from(highlight::template_line(
-                        &format!("{}  {}", truncate(&label, 20), extract.path),
+                        &format!("{}  {}", truncate(&target, 20), extract.path),
                         label_style(theme),
                         theme,
                     )),

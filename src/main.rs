@@ -219,8 +219,12 @@ fn parse_args() -> Result<Option<CliOptions>> {
 }
 
 fn print_help() {
-    println!(
-        "用法: postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\n全局配置优先级: 显式 --config，其次 Home/root 下的 postui.yaml 或 .postui.yaml，最后 ~/.config/postui/config.yaml；都不存在时使用内置默认配置。\n请求配置默认由全局配置的 request_config 指定，也可以用 --requests 覆盖。\n默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n--debug 仅在 debug 构建中可用"
+    print!(
+        "用法: postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\n\
+全局配置优先级: 显式 --config，其次 Home/root 下的 postui.yaml 或 .postui.yaml，最后 ~/.config/postui/config.yaml；都不存在时使用内置默认配置。\n\
+请求配置默认由全局配置的 request_config 指定，也可以用 --requests 覆盖。\n\
+默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
+--debug 仅在 debug 构建中可用\n"
     );
 }
 
@@ -231,7 +235,7 @@ fn discover_global_config_path() -> Option<PathBuf> {
         candidates.push(home.join("postui.yaml"));
         candidates.push(home.join(".postui.yaml"));
     }
-    if !candidates.iter().any(|path| path.starts_with("/root")) {
+    if home.as_deref() != Some(Path::new("/root")) {
         candidates.push(PathBuf::from("/root/postui.yaml"));
         candidates.push(PathBuf::from("/root/.postui.yaml"));
     }

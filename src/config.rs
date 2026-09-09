@@ -53,7 +53,6 @@ pub(crate) struct FileUpload {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResponseExtract {
-    pub(crate) name: String,
     pub(crate) variable: String,
     pub(crate) path: String,
 }
@@ -262,11 +261,7 @@ fn normalize_request(raw: RawApiRequest, index: usize) -> Result<ApiRequest> {
         extracts: raw
             .extract
             .into_iter()
-            .map(|(variable, path)| ResponseExtract {
-                name: String::new(),
-                variable,
-                path,
-            })
+            .map(|(variable, path)| ResponseExtract { variable, path })
             .collect(),
     };
 
@@ -313,11 +308,8 @@ fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand> {
                     let header = next_argument(&tokens, &mut index, token, request_id)?;
                     parse_header(&mut parsed.headers, &header, request_id)?;
                 }
-                "-d" | "--data" | "--data-ascii" | "--data-binary" => {
-                    let data = next_argument(&tokens, &mut index, token, request_id)?;
-                    parse_body_argument(&mut parsed, token, &data, request_id)?;
-                }
-                "--data-raw" | "--data-urlencode" | "--json" => {
+                "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw"
+                | "--data-urlencode" | "--json" => {
                     let data = next_argument(&tokens, &mut index, token, request_id)?;
                     parse_body_argument(&mut parsed, token, &data, request_id)?;
                 }
@@ -675,11 +667,8 @@ fn normalize_extract(request_id: &str, extract: &mut ResponseExtract) -> Result<
     if extract.path.trim().is_empty() {
         bail!("接口 {} 的响应提取缺少 path", request_id)
     }
-    extract.variable = variable.clone();
+    extract.variable = variable;
     extract.path = extract.path.trim().to_string();
-    if extract.name.trim().is_empty() {
-        extract.name = variable;
-    }
     Ok(())
 }
 

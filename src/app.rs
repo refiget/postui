@@ -284,8 +284,8 @@ impl App {
                 self.status = format!("已切换到 {}", self.focus.label());
             }
             KeyCode::Char('r') => self.send_current_request(),
-            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
-            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
+            KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_focused(1),
             KeyCode::Enter => self.handle_enter(),
             KeyCode::Char('c') | KeyCode::Char('x') | KeyCode::Delete
                 if self.focus == Focus::Variables =>
@@ -348,18 +348,10 @@ impl App {
         }
     }
 
-    fn move_up(&mut self) {
+    fn move_focused(&mut self, direction: isize) {
         match self.focus {
-            Focus::Requests => self.move_request(-1),
-            Focus::Variables => self.move_variable(-1),
-            Focus::Actions => {}
-        }
-    }
-
-    fn move_down(&mut self) {
-        match self.focus {
-            Focus::Requests => self.move_request(1),
-            Focus::Variables => self.move_variable(1),
+            Focus::Requests => self.move_request(direction),
+            Focus::Variables => self.move_variable(direction),
             Focus::Actions => {}
         }
     }
@@ -447,11 +439,6 @@ impl App {
             self.status = "当前接口没有可提取的字段".to_string();
             return;
         };
-        let name = if extract.name.trim().is_empty() {
-            extract.variable.clone()
-        } else {
-            extract.name.clone()
-        };
         let variable = extract.variable.clone();
         let path = extract.path.clone();
         let Some(body) = self
@@ -488,7 +475,7 @@ impl App {
         match self.clipboard.set_text(&value) {
             Ok(()) => {
                 tracing::debug!(request_id = %request_id, variable = %variable, "响应字段已复制到剪贴板");
-                self.status = format!("已提取并复制: {name} · {variable}");
+                self.status = format!("已提取并复制: {variable}");
             }
             Err(error) => {
                 tracing::error!(request_id = %request_id, variable = %variable, error = %error, "写入剪贴板失败");

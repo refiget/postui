@@ -145,7 +145,7 @@ pub(crate) fn send(
         }
         builder = builder.multipart(form);
     } else if let Some(body) = &request.raw_body {
-        tracing::debug!(body = %log_request_body(body), "准备原始请求体");
+        tracing::debug!(body = %log_body(body), "准备原始请求体");
         builder = builder.body(body.clone());
     } else {
         tracing::debug!("请求没有请求体");
@@ -197,7 +197,7 @@ pub(crate) fn send(
         status = status.as_u16(),
         elapsed_ms,
         body_bytes = body.len(),
-        body = %log_response_body(&body),
+        body = %log_body(&body),
         "HTTP 响应读取完成"
     );
 
@@ -289,13 +289,7 @@ fn log_text(value: &str) -> String {
     )
 }
 
-fn log_response_body(body: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(body)
-        .map(|value| log_json_value(&value))
-        .unwrap_or_else(|_| log_text(body))
-}
-
-fn log_request_body(body: &str) -> String {
+fn log_body(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .map(|value| log_json_value(&value))
         .unwrap_or_else(|_| log_text(body))
