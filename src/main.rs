@@ -12,7 +12,9 @@ mod template;
 mod ui;
 
 use std::{
-    env, io,
+    env,
+    ffi::OsStr,
+    fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -27,11 +29,22 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{app::App, config::load as load_request_config};
 
+const INIT_BLOCK_START: &str = "# >>> postui init >>>";
+const INIT_BLOCK_END: &str = "# <<< postui init <<<";
+
 fn main() -> Result<()> {
-    let Some(options) = parse_args()? else {
-        print_help();
-        return Ok(());
-    };
+    let command = parse_args()?;
+    match command {
+        CliCommand::Help => {
+            print_help();
+            Ok(())
+        }
+        CliCommand::Init => init_shell_integration(),
+        CliCommand::Run(options) => run_app(options),
+    }
+}
+
+fn run_app(options: CliOptions) -> Result<()> {
     let global_config_path = options
         .config_path
         .clone()
@@ -165,6 +178,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
 }
 
 #[derive(Debug)]
+enum CliCommand {
+    Help,
+    Init,
+    Run(CliOptions),
+}
+
+#[derive(Debug)]
 struct CliOptions {
     config_path: Option<PathBuf>,
     request_config_path: Option<PathBuf>,
@@ -172,16 +192,18 @@ struct CliOptions {
     log_file: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<Option<CliOptions>> {
+fn parse_args() -> Result<CliCommand> {
     let mut args = env::args().skip(1);
     let mut config = None;
     let mut request_config = None;
     let mut debug = false;
     let mut log_file = None;
+    let mut init = false;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "-h" | "--help" => return Ok(None),
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            "init" => init = true,
             "--debug" => debug = true,
             "-c" | "--config" => {
                 let Some(path) = args.next() else {
@@ -210,7 +232,20 @@ fn parse_args() -> Result<Option<CliOptions>> {
         bail!("--log-file 只能和 --debug 一起使用")
     }
 
-    Ok(Some(CliOptions {
+    if init {
+        if request_config.is_some() {
+            bail!("postui init 不接受 --requests")
+        }
+        if debug {
+            bail!("postui init 不接受 --debug")
+        }
+        if log_file.is_some() {
+            bail!("postui init 不接受 --log-file")
+        }
+        return Ok(CliCommand::Init);
+    }
+
+    Ok(CliCommand::Run(CliOptions {
         config_path: config,
         request_config_path: request_config,
         debug,
@@ -220,12 +255,159 @@ fn parse_args() -> Result<Option<CliOptions>> {
 
 fn print_help() {
     print!(
-        "用法: postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\n\
+        "用法:\n\
+  postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\
+  postui init\n\n\
 全局配置优先级: 显式 --config，其次 Home/root 下的 postui.yaml 或 .postui.yaml，最后 ~/.config/postui/config.yaml；都不存在时使用内置默认配置。\n\
 请求配置默认由全局配置的 request_config 指定，也可以用 --requests 覆盖。\n\
 默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
---debug 仅在 debug 构建中可用\n"
+--debug 仅在 debug 构建中可用。\n\
+postui init 会根据当前 shell 将当前运行程序的绝对路径写入 ~/.zshrc 或 ~/.bashrc。\n"
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellKind {
+    Bash,
+    Zsh,
+}
+
+impl ShellKind {
+    fn rc_name(self) -> &'static str {
+        match self {
+            Self::Bash => ".bashrc",
+            Self::Zsh => ".zshrc",
+        }
+    }
+}
+
+fn init_shell_integration() -> Result<()> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("无法确定用户 Home 目录，请设置 HOME 后重试"))?;
+    let shell = env::var_os("SHELL");
+    let (shell_kind, rc_path) = select_shell_rc(&home, shell.as_deref())?;
+    let launch_path = runtime_launch_path()?;
+    let block = shell_init_block(&launch_path);
+    let current = match fs::read_to_string(&rc_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("无法读取 shell 配置文件: {}", rc_path.display()));
+        }
+    };
+    let updated = upsert_shell_init_block(&current, &block)?;
+    let changed = updated != current;
+    if changed {
+        fs::write(&rc_path, updated)
+            .with_context(|| format!("无法写入 shell 配置文件: {}", rc_path.display()))?;
+    }
+
+    if changed {
+        println!(
+            "已将 PostUI 启动命令写入 {} ({})",
+            rc_path.display(),
+            shell_kind.rc_name()
+        );
+    } else {
+        println!("PostUI 启动命令已存在: {}", rc_path.display());
+    }
+    println!("请执行 `source {}` 或重新打开终端。", rc_path.display());
+    Ok(())
+}
+
+fn select_shell_rc(home: &Path, shell: Option<&OsStr>) -> Result<(ShellKind, PathBuf)> {
+    if let Some(shell_kind) = shell.and_then(|value| shell_kind(value.as_ref())) {
+        return Ok((shell_kind, home.join(shell_kind.rc_name())));
+    }
+
+    let zshrc = home.join(".zshrc");
+    let bashrc = home.join(".bashrc");
+    match (zshrc.is_file(), bashrc.is_file()) {
+        (true, false) => Ok((ShellKind::Zsh, zshrc)),
+        (false, true) => Ok((ShellKind::Bash, bashrc)),
+        (true, true) => bail!(
+            "无法从 SHELL 判断当前 shell，且 ~/.zshrc 与 ~/.bashrc 都存在；请设置 SHELL=/bin/zsh 或 SHELL=/bin/bash 后重试"
+        ),
+        (false, false) => {
+            bail!("无法识别当前 shell；请设置 SHELL=/bin/zsh 或 SHELL=/bin/bash 后重试")
+        }
+    }
+}
+
+fn shell_kind(path: &Path) -> Option<ShellKind> {
+    match path.file_name().and_then(OsStr::to_str) {
+        Some("bash") => Some(ShellKind::Bash),
+        Some("zsh") => Some(ShellKind::Zsh),
+        _ => None,
+    }
+}
+
+fn runtime_launch_path() -> Result<PathBuf> {
+    let executable = env::current_exe().context("无法确定当前运行程序的位置")?;
+    let executable = fs::canonicalize(&executable).unwrap_or(executable);
+
+    if executable.file_name().and_then(OsStr::to_str) == Some("postui.bin") {
+        if let Some(parent) = executable.parent() {
+            let wrapper = parent.join("postui");
+            if wrapper.is_file() {
+                return Ok(fs::canonicalize(&wrapper).unwrap_or(wrapper));
+            }
+        }
+    }
+
+    Ok(executable)
+}
+
+fn shell_init_block(launch_path: &Path) -> String {
+    format!(
+        "{INIT_BLOCK_START}\nalias postui={}\n{INIT_BLOCK_END}\n",
+        shell_quote(launch_path)
+    )
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn upsert_shell_init_block(current: &str, block: &str) -> Result<String> {
+    let start_count = current.matches(INIT_BLOCK_START).count();
+    let end_count = current.matches(INIT_BLOCK_END).count();
+    match (start_count, end_count) {
+        (0, 0) => {
+            if current.is_empty() {
+                Ok(block.to_string())
+            } else {
+                let mut updated = current.to_string();
+                if !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated.push('\n');
+                updated.push_str(block);
+                Ok(updated)
+            }
+        }
+        (1, 1) => {
+            let start = current
+                .find(INIT_BLOCK_START)
+                .expect("marker count guarantees a start marker");
+            let end = current
+                .find(INIT_BLOCK_END)
+                .expect("marker count guarantees an end marker")
+                + INIT_BLOCK_END.len();
+            if start > end {
+                bail!("shell 配置中的 PostUI 初始化标记顺序无效")
+            }
+            let mut updated = String::with_capacity(current.len() + block.len());
+            updated.push_str(&current[..start]);
+            updated.push_str(block);
+            let suffix = current[end..].strip_prefix('\n').unwrap_or(&current[end..]);
+            updated.push_str(suffix);
+            Ok(updated)
+        }
+        _ => bail!("shell 配置中的 PostUI 初始化标记不完整或重复，请手动整理后重试"),
+    }
 }
 
 fn discover_global_config_path() -> Option<PathBuf> {
@@ -275,7 +457,9 @@ fn default_log_path(config_path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::resolve_cli_path;
+    use super::{
+        ShellKind, resolve_cli_path, shell_init_block, shell_kind, upsert_shell_init_block,
+    };
 
     #[test]
     fn keeps_absolute_cli_paths() {
@@ -283,5 +467,37 @@ mod tests {
             resolve_cli_path(Path::new("/opt/postui/config.yaml")),
             PathBuf::from("/opt/postui/config.yaml")
         );
+    }
+
+    #[test]
+    fn identifies_supported_shells() {
+        assert_eq!(shell_kind(Path::new("/bin/bash")), Some(ShellKind::Bash));
+        assert_eq!(shell_kind(Path::new("/usr/bin/zsh")), Some(ShellKind::Zsh));
+        assert_eq!(shell_kind(Path::new("/bin/fish")), None);
+    }
+
+    #[test]
+    fn shell_init_block_quotes_paths_and_is_repeatable() {
+        let block = shell_init_block(Path::new("/opt/Post UI/bin/o'reilly"));
+        assert_eq!(
+            block,
+            "# >>> postui init >>>\nalias postui='/opt/Post UI/bin/o'\\''reilly'\n# <<< postui init <<<\n"
+        );
+        assert_eq!(upsert_shell_init_block(&block, &block).unwrap(), block);
+    }
+
+    #[test]
+    fn shell_init_block_is_appended_after_existing_config() {
+        let block = shell_init_block(Path::new("/opt/postui"));
+        assert_eq!(
+            upsert_shell_init_block("export EDITOR=vi", &block).unwrap(),
+            format!("export EDITOR=vi\n\n{block}")
+        );
+    }
+
+    #[test]
+    fn shell_init_block_rejects_incomplete_markers() {
+        let error = upsert_shell_init_block("# >>> postui init >>>\n", "block").unwrap_err();
+        assert!(error.to_string().contains("标记不完整"));
     }
 }

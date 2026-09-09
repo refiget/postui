@@ -10,22 +10,33 @@ PostUI 是一个只支持 Linux amd64（x86_64）的终端 HTTP 请求工具。�
 cargo run -- --config config.yaml
 ~~~
 
-构建 release 版本后可直接执行二进制：
+构建 Linux amd64 静态 release 版本：
 
 ~~~bash
-cargo build --release
-./target/release/postui --config config.yaml
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+./target/x86_64-unknown-linux-musl/release/postui --config config.yaml
 ~~~
+
+需要在构建机安装 `musl-tools`。生成的二进制不依赖 glibc、动态 loader 或项目自带运行库。
+
+首次使用发布目录中的程序时，可以让当前 shell 记住程序的实际路径：
+
+~~~bash
+./postui init
+~~~
+
+命令会根据 `$SHELL` 更新 `~/.bashrc` 或 `~/.zshrc`，并且重复执行只会更新 PostUI 自己的标记区块。执行完成后按提示 `source` 对应文件，或重新打开终端即可使用 `postui`。
 
 开发检查依赖如下：
 
 - Rust stable 1.85 或更高版本，并启用 `rustfmt`、`clippy` 组件。
 - Python 3.10 或更高版本及 `microsoft/tui-test` CLI 仅用于本机测试，不属于发布运行依赖。
 
-发布目录中放有 `postui`、`config.yaml` 和 `.postui/requests.yaml` 时，进入该目录后显式指定全局配置：
+发布目录中放有 `postui`、静态 `postui.bin`、`config.yaml` 和 `.postui/requests.yaml` 时，进入该目录后执行：
 
 ~~~bash
-./postui --config ./config.yaml
+./postui
 ~~~
 
 排查问题时使用 debug 构建并开启文件日志：
