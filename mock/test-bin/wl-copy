@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+: "${POSTUI_TEST_CLIPBOARD_FILE:?POSTUI_TEST_CLIPBOARD_FILE is required}"
+temporary="${POSTUI_TEST_CLIPBOARD_FILE}.tmp"
+cat >"$temporary"
+mv "$temporary" "$POSTUI_TEST_CLIPBOARD_FILE"

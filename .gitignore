@@ -1,0 +1,43 @@
+# Rust 构建产物
+/target/
+
+# Python 测试环境与缓存
+/.venv/
+venv/
+__pycache__/
+**/*.py
+**/requirements*.txt
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地日志与运行时文件
+*.log
+logs/
+*.pid
+
+# 本地环境变量；示例文件可以提交
+.env
+.env.*
+!.env.example
+
+# 用户上传文件，只保留目录说明文件
+/files/*
+!/files/请将待审查文件放入此目录.txt
+/打包区/files/*
+!/打包区/files/请将待审查文件放入此目录.txt
+
+# 发布包中的二进制和运行库由构建流程生成，不纳入源代码仓库
+/打包区/postui.bin
+/打包区/runtime/
+/打包区/*.tar.gz
+/打包区/*.zip
+
+# 编辑器与操作系统文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,23 @@
+[package]
+name = "postui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Terminal client for sending configured HTTP requests"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/refiget/postui"
+
+[dependencies]
+anyhow = "1.0"
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+crossterm = "0.28"
+ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+shlex = "2.0"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

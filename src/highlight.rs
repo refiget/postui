@@ -1,0 +1,169 @@
+use std::sync::OnceLock;
+
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+use serde_json::Value;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{FontStyle, Theme, ThemeSet},
+    parsing::SyntaxSet,
+    util::LinesWithEndings,
+};
+
+use crate::settings::UiTheme;
+
+static JSON_SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+static JSON_THEMES: OnceLock<ThemeSet> = OnceLock::new();
+
+pub(crate) fn plain_style(theme: &UiTheme) -> Style {
+    Style::default().fg(theme.text)
+}
+
+pub(crate) fn variable_style(theme: &UiTheme) -> Style {
+    Style::default()
+        .fg(theme.variable)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub(crate) fn template_line(value: &str, base_style: Style, theme: &UiTheme) -> Line<'static> {
+    Line::from(template_spans(value, base_style, theme))
+}
+
+pub(crate) fn template_spans(
+    value: &str,
+    base_style: Style,
+    theme: &UiTheme,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = value;
+
+    while let Some((start, end, _)) = crate::template::find_placeholder(rest) {
+        if start > 0 {
+            spans.push(Span::styled(rest[..start].to_string(), base_style));
+        }
+        spans.push(Span::styled(
+            rest[start..end].to_string(),
+            variable_style(theme),
+        ));
+        rest = &rest[end..];
+    }
+
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), base_style));
+    }
+    spans
+}
+
+pub(crate) fn json_text_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {
+    if !theme.highlight_enabled {
+        return plain_lines(value, theme);
+    }
+    let syntax_set = JSON_SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let Some(syntax) = syntax_set.find_syntax_by_extension("json") else {
+        return plain_lines(value, theme);
+    };
+    let mut highlighter = HighlightLines::new(syntax, json_theme(&theme.syntax_theme));
+
+    LinesWithEndings::from(value)
+        .map(|line| {
+            let line = trim_line_ending(line);
+            match highlighter.highlight_line(line, syntax_set) {
+                Ok(regions) => {
+                    let mut spans = Vec::new();
+                    for (style, text) in regions {
+                        spans.extend(template_spans(text, syntect_style(style), theme));
+                    }
+                    Line::from(spans)
+                }
+                Err(error) => {
+                    tracing::debug!(error = %error, "JSON 语法高亮失败，使用普通文本");
+                    template_line(line, plain_style(theme), theme)
+                }
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn json_text_lines_if_valid(value: &str, theme: &UiTheme) -> Option<Vec<Line<'static>>> {
+    serde_json::from_str::<Value>(value)
+        .ok()
+        .map(|_| json_text_lines(value, theme))
+}
+
+pub(crate) fn plain_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {
+    LinesWithEndings::from(value)
+        .map(|line| template_line(trim_line_ending(line), plain_style(theme), theme))
+        .collect()
+}
+
+fn json_theme(name: &str) -> &'static Theme {
+    let themes = JSON_THEMES.get_or_init(ThemeSet::load_defaults);
+    if let Some(theme) = themes.themes.get(name) {
+        return theme;
+    }
+    tracing::debug!(syntax_theme = %name, "找不到配置的语法主题，使用 base16-ocean.dark");
+    themes
+        .themes
+        .get("base16-ocean.dark")
+        .or_else(|| themes.themes.values().next())
+        .expect("syntect 默认主题不应为空")
+}
+
+fn syntect_style(style: syntect::highlighting::Style) -> Style {
+    let mut tui_style = Style::default().fg(Color::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    ));
+    if style.font_style.intersects(FontStyle::BOLD) {
+        tui_style = tui_style.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.intersects(FontStyle::ITALIC) {
+        tui_style = tui_style.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.intersects(FontStyle::UNDERLINE) {
+        tui_style = tui_style.add_modifier(Modifier::UNDERLINED);
+    }
+    tui_style
+}
+
+fn trim_line_ending(value: &str) -> &str {
+    value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
+        .or_else(|| value.strip_suffix('\r'))
+        .unwrap_or(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colors_template_variables() {
+        let theme = UiTheme::default();
+        let spans = template_spans("GET {{host}}/health", plain_style(&theme), &theme);
+
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].content, "{{host}}");
+        assert_eq!(spans[1].style.fg, Some(theme.variable));
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn highlights_json_tokens_and_keeps_variable_color() {
+        let theme = UiTheme::default();
+        let lines = json_text_lines(r#"{"host":"{{host}}","enabled":true}"#, &theme);
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].spans.len() > 1);
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.content == "{{host}}" && span.style.fg == Some(theme.variable))
+        );
+    }
+}

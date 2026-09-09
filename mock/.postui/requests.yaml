@@ -1,0 +1,199 @@
+name: FastAPI mock 全场景
+file_directory: "../files"
+timeout_seconds: 1
+
+variables:
+  - name: host
+    default: "127.0.0.1:18080"
+  - name: token
+    default: "mock-secret-token"
+  - name: search_term
+    default: "文档审查 & edge"
+  - name: page
+    default: "2"
+  - name: task_id
+    default: "task-from-config"
+  - name: item_id
+    default: "item-42"
+  - name: item_name
+    default: "文档接口测试"
+  - name: item_value
+    default: "value with spaces & symbols"
+  - name: note
+    default: "multipart note"
+  - name: user
+    default: "postui tester"
+  - name: upload_file
+    default: "sample.txt"
+  - name: upload_filename
+    default: "sample-upload.txt"
+  - name: second_upload_file
+    default: "second.txt"
+  - name: missing_file
+    default: "does-not-exist.txt"
+  - name: session_id
+    default: "session-001"
+  - name: health_service
+  - name: search_echo
+  - name: task_status
+  - name: first_item_id
+  - name: updated_method
+  - name: deleted_item
+  - name: upload_size
+  - name: header_echo
+  - name: redirect_service
+  - name: error_code
+  - name: empty_file
+
+requests:
+  - id: health
+    name: 健康检查
+    description: 代码块格式和 GET 请求。
+    request: |
+      ```bash
+      curl --location "http://{{host}}/v1/health"
+      ```
+    extract:
+      health_service: service
+
+  - id: search
+    name: 查询参数
+    description: -G 与 --data-urlencode 应在变量展开后编码查询值。
+    request: |
+      curl --get "http://{{host}}/v1/search" \
+        --data-urlencode "q={{search_term}}" \
+        --data-urlencode="page={{page}}" \
+        --header "X-Debug-Token: {{token}}"
+    extract:
+      search_echo: data.query.q
+
+  - id: create-task
+    name: 创建任务
+    description: --json 自动补充 JSON 请求头，并保留原始请求体。
+    request: |
+      curl --location --request POST "http://{{host}}/v1/tasks" \
+        --header "X-Debug-Token: {{token}}" \
+        --json '{"taskId":"{{task_id}}","name":"{{item_name}}","value":"{{item_value}}"}'
+    extract:
+      task_id: data.taskId
+
+  - id: task-status
+    name: 查询任务状态
+    description: 路径变量、对象字段和数组下标提取。
+    request: |
+      curl "http://{{host}}/v1/tasks/{{task_id}}"
+    extract:
+      task_status: data.status
+      first_item_id: data.items[0].id
+
+  - id: put-item
+    name: 更新项目（短参数）
+    description: 测试 -X、-H 的附着参数形式和 JSON body。
+    request: |
+      curl -XPUT "http://{{host}}/v1/items/{{item_id}}" \
+        -H"Content-Type: application/json" \
+        -H"X-Debug-Token: {{token}}" \
+        --data-raw '{"name":"{{item_name}}","value":"{{item_value}}"}'
+    extract:
+      updated_method: data.method
+
+  - id: patch-item
+    name: 部分更新项目（长参数）
+    description: 测试 --option=value 形式。
+    request: |
+      curl --request=PATCH \
+        --url="http://{{host}}/v1/items/{{item_id}}" \
+        --header="Content-Type: application/json" \
+        --data-raw='{"value":"{{item_value}}"}'
+
+  - id: delete-item
+    name: 删除项目
+    description: DELETE 请求和布尔值提取。
+    request: |
+      curl --request DELETE --url "http://{{host}}/v1/items/{{item_id}}"
+    extract:
+      deleted_item: data.deleted
+
+  - id: form
+    name: URL 编码表单
+    description: 多个 data-urlencode 参数会在变量展开后合并为表单请求体。
+    request: |
+      curl --request POST "http://{{host}}/v1/form" \
+        --header "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "name={{item_name}}" \
+        --data-urlencode "note={{note}}"
+    extract:
+      header_echo: request.headers.content-type
+
+  - id: upload
+    name: 多文件上传
+    description: multipart 字段、两个文件和自定义文件名。
+    request: |
+      curl --request POST "http://{{host}}/v1/upload" \
+        --form "file=@{{upload_file}};type=text/plain;filename={{upload_filename}}" \
+        --form "second=@{{second_upload_file}};type=text/plain" \
+        --form-string "note={{note}}" \
+        --form-string "user={{user}}"
+    extract:
+      upload_size: data.files[0].size
+
+  - id: headers
+    name: 请求头与 Cookie
+    description: cookie、User-Agent、Referer 和敏感头日志脱敏。
+    request: |
+      curl --location "http://{{host}}/v1/headers" \
+        --cookie "session={{session_id}}" \
+        --user-agent "postui-test/1.0" \
+        --referer "http://example.test/source" \
+        --header "X-Debug-Token: {{token}}"
+    extract:
+      header_echo: data.token
+
+  - id: redirect
+    name: 重定向
+    description: --location 由 reqwest 的默认重定向行为完成。
+    request: |
+      curl --location "http://{{host}}/v1/redirect"
+    extract:
+      redirect_service: service
+
+  - id: error
+    name: 非 2xx 响应
+    description: 服务器返回 422 时客户端仍保留状态码和响应体。
+    request: |
+      curl --request POST "http://{{host}}/v1/error" \
+        --json '{"name":"{{item_name}}"}'
+    extract:
+      error_code: error.code
+
+  - id: empty
+    name: 空响应
+    description: 204 响应没有响应体。
+    request: |
+      curl "http://{{host}}/v1/empty"
+
+  - id: plain
+    name: 纯文本响应
+    description: 非 JSON 响应按普通文本处理。
+    request: |
+      curl "http://{{host}}/v1/plain"
+
+  - id: timeout
+    name: 请求超时
+    description: mock 延迟超过配置的 1 秒超时时间。
+    request: |
+      curl "http://{{host}}/v1/delay/2"
+
+  - id: missing-file
+    name: 文件不存在
+    description: 验证上传文件读取失败时的错误日志。
+    request: |
+      curl --request POST "http://{{host}}/v1/upload" \
+        --form "file=@{{missing_file}}"
+
+  - id: empty-file-variable
+    name: 文件变量未设置
+    description: 验证空文件变量在发送前给出明确错误。
+    request: |
+      curl --request POST "http://{{host}}/v1/upload" \
+        --form "file=@{{empty_file}}"

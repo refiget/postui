@@ -1,0 +1,13 @@
+# PostUI 全局配置。
+# 请求、变量、超时和上传目录放在独立的请求集合文件中。
+request_config: .postui/requests.yaml
+
+# 可选：ocean、nord、mono。
+# 自定义主题时填写 theme_file: themes/my-theme.yaml。
+theme: ocean
+
+# 采用 syntect 的现成主题进行 JSON 高亮；变量高亮颜色单独覆盖。
+highlight:
+  enabled: true
+  syntax: base16-ocean.dark
+  variable: "#c084fc"

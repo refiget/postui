@@ -1,0 +1,8 @@
+# PostUI 全局配置
+request_config: .postui/requests.yaml
+theme: ocean
+
+highlight:
+  enabled: true
+  syntax: base16-ocean.dark
+  variable: "#c084fc"
