@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -11,7 +11,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{
     clipboard::SystemClipboard,
     config::{ApiRequest, RequestConfig, value_to_string},
-    http::{self, ResponseData},
+    http::{self, HttpError, ResponseData},
+    i18n::UiText,
     settings::GlobalConfig,
     template::{self, ResolvedRequest},
 };
@@ -40,11 +41,11 @@ impl Focus {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self, text: UiText) -> &'static str {
         match self {
-            Self::Requests => "接口列表",
-            Self::Variables => "全局变量",
-            Self::Actions => "发送操作",
+            Self::Requests => text.requests(),
+            Self::Variables => text.variables(),
+            Self::Actions => text.send_actions(),
         }
     }
 }
@@ -53,11 +54,103 @@ enum AppMessage {
     RequestFinished {
         request_id: String,
         operation_id: String,
-        result: Result<ResponseData, String>,
+        result: Result<ResponseData, HttpError>,
     },
 }
 
 static NEXT_REQUEST_OPERATION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Default)]
+pub(crate) struct ScrollState {
+    offset: u16,
+}
+
+impl ScrollState {
+    const STEP: u16 = 3;
+
+    pub(crate) fn offset(&self) -> u16 {
+        self.offset
+    }
+
+    fn reset(&mut self) {
+        self.offset = 0;
+    }
+
+    fn move_by(&mut self, direction: isize) {
+        self.offset = match direction {
+            -1 => self.offset.saturating_sub(Self::STEP),
+            1 => self.offset.saturating_add(Self::STEP),
+            _ => self.offset,
+        };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RequestStatus {
+    #[default]
+    NotSent,
+    Sending,
+    Success,
+    Failed,
+    Timeout,
+}
+
+impl RequestStatus {
+    pub(crate) fn from_http_status(status: u16) -> Self {
+        if status < 400 {
+            Self::Success
+        } else {
+            Self::Failed
+        }
+    }
+
+    pub(crate) fn from_error(error: &HttpError) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Failed
+        }
+    }
+
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            Self::NotSent => "--",
+            Self::Sending => "..",
+            Self::Success => "OK",
+            Self::Failed => "ERR",
+            Self::Timeout => "TO",
+        }
+    }
+
+    pub(crate) fn label(self, text: UiText) -> &'static str {
+        match self {
+            Self::NotSent => text.request_status_not_sent(),
+            Self::Sending => text.request_status_sending(),
+            Self::Success => text.request_status_success(),
+            Self::Failed => text.request_status_failed(),
+            Self::Timeout => text.request_status_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RequestRuntimeState {
+    pub(crate) status: RequestStatus,
+    pub(crate) response: Option<ResponseData>,
+    pub(crate) error: Option<String>,
+    operation_id: Option<String>,
+}
+
+impl RequestRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn from_response(response: ResponseData) -> Self {
+        Self {
+            status: RequestStatus::from_http_status(response.status),
+            response: Some(response),
+            ..Default::default()
+        }
+    }
+}
 
 pub(crate) struct App {
     pub(crate) config: RequestConfig,
@@ -70,8 +163,9 @@ pub(crate) struct App {
     pub(crate) editing: bool,
     pub(crate) edit_buffer: String,
     pub(crate) global_variables: BTreeMap<String, String>,
-    pub(crate) responses: HashMap<String, ResponseData>,
-    pub(crate) loading_request: Option<String>,
+    pub(crate) request_states: HashMap<String, RequestRuntimeState>,
+    pub(crate) response_headers_expanded: bool,
+    pub(crate) response_scroll: ScrollState,
     pub(crate) status: String,
     pub(crate) should_quit: bool,
     clipboard: SystemClipboard,
@@ -85,6 +179,7 @@ impl App {
         config_path: PathBuf,
         global_config: GlobalConfig,
     ) -> Self {
+        let text = UiText::new(global_config.language);
         tracing::debug!(
             config_path = %config_path.display(),
             global_config_path = global_config
@@ -113,6 +208,15 @@ impl App {
             global_variable_count = global_variables.len(),
             "初始化全局变量"
         );
+        let request_states = config
+            .requests
+            .iter()
+            .map(|request| (request.id.clone(), RequestRuntimeState::default()))
+            .collect::<HashMap<_, _>>();
+        tracing::debug!(
+            request_state_count = request_states.len(),
+            "初始化接口运行状态"
+        );
 
         let (sender, receiver) = mpsc::channel();
         Self {
@@ -126,9 +230,10 @@ impl App {
             editing: false,
             edit_buffer: String::new(),
             global_variables,
-            responses: HashMap::new(),
-            loading_request: None,
-            status: "就绪".to_string(),
+            request_states,
+            response_headers_expanded: false,
+            response_scroll: ScrollState::default(),
+            status: text.ready().to_string(),
             should_quit: false,
             clipboard: SystemClipboard::default(),
             sender,
@@ -138,6 +243,10 @@ impl App {
 
     pub(crate) fn current_request(&self) -> &ApiRequest {
         &self.config.requests[self.selected_request]
+    }
+
+    pub(crate) fn text(&self) -> UiText {
+        UiText::new(self.global_config.language)
     }
 
     pub(crate) fn select_request(&mut self, index: usize) {
@@ -150,14 +259,19 @@ impl App {
             return;
         }
         let previous = self.selected_request;
-        if self.selected_request != index {
+        let changed = previous != index;
+        if changed {
             self.stop_editing();
         }
         self.selected_request = index;
+        if changed {
+            self.response_headers_expanded = false;
+            self.response_scroll.reset();
+        }
         self.variable_index = self
             .variable_index
             .min(self.current_variable_names().len().saturating_sub(1));
-        if previous != index {
+        if changed {
             tracing::debug!(
                 previous_index = previous,
                 selected_index = index,
@@ -185,16 +299,51 @@ impl App {
             .collect()
     }
 
+    pub(crate) fn variable_has_extract(&self, index: usize) -> bool {
+        let names = self.current_variable_names();
+        let Some(name) = names.get(index) else {
+            return false;
+        };
+        self.extract_path(name).is_some()
+    }
+
+    pub(crate) fn can_extract_variable(&self, index: usize) -> bool {
+        self.variable_has_extract(index)
+            && self.request_status(&self.current_request().id) == RequestStatus::Success
+            && self.current_response().is_some()
+    }
+
+    fn extract_path(&self, variable: &str) -> Option<String> {
+        self.current_request()
+            .extracts
+            .iter()
+            .find(|extract| extract.variable == variable)
+            .map(|extract| extract.path.clone())
+    }
+
     pub(crate) fn current_resolved_request(&self) -> ResolvedRequest {
         template::resolve_request(self.current_request(), &self.global_variables)
     }
 
-    pub(crate) fn current_response(&self) -> Option<&ResponseData> {
-        self.responses.get(&self.current_request().id)
+    pub(crate) fn current_request_state(&self) -> Option<&RequestRuntimeState> {
+        self.request_states.get(&self.current_request().id)
     }
 
-    pub(crate) fn is_request_loading(&self, request_id: &str) -> bool {
-        self.loading_request.as_deref() == Some(request_id)
+    pub(crate) fn request_status(&self, request_id: &str) -> RequestStatus {
+        self.request_states
+            .get(request_id)
+            .map(|state| state.status)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn current_response(&self) -> Option<&ResponseData> {
+        self.current_request_state()
+            .and_then(|state| state.response.as_ref())
+    }
+
+    pub(crate) fn current_error(&self) -> Option<&str> {
+        self.current_request_state()
+            .and_then(|state| state.error.as_deref())
     }
 
     pub(crate) fn poll_messages(&mut self) {
@@ -210,34 +359,72 @@ impl App {
                         operation_id = %operation_id,
                         "收到后台请求结果"
                     );
-                    if self.loading_request.as_deref() == Some(request_id.as_str()) {
-                        self.loading_request = None;
+                    let is_current = self.current_request().id == request_id;
+                    let text = self.text();
+                    let Some(state) = self.request_states.get_mut(&request_id) else {
+                        tracing::debug!(
+                            request_id = %request_id,
+                            operation_id = %operation_id,
+                            "收到未知接口的后台请求结果"
+                        );
+                        continue;
+                    };
+                    if state.operation_id.as_deref() != Some(operation_id.as_str()) {
+                        tracing::debug!(
+                            request_id = %request_id,
+                            operation_id = %operation_id,
+                            active_operation_id = ?state.operation_id,
+                            "忽略过期的后台请求结果"
+                        );
+                        continue;
                     }
-                    match result {
+                    state.operation_id = None;
+                    let status_message = match result {
                         Ok(response) => {
                             let status = response.status;
                             let elapsed = response.elapsed_ms;
+                            let request_status = RequestStatus::from_http_status(status);
                             tracing::debug!(
                                 request_id = %request_id,
                                 operation_id = %operation_id,
                                 status,
+                                request_status = ?request_status,
                                 elapsed_ms = elapsed,
                                 header_count = response.headers.len(),
                                 body_bytes = response.body.len(),
                                 "后台请求成功"
                             );
-                            self.responses.insert(request_id, response);
-                            self.status = format!("请求完成 · HTTP {status} · {elapsed} ms");
+                            state.status = request_status;
+                            state.response = Some(response);
+                            state.error = None;
+                            is_current.then(|| text.request_complete(status, elapsed))
                         }
                         Err(error) => {
+                            let request_status = RequestStatus::from_error(&error);
+                            let error_message = error.to_string();
                             tracing::error!(
                                 request_id = %request_id,
                                 operation_id = %operation_id,
-                                error = %error,
+                                request_status = ?request_status,
+                                error = %error_message,
                                 "后台请求失败"
                             );
-                            self.status = error;
+                            state.status = request_status;
+                            state.response = None;
+                            state.error = Some(error_message.clone());
+                            is_current.then(|| {
+                                if request_status == RequestStatus::Timeout {
+                                    text.request_timeout(&error_message)
+                                } else {
+                                    text.request_failed(&error_message)
+                                }
+                            })
                         }
+                    };
+                    if let Some(status) = status_message {
+                        self.response_headers_expanded = false;
+                        self.response_scroll.reset();
+                        self.status = status;
                     }
                 }
             }
@@ -281,7 +468,8 @@ impl App {
                     self.focus.next()
                 };
                 tracing::debug!(focus = ?self.focus, "切换 TUI 区域焦点");
-                self.status = format!("已切换到 {}", self.focus.label());
+                let text = self.text();
+                self.status = text.switched_to(self.focus.label(text));
             }
             KeyCode::Char('r') => self.send_current_request(),
             KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
@@ -307,10 +495,10 @@ impl App {
                 self.status = if key.code == KeyCode::Enter {
                     let name = self.current_request().name.clone();
                     tracing::debug!(request_id = %self.current_request().id, "确认接口选择");
-                    format!("已选择 {name}")
+                    self.text().selected_request(&name)
                 } else {
                     tracing::debug!("关闭接口下拉列表");
-                    "已关闭接口列表".to_string()
+                    self.text().request_list_closed().to_string()
                 };
             }
             _ => {}
@@ -323,7 +511,7 @@ impl App {
             KeyCode::Enter => self.commit_edit(),
             KeyCode::Esc => {
                 self.stop_editing();
-                self.status = "已取消编辑".to_string();
+                self.status = self.text().edit_cancelled().to_string();
             }
             KeyCode::Backspace => {
                 self.edit_buffer.pop();
@@ -385,10 +573,43 @@ impl App {
         self.select_request(next);
     }
 
+    pub(crate) fn toggle_response_headers(&mut self) {
+        let Some(response) = self.current_response() else {
+            tracing::debug!("当前接口没有响应，忽略响应头展开操作");
+            return;
+        };
+        if response.headers.is_empty() {
+            tracing::debug!("当前响应没有响应头，忽略展开操作");
+            return;
+        }
+        self.response_headers_expanded = !self.response_headers_expanded;
+        self.response_scroll.reset();
+        tracing::debug!(
+            expanded = self.response_headers_expanded,
+            "切换响应头展开状态"
+        );
+    }
+
+    pub(crate) fn scroll_response(&mut self, direction: isize) {
+        if self.current_response().is_none() {
+            return;
+        }
+        let previous = self.response_scroll.offset();
+        self.response_scroll.move_by(direction);
+        if previous != self.response_scroll.offset() {
+            tracing::debug!(
+                previous_offset = previous,
+                offset = self.response_scroll.offset(),
+                direction,
+                "滚动响应内容"
+            );
+        }
+    }
+
     pub(crate) fn edit_current_variable(&mut self) {
         let Some(name) = self.current_variable_name() else {
             tracing::debug!("当前接口没有可编辑变量");
-            self.status = "当前接口没有可编辑的变量".to_string();
+            self.status = self.text().no_editable_variables().to_string();
             return;
         };
         self.edit_buffer = self
@@ -398,7 +619,7 @@ impl App {
             .unwrap_or_default();
         tracing::debug!(variable = %name, value_bytes = self.edit_buffer.len(), "开始编辑全局变量");
         self.editing = true;
-        self.status = format!("编辑变量 {name} · Enter 保存 · Esc 取消");
+        self.status = self.text().edit_variable(&name);
     }
 
     fn commit_edit(&mut self) {
@@ -411,7 +632,7 @@ impl App {
         tracing::debug!(variable = %name, value_bytes = value.len(), "提交全局变量");
         self.global_variables.insert(name.clone(), value);
         self.stop_editing();
-        self.status = format!("已更新全局变量: {name}");
+        self.status = self.text().variable_updated(&name);
     }
 
     pub(crate) fn clear_current_variable(&mut self) {
@@ -420,43 +641,74 @@ impl App {
 
     pub(crate) fn clear_variable(&mut self, index: usize) {
         let Some(name) = self.current_variable_names().get(index).cloned() else {
-            tracing::debug!(index, "清空变量时索引无效");
-            self.status = "当前接口没有可清空的变量".to_string();
+            tracing::debug!(index, "清理变量时索引无效");
+            self.status = self.text().no_clearable_variables().to_string();
             return;
         };
-        tracing::debug!(variable = %name, index, "清空全局变量");
+        tracing::debug!(variable = %name, index, "清理全局变量");
         self.global_variables.insert(name.clone(), String::new());
         if self.variable_index == index {
             self.stop_editing();
         }
-        self.status = format!("已清空全局变量: {name}");
+        self.status = self.text().variable_cleared(&name);
     }
 
-    pub(crate) fn extract_response(&mut self, index: usize) {
+    pub(crate) fn extract_variable(&mut self, index: usize) {
+        if self.editing {
+            self.commit_edit();
+        }
+
         let request_id = self.current_request().id.clone();
-        let Some(extract) = self.current_request().extracts.get(index) else {
-            tracing::debug!(request_id = %request_id, index, "响应提取索引无效");
-            self.status = "当前接口没有可提取的字段".to_string();
+        let Some(name) = self.current_variable_names().get(index).cloned() else {
+            tracing::debug!(request_id = %request_id, index, "响应提取变量索引无效");
+            self.status = self.text().no_extractable_variable().to_string();
             return;
         };
-        let variable = extract.variable.clone();
-        let path = extract.path.clone();
+
+        let Some(path) = self.extract_path(&name) else {
+            tracing::debug!(
+                request_id = %request_id,
+                index,
+                variable = %name,
+                "变量没有响应提取配置"
+            );
+            self.status = self.text().no_extractable_variable().to_string();
+            return;
+        };
+
+        let request_status = self.request_status(&request_id);
+        if request_status != RequestStatus::Success {
+            tracing::debug!(
+                request_id = %request_id,
+                index,
+                variable = %name,
+                request_status = ?request_status,
+                "当前接口没有成功响应，无法提取变量"
+            );
+            self.status = self.text().no_successful_response().to_string();
+            return;
+        }
+
         let Some(body) = self
-            .responses
-            .get(&request_id)
+            .current_response()
             .map(|response| response.body.clone())
         else {
-            tracing::debug!(request_id = %request_id, index, "当前接口还没有响应，无法提取");
-            self.status = "当前接口还没有响应".to_string();
+            tracing::debug!(
+                request_id = %request_id,
+                index,
+                variable = %name,
+                "当前接口没有响应，无法提取变量"
+            );
+            self.status = self.text().no_successful_response().to_string();
             return;
         };
         tracing::debug!(
             request_id = %request_id,
             index,
-            variable = %variable,
+            variable = %name,
             path = %path,
             response_body_bytes = body.len(),
-            "提取响应字段"
+            "从响应提取变量"
         );
         let value = match template::extract_json_value(&body, &path) {
             Ok(value) => value,
@@ -468,37 +720,30 @@ impl App {
         };
         tracing::debug!(
             request_id = %request_id,
-            variable = %variable,
+            variable = %name,
             value_bytes = value.len(),
-            "响应字段提取成功，准备写入剪贴板"
+            "响应字段提取成功，写入全局变量"
         );
-        match self.clipboard.set_text(&value) {
-            Ok(()) => {
-                tracing::debug!(request_id = %request_id, variable = %variable, "响应字段已复制到剪贴板");
-                self.status = format!("已提取并复制: {variable}");
-            }
-            Err(error) => {
-                tracing::error!(request_id = %request_id, variable = %variable, error = %error, "写入剪贴板失败");
-                self.status = error;
-            }
-        }
+        self.global_variables.insert(name.clone(), value);
+        self.variable_index = index;
+        self.status = self.text().variable_extracted(&name);
     }
 
     pub(crate) fn paste_variable(&mut self, index: usize) {
-        tracing::debug!(index, "从剪贴板填入变量");
+        tracing::debug!(index, "从剪贴板粘贴变量");
         if self.editing {
             self.commit_edit();
         }
         let Some(name) = self.current_variable_names().get(index).cloned() else {
-            tracing::debug!(index, "填入变量时索引无效");
-            self.status = "当前接口没有可填入的变量".to_string();
+            tracing::debug!(index, "粘贴变量时索引无效");
+            self.status = self.text().no_pasteable_variables().to_string();
             return;
         };
         let value = match self.clipboard.get_text() {
             Ok(value) if !value.is_empty() => value,
             Ok(_) => {
                 tracing::debug!(variable = %name, "系统剪贴板为空");
-                self.status = "系统剪贴板没有文本".to_string();
+                self.status = self.text().clipboard_empty().to_string();
                 return;
             }
             Err(error) => {
@@ -510,7 +755,7 @@ impl App {
         tracing::debug!(variable = %name, value_bytes = value.len(), "从剪贴板读取变量值");
         self.global_variables.insert(name.clone(), value);
         self.variable_index = index;
-        self.status = format!("已从剪贴板填入全局变量: {name}");
+        self.status = self.text().pasted_to_variable(&name);
     }
 
     pub(crate) fn send_current_request(&mut self) {
@@ -518,9 +763,9 @@ impl App {
         if self.editing {
             self.commit_edit();
         }
-        if self.loading_request.is_some() {
+        if self.request_status(&self.current_request().id) == RequestStatus::Sending {
             tracing::debug!("已有请求执行中，忽略重复发送");
-            self.status = "请求正在执行，请稍候".to_string();
+            self.status = self.text().request_in_progress().to_string();
             return;
         }
 
@@ -532,8 +777,9 @@ impl App {
         );
         let resolved = self.current_resolved_request();
         let display_url = template::display_url(self.current_request());
-        let timeout = self.config.timeout_seconds;
-        let file_directory = self.file_directory();
+        let timeout = self.current_request().timeout_seconds;
+        let file_directory = self.config.file_directory.clone();
+        let download_directory = self.config.download_directory.clone();
         let sender = self.sender.clone();
         tracing::debug!(
             request_id = %request_id,
@@ -541,20 +787,35 @@ impl App {
             method = %resolved.method,
             timeout_seconds = timeout,
             file_directory = %file_directory.display(),
+            download_directory = %download_directory.display(),
             "开始异步发送请求"
         );
-        self.loading_request = Some(request_id.clone());
-        self.status = format!("请求中 · {} {}", resolved.method, display_url);
+        let state = self.request_states.entry(request_id.clone()).or_default();
+        state.status = RequestStatus::Sending;
+        state.response = None;
+        state.error = None;
+        state.operation_id = Some(operation_id.clone());
+        self.status = self.text().request_started(&resolved.method, &display_url);
 
         thread::spawn(move || {
             tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
-            let result = http::send(&resolved, timeout, &file_directory, &operation_id);
+            let result = http::send(
+                &resolved,
+                timeout,
+                &file_directory,
+                &download_directory,
+                &operation_id,
+            );
             match &result {
                 Ok(response) => tracing::debug!(
                     operation_id = %operation_id,
                     status = response.status,
                     elapsed_ms = response.elapsed_ms,
                     body_bytes = response.body.len(),
+                    download_path = response
+                        .download_path
+                        .as_deref()
+                        .map(|path| path.display().to_string()),
                     "HTTP 工作线程完成"
                 ),
                 Err(error) => tracing::error!(
@@ -574,16 +835,6 @@ impl App {
                 tracing::debug!("TUI 已退出，丢弃后台请求结果");
             }
         });
-    }
-
-    fn file_directory(&self) -> PathBuf {
-        if self.config.file_directory.is_absolute() {
-            return self.config.file_directory.clone();
-        }
-        self.config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(&self.config.file_directory)
     }
 
     fn current_variable_name(&self) -> Option<String> {
@@ -612,5 +863,99 @@ pub(crate) fn key_kind(code: KeyCode) -> &'static str {
         KeyCode::Backspace => "退格",
         KeyCode::Delete => "删除",
         _ => "其他按键",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::{config::load, http::ResponseData, settings::GlobalConfig};
+
+    #[test]
+    fn keeps_the_latest_response_for_each_request_during_the_session() {
+        let config = load(Path::new(".postui/requests.yaml")).expect("示例请求配置应当可以加载");
+        let first_id = config.requests[0].id.clone();
+        let second_id = config.requests[1].id.clone();
+        let mut app = App::new(
+            config,
+            PathBuf::from(".postui/requests.yaml"),
+            GlobalConfig::default(),
+        );
+
+        assert_eq!(app.request_status(&first_id), RequestStatus::NotSent);
+        assert_eq!(app.request_status(&second_id), RequestStatus::NotSent);
+
+        let first_state = RequestRuntimeState::from_response(ResponseData {
+            status: 200,
+            reason: "OK".to_string(),
+            headers: Vec::new(),
+            body: "first".to_string(),
+            download_path: None,
+            elapsed_ms: 1,
+        });
+        app.request_states.insert(first_id.clone(), first_state);
+
+        app.select_request(1);
+        assert!(app.current_response().is_none());
+        assert_eq!(app.request_status(&first_id), RequestStatus::Success);
+
+        app.select_request(0);
+        assert_eq!(
+            app.current_response()
+                .map(|response| response.body.as_str()),
+            Some("first")
+        );
+
+        let latest_state = RequestRuntimeState {
+            status: RequestStatus::Failed,
+            error: Some("latest failure".to_string()),
+            ..Default::default()
+        };
+        app.request_states.insert(first_id.clone(), latest_state);
+        assert!(app.current_response().is_none());
+        assert_eq!(app.current_error(), Some("latest failure"));
+        assert_eq!(app.request_status(&first_id), RequestStatus::Failed);
+    }
+
+    #[test]
+    fn extracts_response_value_directly_into_the_variable() {
+        let config = load(Path::new(".postui/requests.yaml")).expect("示例请求配置应当可以加载");
+        let mut app = App::new(
+            config,
+            PathBuf::from(".postui/requests.yaml"),
+            GlobalConfig::default(),
+        );
+        app.select_request(1);
+        let variable_index = app
+            .current_variable_names()
+            .iter()
+            .position(|name| name == "posted_message")
+            .expect("POST JSON 接口应声明提取变量");
+        assert!(app.variable_has_extract(variable_index));
+        assert!(!app.can_extract_variable(variable_index));
+        app.request_states.insert(
+            app.current_request().id.clone(),
+            RequestRuntimeState::from_response(ResponseData {
+                status: 200,
+                reason: "OK".to_string(),
+                headers: Vec::new(),
+                body: r#"{"json":{"message":"from-response"}}"#.to_string(),
+                download_path: None,
+                elapsed_ms: 1,
+            }),
+        );
+        assert!(app.can_extract_variable(variable_index));
+
+        app.extract_variable(variable_index);
+
+        assert_eq!(
+            app.global_variables
+                .get("posted_message")
+                .map(String::as_str),
+            Some("from-response")
+        );
+        assert_eq!(app.variable_index, variable_index);
     }
 }

@@ -12,7 +12,7 @@ use syntect::{
     util::LinesWithEndings,
 };
 
-use crate::settings::UiTheme;
+use crate::settings::{DEFAULT_SYNTAX_THEME, UiTheme};
 
 static JSON_SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 static JSON_THEMES: OnceLock<ThemeSet> = OnceLock::new();
@@ -103,10 +103,14 @@ fn json_theme(name: &str) -> &'static Theme {
     if let Some(theme) = themes.themes.get(name) {
         return theme;
     }
-    tracing::debug!(syntax_theme = %name, "找不到配置的语法主题，使用 base16-ocean.dark");
+    tracing::debug!(
+        syntax_theme = %name,
+        fallback = DEFAULT_SYNTAX_THEME,
+        "找不到配置的语法主题，使用默认语法主题"
+    );
     themes
         .themes
-        .get("base16-ocean.dark")
+        .get(DEFAULT_SYNTAX_THEME)
         .or_else(|| themes.themes.values().next())
         .expect("syntect 默认主题不应为空")
 }

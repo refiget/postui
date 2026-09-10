@@ -1,11 +1,16 @@
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("postui 仅支持 Linux amd64 (x86_64)");
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "windows", target_arch = "x86_64")
+)))]
+compile_error!("postui 仅支持 Linux amd64 (x86_64) 和 Windows x86_64");
 
 mod app;
+mod cache;
 mod clipboard;
 mod config;
 mod highlight;
 mod http;
+mod i18n;
 mod logging;
 mod settings;
 mod template;
@@ -19,6 +24,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use std::process::Command;
+
 use anyhow::{Context, Result, bail};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
@@ -29,7 +37,9 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{app::App, config::load as load_request_config};
 
+#[cfg(not(windows))]
 const INIT_BLOCK_START: &str = "# >>> postui init >>>";
+#[cfg(not(windows))]
 const INIT_BLOCK_END: &str = "# <<< postui init <<<";
 
 fn main() -> Result<()> {
@@ -45,9 +55,11 @@ fn main() -> Result<()> {
 }
 
 fn run_app(options: CliOptions) -> Result<()> {
+    let explicit_global_config = options.config_path.is_some();
     let global_config_path = options
         .config_path
-        .clone()
+        .as_deref()
+        .map(resolve_cli_path)
         .or_else(discover_global_config_path);
     let log_base = global_config_path
         .as_deref()
@@ -83,8 +95,21 @@ fn run_app(options: CliOptions) -> Result<()> {
     };
     let request_config_path = options
         .request_config_path
-        .map(|path| resolve_cli_path(&path))
-        .unwrap_or_else(|| global_config.request_config.clone());
+        .as_deref()
+        .map(resolve_cli_path)
+        .or_else(|| {
+            if explicit_global_config {
+                None
+            } else {
+                discover_local_request_config()
+            }
+        })
+        .unwrap_or_else(|| resolve_cli_path(&global_config.request_config));
+    tracing::debug!(
+        path = %request_config_path.display(),
+        explicit_global_config,
+        "选择请求配置文件"
+    );
     let request_config = match load_request_config(&request_config_path) {
         Ok(config) => config,
         Err(error) => {
@@ -258,20 +283,23 @@ fn print_help() {
         "用法:\n\
   postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\
   postui init\n\n\
-全局配置优先级: 显式 --config，其次 Home/root 下的 postui.yaml 或 .postui.yaml，最后 ~/.config/postui/config.yaml；都不存在时使用内置默认配置。\n\
-请求配置默认由全局配置的 request_config 指定，也可以用 --requests 覆盖。\n\
+全局配置优先级: 显式 --config，其次用户 Home 下的 postui.yaml 或 .postui.yaml，再到平台配置目录；都不存在时使用内置默认配置。\n\
+未显式指定 --config 或 --requests 时，优先读取当前目录的 .postui/requests.yaml；否则使用全局配置的 request_config。\n\
+请求配置也可以用 --requests 覆盖。\n\
 默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\
-postui init 会根据当前 shell 将当前运行程序的绝对路径写入 ~/.zshrc 或 ~/.bashrc。\n"
+postui init 会在 Linux 更新 ~/.zshrc 或 ~/.bashrc；Windows 更新当前用户 PATH。两者都不会写入系统级配置。\n"
     );
 }
 
+#[cfg(not(windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellKind {
     Bash,
     Zsh,
 }
 
+#[cfg(not(windows))]
 impl ShellKind {
     fn rc_name(self) -> &'static str {
         match self {
@@ -281,6 +309,7 @@ impl ShellKind {
     }
 }
 
+#[cfg(not(windows))]
 fn init_shell_integration() -> Result<()> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
@@ -298,13 +327,9 @@ fn init_shell_integration() -> Result<()> {
         }
     };
     let updated = upsert_shell_init_block(&current, &block)?;
-    let changed = updated != current;
-    if changed {
+    if updated != current {
         fs::write(&rc_path, updated)
             .with_context(|| format!("无法写入 shell 配置文件: {}", rc_path.display()))?;
-    }
-
-    if changed {
         println!(
             "已将 PostUI 启动命令写入 {} ({})",
             rc_path.display(),
@@ -317,6 +342,132 @@ fn init_shell_integration() -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn init_shell_integration() -> Result<()> {
+    let launch_path = runtime_launch_path()?;
+    let launch_directory = launch_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let added = add_user_path(launch_directory)?;
+
+    if added {
+        println!(
+            "已将 PostUI 所在目录加入当前用户的 PATH: {}",
+            launch_directory.display()
+        );
+    } else {
+        println!(
+            "PostUI 所在目录已经在当前用户的 PATH 中: {}",
+            launch_directory.display()
+        );
+    }
+    println!("请关闭并重新打开 PowerShell，使新的 PATH 生效。无需管理员权限。\n");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn add_user_path(directory: &Path) -> Result<bool> {
+    let directory = directory.to_string_lossy().into_owned();
+    let current = read_user_path()?;
+    if current
+        .split(';')
+        .any(|entry| same_windows_path(entry, &directory))
+    {
+        return Ok(false);
+    }
+
+    let updated = if current.trim().is_empty() {
+        directory
+    } else {
+        format!("{current};{directory}")
+    };
+    let output = Command::new(reg_executable())
+        .args([
+            "ADD",
+            r"HKCU\Environment",
+            "/v",
+            "Path",
+            "/t",
+            "REG_EXPAND_SZ",
+            "/d",
+        ])
+        .arg(&updated)
+        .arg("/f")
+        .output()
+        .context("无法启动 Windows reg.exe 更新用户 PATH")?;
+    if !output.status.success() {
+        bail!("更新当前用户 PATH 失败: {}", command_error(&output));
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn read_user_path() -> Result<String> {
+    let output = Command::new(reg_executable())
+        .args(["QUERY", r"HKCU\Environment", "/v", "Path"])
+        .output()
+        .context("无法启动 Windows reg.exe 读取用户 PATH")?;
+    if !output.status.success() {
+        if output.status.code() == Some(1) {
+            return Ok(String::new());
+        }
+        bail!("读取当前用户 PATH 失败: {}", command_error(&output));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let mut fields = line.split_whitespace();
+        if !fields
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Path"))
+        {
+            continue;
+        }
+        let Some(value_type) = fields.next() else {
+            continue;
+        };
+        if !matches!(value_type, "REG_SZ" | "REG_EXPAND_SZ") {
+            continue;
+        }
+        let value = fields.collect::<Vec<_>>().join(" ");
+        return Ok(value);
+    }
+    Ok(String::new())
+}
+
+#[cfg(windows)]
+fn reg_executable() -> PathBuf {
+    env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .map(|root| root.join("System32/reg.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("reg.exe"))
+}
+
+#[cfg(windows)]
+fn command_error(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        format!("进程退出码 {:?}", output.status.code())
+    } else {
+        stderr
+    }
+}
+
+#[cfg(windows)]
+fn same_windows_path(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_end_matches(['\\', '/'])
+            .to_ascii_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+#[cfg(not(windows))]
 fn select_shell_rc(home: &Path, shell: Option<&OsStr>) -> Result<(ShellKind, PathBuf)> {
     if let Some(shell_kind) = shell.and_then(|value| shell_kind(value.as_ref())) {
         return Ok((shell_kind, home.join(shell_kind.rc_name())));
@@ -336,6 +487,7 @@ fn select_shell_rc(home: &Path, shell: Option<&OsStr>) -> Result<(ShellKind, Pat
     }
 }
 
+#[cfg(not(windows))]
 fn shell_kind(path: &Path) -> Option<ShellKind> {
     match path.file_name().and_then(OsStr::to_str) {
         Some("bash") => Some(ShellKind::Bash),
@@ -346,6 +498,7 @@ fn shell_kind(path: &Path) -> Option<ShellKind> {
 
 fn runtime_launch_path() -> Result<PathBuf> {
     let executable = env::current_exe().context("无法确定当前运行程序的位置")?;
+    #[cfg(not(windows))]
     let executable = fs::canonicalize(&executable).unwrap_or(executable);
 
     if executable.file_name().and_then(OsStr::to_str) == Some("postui.bin") {
@@ -360,17 +513,24 @@ fn runtime_launch_path() -> Result<PathBuf> {
     Ok(executable)
 }
 
+#[cfg(not(windows))]
 fn shell_init_block(launch_path: &Path) -> String {
+    let launch_directory = launch_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let quoted_directory = shell_quote(launch_directory);
     format!(
-        "{INIT_BLOCK_START}\nalias postui={}\n{INIT_BLOCK_END}\n",
-        shell_quote(launch_path)
+        "{INIT_BLOCK_START}\ncase \":${{PATH:-}}:\" in\n  *:{quoted_directory}:*) ;;\n  *) export PATH={quoted_directory}${{PATH:+:$PATH}} ;;\nesac\n{INIT_BLOCK_END}\n"
     )
 }
 
+#[cfg(not(windows))]
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
+#[cfg(not(windows))]
 fn upsert_shell_init_block(current: &str, block: &str) -> Result<String> {
     let start_count = current.matches(INIT_BLOCK_START).count();
     let end_count = current.matches(INIT_BLOCK_END).count();
@@ -411,28 +571,63 @@ fn upsert_shell_init_block(current: &str, block: &str) -> Result<String> {
 }
 
 fn discover_global_config_path() -> Option<PathBuf> {
-    let home = env::var_os("HOME").map(PathBuf::from);
+    let home = user_home_directory();
     let mut candidates = Vec::new();
     if let Some(home) = home.as_deref() {
         candidates.push(home.join("postui.yaml"));
         candidates.push(home.join(".postui.yaml"));
     }
+    #[cfg(not(windows))]
     if home.as_deref() != Some(Path::new("/root")) {
         candidates.push(PathBuf::from("/root/postui.yaml"));
         candidates.push(PathBuf::from("/root/.postui.yaml"));
     }
-    let config_home = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home.as_deref().map(|path| path.join(".config")));
+    let config_home = config_directory(home.as_deref());
     if let Some(config_home) = config_home {
         candidates.push(config_home.join("postui/config.yaml"));
     }
-
     let found = candidates.into_iter().find(|path| path.is_file());
     if let Some(path) = &found {
         tracing::debug!(path = %path.display(), "自动发现全局配置");
     }
     found
+}
+
+fn user_home_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(PathBuf::from))
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn config_directory(home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    if let Some(path) = env::var_os("APPDATA").map(PathBuf::from) {
+        return Some(path);
+    }
+    home.map(|path| path.join(".config"))
+}
+
+fn discover_local_request_config() -> Option<PathBuf> {
+    let path = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".postui/requests.yaml");
+    if path.is_file() {
+        tracing::debug!(path = %path.display(), "自动发现当前目录请求配置");
+        Some(path)
+    } else {
+        tracing::debug!(path = %path.display(), "当前目录没有请求配置");
+        None
+    }
 }
 
 fn resolve_cli_path(path: &Path) -> PathBuf {
@@ -457,10 +652,9 @@ fn default_log_path(config_path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{
-        ShellKind, resolve_cli_path, shell_init_block, shell_kind, upsert_shell_init_block,
-    };
+    use super::resolve_cli_path;
 
+    #[cfg(unix)]
     #[test]
     fn keeps_absolute_cli_paths() {
         assert_eq!(
@@ -469,25 +663,43 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn keeps_absolute_cli_paths() {
+        assert_eq!(
+            resolve_cli_path(Path::new(r"C:\\PostUI\\config.yaml")),
+            PathBuf::from(r"C:\\PostUI\\config.yaml")
+        );
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn identifies_supported_shells() {
+        use super::{ShellKind, shell_kind};
+
         assert_eq!(shell_kind(Path::new("/bin/bash")), Some(ShellKind::Bash));
         assert_eq!(shell_kind(Path::new("/usr/bin/zsh")), Some(ShellKind::Zsh));
         assert_eq!(shell_kind(Path::new("/bin/fish")), None);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn shell_init_block_quotes_paths_and_is_repeatable() {
+        use super::{shell_init_block, upsert_shell_init_block};
+
         let block = shell_init_block(Path::new("/opt/Post UI/bin/o'reilly"));
         assert_eq!(
             block,
-            "# >>> postui init >>>\nalias postui='/opt/Post UI/bin/o'\\''reilly'\n# <<< postui init <<<\n"
+            "# >>> postui init >>>\ncase \":${PATH:-}:\" in\n  *:'/opt/Post UI/bin':*) ;;\n  *) export PATH='/opt/Post UI/bin'${PATH:+:$PATH} ;;\nesac\n# <<< postui init <<<\n"
         );
         assert_eq!(upsert_shell_init_block(&block, &block).unwrap(), block);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn shell_init_block_is_appended_after_existing_config() {
+        use super::{shell_init_block, upsert_shell_init_block};
+
         let block = shell_init_block(Path::new("/opt/postui"));
         assert_eq!(
             upsert_shell_init_block("export EDITOR=vi", &block).unwrap(),
@@ -495,8 +707,11 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn shell_init_block_rejects_incomplete_markers() {
+        use super::upsert_shell_init_block;
+
         let error = upsert_shell_init_block("# >>> postui init >>>\n", "block").unwrap_err();
         assert!(error.to_string().contains("标记不完整"));
     }

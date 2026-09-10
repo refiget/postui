@@ -8,13 +8,32 @@ use ratatui::style::Color;
 use serde::Deserialize;
 
 const DEFAULT_REQUEST_CONFIG: &str = ".postui/requests.yaml";
-const DEFAULT_THEME: &str = "ocean";
-const DEFAULT_SYNTAX_THEME: &str = "base16-ocean.dark";
+const DEFAULT_THEME: &str = "gruvbox-dark";
+pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub(crate) enum Language {
+    #[serde(rename = "en", alias = "english")]
+    #[default]
+    English,
+    #[serde(rename = "zh", alias = "chinese")]
+    Chinese,
+}
+
+impl Language {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Chinese => "zh",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct GlobalConfig {
     pub(crate) path: Option<PathBuf>,
     pub(crate) request_config: PathBuf,
+    pub(crate) language: Language,
     pub(crate) theme: UiTheme,
 }
 
@@ -42,6 +61,8 @@ pub(crate) struct UiTheme {
 struct RawGlobalConfig {
     #[serde(default = "default_request_config")]
     request_config: PathBuf,
+    #[serde(default)]
+    language: Language,
     #[serde(default = "default_theme")]
     theme: String,
     #[serde(default)]
@@ -109,6 +130,7 @@ impl Default for GlobalConfig {
         Self {
             path: None,
             request_config: PathBuf::from(DEFAULT_REQUEST_CONFIG),
+            language: Language::default(),
             theme: UiTheme::default(),
         }
     }
@@ -118,18 +140,18 @@ impl Default for UiTheme {
     fn default() -> Self {
         Self {
             name: DEFAULT_THEME.to_string(),
-            primary: Color::Rgb(125, 211, 252),
-            secondary: Color::Rgb(251, 191, 36),
-            accent: Color::Rgb(125, 211, 252),
-            background: Color::Rgb(11, 17, 32),
-            surface: Color::Rgb(17, 24, 39),
-            text: Color::Rgb(248, 250, 252),
-            muted: Color::Rgb(148, 163, 184),
-            error: Color::Rgb(248, 113, 113),
-            success: Color::Rgb(74, 222, 128),
-            warning: Color::Rgb(251, 191, 36),
-            selection: Color::Rgb(30, 41, 59),
-            variable: Color::Rgb(192, 132, 252),
+            primary: Color::Rgb(131, 165, 152),
+            secondary: Color::Rgb(250, 189, 47),
+            accent: Color::Rgb(142, 192, 124),
+            background: Color::Rgb(40, 40, 40),
+            surface: Color::Rgb(60, 56, 54),
+            text: Color::Rgb(235, 219, 178),
+            muted: Color::Rgb(168, 153, 132),
+            error: Color::Rgb(251, 73, 52),
+            success: Color::Rgb(184, 187, 38),
+            warning: Color::Rgb(254, 128, 25),
+            selection: Color::Rgb(80, 73, 69),
+            variable: Color::Rgb(211, 134, 155),
             syntax_theme: DEFAULT_SYNTAX_THEME.to_string(),
             highlight_enabled: true,
         }
@@ -144,6 +166,7 @@ pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
     tracing::debug!(
         path = %path.display(),
         request_config = %global.request_config.display(),
+        language = global.language.as_str(),
         theme = %global.theme.name,
         syntax_theme = %global.theme.syntax_theme,
         highlight_enabled = global.theme.highlight_enabled,
@@ -155,6 +178,7 @@ pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
 pub(crate) fn default_config() -> GlobalConfig {
     tracing::debug!(
         request_config = %DEFAULT_REQUEST_CONFIG,
+        language = Language::default().as_str(),
         theme = DEFAULT_THEME,
         "未找到全局配置，使用内置默认配置"
     );
@@ -174,7 +198,7 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
     } else {
         built_in_theme(&raw.theme).ok_or_else(|| {
             anyhow::anyhow!(
-                "未知内置主题: {}；可选 ocean、nord、mono，或设置 theme_file",
+                "未知内置主题: {}；可选 gruvbox-dark、ocean、nord、mono，或设置 theme_file",
                 raw.theme
             )
         })?
@@ -195,25 +219,26 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
         .highlight
         .variable
         .or(raw_theme.variable.take())
-        .unwrap_or_else(|| "#c084fc".to_string());
+        .unwrap_or_else(|| "#d3869b".to_string());
 
     Ok(GlobalConfig {
         path: Some(path.to_path_buf()),
         request_config,
+        language: raw.language,
         theme: UiTheme {
             name: theme_name,
-            primary: color("primary", raw_theme.primary, "#7dd3fc")?,
-            secondary: color("secondary", raw_theme.secondary, "#fbbf24")?,
-            accent: color("accent", raw_theme.accent, "#7dd3fc")?,
-            background: color("background", raw_theme.background, "#0b1120")?,
-            surface: color("surface", raw_theme.surface, "#111827")?,
-            text: color("text", raw_theme.text, "#f8fafc")?,
-            muted: color("muted", raw_theme.muted, "#94a3b8")?,
-            error: color("error", raw_theme.error, "#f87171")?,
-            success: color("success", raw_theme.success, "#4ade80")?,
-            warning: color("warning", raw_theme.warning, "#fbbf24")?,
-            selection: color("selection", raw_theme.selection, "#1e293b")?,
-            variable: color("variable", Some(variable), "#c084fc")?,
+            primary: color("primary", raw_theme.primary, "#83a598")?,
+            secondary: color("secondary", raw_theme.secondary, "#fabd2f")?,
+            accent: color("accent", raw_theme.accent, "#8ec07c")?,
+            background: color("background", raw_theme.background, "#282828")?,
+            surface: color("surface", raw_theme.surface, "#3c3836")?,
+            text: color("text", raw_theme.text, "#ebdbb2")?,
+            muted: color("muted", raw_theme.muted, "#a89984")?,
+            error: color("error", raw_theme.error, "#fb4934")?,
+            success: color("success", raw_theme.success, "#b8bb26")?,
+            warning: color("warning", raw_theme.warning, "#fe8019")?,
+            selection: color("selection", raw_theme.selection, "#504945")?,
+            variable: color("variable", Some(variable), "#d3869b")?,
             syntax_theme,
             highlight_enabled: raw.highlight.enabled,
         },
@@ -287,6 +312,22 @@ fn named_color(value: &str) -> Option<Color> {
 
 fn built_in_theme(name: &str) -> Option<RawTheme> {
     let mut theme = match name.trim().to_ascii_lowercase().as_str() {
+        "gruvbox-dark" | "gruvbox dark" | "gruvbox" => RawTheme {
+            name: Some("gruvbox-dark".to_string()),
+            primary: Some("#83a598".to_string()),
+            secondary: Some("#fabd2f".to_string()),
+            accent: Some("#8ec07c".to_string()),
+            background: Some("#282828".to_string()),
+            surface: Some("#3c3836".to_string()),
+            text: Some("#ebdbb2".to_string()),
+            muted: Some("#a89984".to_string()),
+            error: Some("#fb4934".to_string()),
+            success: Some("#b8bb26".to_string()),
+            warning: Some("#fe8019".to_string()),
+            selection: Some("#504945".to_string()),
+            variable: Some("#d3869b".to_string()),
+            syntax: Some(DEFAULT_SYNTAX_THEME.to_string()),
+        },
         "ocean" | "default" => RawTheme {
             name: Some("ocean".to_string()),
             primary: Some("#7dd3fc".to_string()),
@@ -301,7 +342,7 @@ fn built_in_theme(name: &str) -> Option<RawTheme> {
             warning: Some("#fbbf24".to_string()),
             selection: Some("#1e293b".to_string()),
             variable: Some("#c084fc".to_string()),
-            syntax: Some(DEFAULT_SYNTAX_THEME.to_string()),
+            syntax: Some("base16-ocean.dark".to_string()),
         },
         "nord" => RawTheme {
             name: Some("nord".to_string()),
@@ -359,9 +400,19 @@ mod tests {
 
     #[test]
     fn built_in_theme_has_configurable_colors() {
-        let theme = built_in_theme("ocean").expect("内置主题应存在");
+        let theme = built_in_theme("gruvbox-dark").expect("Gruvbox Dark 主题应存在");
         assert_eq!(theme.syntax.as_deref(), Some(DEFAULT_SYNTAX_THEME));
-        assert_eq!(theme.variable.as_deref(), Some("#c084fc"));
+        assert_eq!(theme.variable.as_deref(), Some("#d3869b"));
+    }
+
+    #[test]
+    fn language_defaults_to_english_and_accepts_chinese() {
+        let default: RawGlobalConfig = serde_yaml::from_str("theme: gruvbox-dark").unwrap();
+        assert_eq!(default.language, Language::English);
+
+        let chinese: RawGlobalConfig =
+            serde_yaml::from_str("language: zh\ntheme: gruvbox-dark").unwrap();
+        assert_eq!(chinese.language, Language::Chinese);
     }
 
     #[test]
@@ -377,11 +428,17 @@ mod tests {
     }
 
     #[test]
-    fn loads_repository_global_config() {
-        let config = load(Path::new("config.yaml")).expect("全局配置应当可以加载");
+    fn normalizes_default_global_config() {
+        let raw: RawGlobalConfig = serde_yaml::from_str(
+            "request_config: .postui/requests.yaml\nlanguage: en\ntheme: gruvbox-dark",
+        )
+        .unwrap();
+        let config =
+            normalize(Path::new("/tmp/postui/config.yaml"), raw).expect("全局配置应当可以规范化");
         assert!(config.path.is_some());
         assert!(config.request_config.ends_with(".postui/requests.yaml"));
-        assert_eq!(config.theme.name, "ocean");
+        assert_eq!(config.language, Language::English);
+        assert_eq!(config.theme.name, "gruvbox-dark");
         assert!(config.theme.highlight_enabled);
     }
 }

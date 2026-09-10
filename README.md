@@ -1,214 +1,283 @@
 # PostUI
 
-PostUI 是一个只支持 Linux amd64（x86_64）的终端 HTTP 请求工具。它从 YAML 或 JSON 读取接口定义，在界面中选择请求、填写变量、查看最终请求，并发送到目标服务。应用配置与请求集合分开：全局配置负责主题和高亮，请求配置负责接口、变量和上传目录。
+PostUI 是一个配置驱动的终端接口测试工具，适用于需要快速发送固定接口请求的场景。
 
-## 快速开始
+界面以鼠标操作为主，同时保留 Vim 风格快捷键作为辅助。
 
-需要 Rust stable 和网络访问。开发时建议显式指定全局配置：
+## 运行
 
-~~~bash
-cargo run -- --config config.yaml
-~~~
+### 发布目录
 
-构建 Linux amd64 静态 release 版本：
+发布目录需要至少包含：
 
-~~~bash
+```text
+postui                 # 启动脚本
+postui.bin             # 二进制文件
+config.yaml            # 全局配置
+.postui/requests.yaml  # 请求集合
+```
+
+进入目录后运行：
+
+```bash
+./postui
+```
+
+从发布目录启动时，启动脚本会使用发布目录中的 `config.yaml`；从其他目录启动时，如果当前目录存在 `.postui/requests.yaml`，则优先使用当前项目的请求集合。`postui init` 会把当前程序所在目录加入当前用户 `~/.zshrc` 或 `~/.bashrc` 的 `PATH`，随后执行提示中的 `source` 命令即可使用 `postui`。
+
+Windows amd64 发布目录包含：
+
+```text
+postui.exe             # 二进制文件
+config.yaml            # 全局配置
+.postui/requests.yaml  # 请求集合
+```
+
+在 PowerShell 中运行：
+
+```powershell
+.\postui.exe --config .\config.yaml --requests .\.postui\requests.yaml
+```
+
+安装后，程序会从 `%APPDATA%\postui\config.yaml` 读取用户配置；直接运行未安装的发布目录时请显式指定配置文件。`postui init` 只修改当前用户的 PATH（HKCU），不会写入系统 PATH，也不需要管理员权限；执行后重新打开 PowerShell 即可使用 `postui`。
+
+### 安装
+
+安装命令暂不在文档中展开，后续统一提供一键安装方式。
+
+### 从源码运行
+
+```bash
+cargo run -- --config ./config.yaml
+```
+
+构建 Linux amd64 静态版本：
+
+```bash
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
-./target/x86_64-unknown-linux-musl/release/postui --config config.yaml
-~~~
+./target/x86_64-unknown-linux-musl/release/postui --config ./config.yaml
+```
 
-需要在构建机安装 `musl-tools`。生成的二进制不依赖 glibc、动态 loader 或项目自带运行库。
+构建机需要安装 Rust 的 `rustfmt`、`clippy` 和 musl 工具链。
 
-首次使用发布目录中的程序时，可以让当前 shell 记住程序的实际路径：
+Windows 10 amd64 使用 MSVC 目标构建：
 
-~~~bash
-./postui init
-~~~
+```powershell
+rustup target add x86_64-pc-windows-msvc
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+cargo build --release --target x86_64-pc-windows-msvc
+Copy-Item .\target\x86_64-pc-windows-msvc\release\postui.exe .\postui.exe
+```
 
-命令会根据 `$SHELL` 更新 `~/.bashrc` 或 `~/.zshrc`，并且重复执行只会更新 PostUI 自己的标记区块。执行完成后按提示 `source` 对应文件，或重新打开终端即可使用 `postui`。
+Windows 构建使用原生 MSVC 工具链；`+crt-static` 用于减少对 VC 运行库安装的依赖，但仍依赖 Windows 系统 DLL。项目只发布 Windows x86_64，不提供 32 位或 ARM 版本。
 
-开发检查依赖如下：
+在 Windows 构建个人发布包（读取本地的 `config.yaml` 和 `.postui/requests.yaml`，不会把它们加入 Git）可以运行：
 
-- Rust stable 1.85 或更高版本，并启用 `rustfmt`、`clippy` 组件。
-- Python 3.10 或更高版本及 `microsoft/tui-test` CLI 仅用于本机测试，不属于发布运行依赖。
+```powershell
+.\package-windows.ps1
+```
 
-发布目录中放有 `postui`、静态 `postui.bin`、`config.yaml` 和 `.postui/requests.yaml` 时，进入该目录后执行：
+默认输出到 `打包区\postui-windows-amd64.zip`。也可以用 `-ConfigPath`、`-RequestsPath` 和 `-OutputDir` 指定输入及输出位置。
 
-~~~bash
-./postui
-~~~
+### 全局配置查找顺序
 
-排查问题时使用 debug 构建并开启文件日志：
+程序按以下顺序寻找全局配置：
 
-~~~bash
-cargo run -- --debug --config config.yaml
-~~~
+1. `--config <文件>`。
+2. Linux 的 `$HOME/postui.yaml`、`$HOME/.postui.yaml`；`HOME` 不是 `/root` 时也会检查 `/root` 下的同名文件。Windows 的 `%USERPROFILE%\postui.yaml`、`%USERPROFILE%\.postui.yaml`。
+3. Linux 的 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`；Windows 的 `%APPDATA%\postui\config.yaml`。
 
-默认日志写入配置文件目录下的 logs/postui-debug.log；也可以指定路径：
+显式指定的文件读取失败会直接报错，不会继续查找其他位置。没有显式指定 `--config` 或 `--requests` 时，程序优先读取当前目录的 `.postui/requests.yaml`，再使用全局配置的 `request_config`；两者都没有时使用内置配置路径并按文件不存在处理。
 
-~~~bash
-cargo run -- --debug --log-file ./logs/postui-debug.log --config config.yaml
-~~~
+请求集合也可以单独覆盖：
 
-debug 日志包含终端事件、界面操作、变量和剪贴板状态、请求构造、上传文件读取、响应头、响应体和错误上下文。请求体和响应体单字段最多记录 64 KiB；日志文件达到 8 MiB 后轮转为 .1，避免排障日志无限增长。请求头、表单字段、查询参数和 JSON 对象中名称包含 Authorization、Cookie、Token、Secret、Password 或 API key 的值会隐藏。--debug 仅在 debug 构建中可用，release 二进制不会生成这类日志。
+```bash
+postui --config ./config.yaml --requests ./.postui/other.yaml
+```
 
-也可以用 `--requests` 临时切换请求集合：
+## 界面操作
 
-~~~bash
-cargo run -- --config ./config.yaml --requests ./.postui/my-api.yaml
-~~~
+「粘贴」优先使用系统原生剪贴板接口。Linux 如果不可用，会尝试 `wl-paste`、`xclip` 或 `xsel`；Windows 会尝试系统 PowerShell 的 `Get-Clipboard`。
 
-全局配置的查找优先级为：启动时显式指定的 `--config`；Home/root 目录下的 `postui.yaml` 或 `.postui.yaml`；`$XDG_CONFIG_HOME/postui/config.yaml` 或 `~/.config/postui/config.yaml`。三处都没有时使用内置默认 UI 配置，不再自动读取可执行文件同目录的配置。
+## Debug 日志
 
-## 操作
+`--debug` 只在 debug 构建中可用：
 
-界面以鼠标操作为主，也保留键盘快捷键：
+```bash
+cargo run -- --debug --config ./config.yaml
+cargo run -- --debug --log-file ./logs/postui-debug.log --config ./config.yaml
+```
 
-- 点击接口行可直接切换；点击左侧标题可打开接口选择层。
-- 当前接口用到的变量会全部列出；点击变量行即可编辑，行末「清空」会清除该变量。
-- 变量行的「填入」会读取系统剪贴板，响应区配置的「提取」会把指定响应字段复制到系统剪贴板。
-- 点击信息区的「发送」按钮发送当前请求；在接口和变量列表上滚动可移动选择。
+日志包含终端事件、界面操作、配置加载、请求构造、文件读取、请求头、响应头、响应体和错误上下文。单个日志字段最多记录 64 KiB；文件达到 8 MiB 后轮转为 `.1`。Authorization、Cookie、Token、Secret、Password、API key 等字段会隐藏，剪贴板文本不会写入日志。
 
-界面使用 ratatui 原生的 Block、Paragraph、List 和 Table 组件。窗口变窄时会收窄接口栏，必要时将接口列表移到上方，并让发送、变量操作和响应提取列采用紧凑布局；窗口太小无法容纳边框时会优先保留内容和点击区域。
-
-预览和响应区中的 JSON 使用 syntect 的 JSON 语法高亮；接口地址、说明、状态提示、变量列表和响应提取目标中的双括号变量使用统一的变量色显示。
-
-| 按键 | 作用 |
-| --- | --- |
-| ↑ / ↓、j / k | 移动接口或变量 |
-| Tab / Shift+Tab | 切换接口、变量和发送区域 |
-| Enter | 打开接口选择；在变量区开始编辑；在发送区发送 |
-| r | 发送当前请求 |
-| c / x / Delete | 清空当前变量 |
-| 编辑时 Enter | 保存变量 |
-| 编辑时 Esc | 放弃修改 |
-| 编辑时 Ctrl+u | 清空输入 |
-| q / Esc / Ctrl+c | 退出；下拉框和编辑状态会优先关闭 |
-
-变量在整个会话中共享，但变量区只显示当前请求实际用到的名称。配置中的 default 是启动时的默认值；清空或编辑只影响当前运行，不会写回文件。重新打开 PostUI 后会恢复默认值。
-
-### 麒麟、统信桌面环境的剪贴板
-
-「填入」和「提取」优先使用原生 X11 或 Wayland 剪贴板。原生连接不可用时，Wayland 会尝试 `wl-copy`/`wl-paste`，X11 会尝试 `xclip`、`xsel`。如果按钮提示剪贴板不可用，请从系统软件源安装对应工具：Wayland 通常为 `wl-clipboard`，X11 通常为 `xclip` 或 `xsel`。开启 `--debug` 后，日志会记录实际尝试的后端和失败原因，不记录剪贴板文本内容。
+默认路径是全局配置所在目录的 `logs/postui-debug.log`；没有全局配置时使用当前目录的 `logs/postui-debug.log`。release 二进制不包含 debug 日志写入器，使用 `--debug` 会报错。
 
 ## 配置文件
 
-当前开发版只使用下面这种分层格式，不再接受旧的 method、url、body、form、files 字段。
+配置可以使用 YAML；文件扩展名为 `.json` 时使用 JSON 解析。当前版本只接受下面的格式，未知字段会在加载时报告错误。
 
-全局配置（例如 `config.yaml`）只负责选择请求集合和界面样式：
+### 全局配置
 
-~~~yaml
+全局配置只决定请求集合和界面样式：
+
+```yaml
 request_config: .postui/requests.yaml
-theme: ocean
+language: en
+theme: gruvbox-dark
 
 highlight:
   enabled: true
-  syntax: base16-ocean.dark
-  variable: "#c084fc"
-~~~
+  syntax: base16-mocha.dark
+  variable: "#d3869b"
+```
 
-支持的内置主题为 `ocean`、`nord`、`mono`。需要自定义颜色时，用 `theme_file` 指向主题 YAML：
+`language` 可填写 `en` 或 `zh`，默认是 `en`。`request_config` 和 `theme_file` 的相对路径都以全局配置文件所在目录为基准。
 
-~~~yaml
-theme: ocean
+`theme` 选择 PostUI 内置主题，默认是 `gruvbox-dark`。当前可用的内置主题有 `gruvbox-dark`、`ocean`、`nord` 和 `mono`。
+
+需要自定义颜色时，用 `theme_file` 指向一个主题 YAML 或 JSON 文件：
+
+```yaml
+theme: gruvbox-dark
 theme_file: themes/custom.yaml
-~~~
+```
 
-主题文件支持 `primary`、`secondary`、`accent`、`background`、`surface`、`text`、`muted`、`error`、`success`、`warning`、`selection`、`variable` 和 `syntax`。颜色可以写成 `#RRGGBB` 或 ratatui 的标准颜色名。`highlight.syntax` 和主题文件的 `syntax` 使用 syntect 内置语法主题名，`highlight` 中的值优先级更高。
+主题文件中的字段位于顶层：
 
-请求集合默认放在项目的 `.postui/` 目录中（例如 `.postui/requests.yaml`），只负责接口和运行时数据：
+```yaml
+name: custom-dark
+primary: "#83a598"
+secondary: "#fabd2f"
+accent: "#8ec07c"
+background: "#282828"
+surface: "#3c3836"
+text: "#ebdbb2"
+muted: "#a89984"
+error: "#fb4934"
+success: "#b8bb26"
+warning: "#fe8019"
+selection: "#504945"
+variable: "#d3869b"
+syntax: base16-mocha.dark
+```
 
-~~~yaml
+### 请求集合
+
+默认文件是当前工作目录下的 `.postui/requests.yaml`。首次成功解析后，会在同目录生成 `.postui/requests.cache.json`；配置文件内容变化时缓存自动失效并重新解析：
+
+```yaml
 name: 我的接口
-file_directory: "../files" # 请求集合在 .postui/ 时，文件目录位于项目根目录/files
+file_directory: ../files
+download_directory: tmp
 timeout_seconds: 30
 
 variables:
+  - name: host
+    default: https://api.example.com
   - name: token
   - name: user_id
 
 requests:
-  - name: 用户列表
+  - id: user-list
+    name: 用户列表
     description: 查询用户列表。
     request: |
-      curl --location "https://api.example.com/users" \
+      curl --location "{{host}}/users" \
         --header "Authorization: Bearer {{token}}"
 
-  - name: 用户详情
+  - id: user-detail
+    name: 用户详情
     description: 查询指定用户。
+    timeout_seconds: 10
     request: |
-      curl --location "https://api.example.com/users/{{user_id}}"
-~~~
+      curl --location "{{host}}/users/{{user_id}}"
+```
 
-请求集合字段：
+字段说明：
 
-- name：界面标题，可省略。
-- file_directory：上传文件的根目录。相对路径以请求集合文件所在目录为基准，默认是 files。
-- timeout_seconds：请求超时时间，默认 30 秒。
-- variables：变量声明列表。
-- requests：请求列表。
+- `name`：请求集合名称，可省略。
+- `file_directory`：上传文件的根目录，默认是 `files`。相对路径以请求集合文件所在目录为基准。
+- `download_directory`：下载文件的根目录，默认是 `tmp`。相对路径以请求集合文件所在目录为基准；默认请求集合位于 `.postui/requests.yaml` 时，文件保存到 `.postui/tmp/`。
+- `timeout_seconds`：集合级请求超时时间，默认 30 秒；写成 0 也使用 30 秒。单个接口也可以设置同名字段覆盖集合级值。
+- `variables`：变量声明列表。`default` 可省略，省略后初始为空。
+- `requests`：接口列表。`id` 可省略，省略时按顺序生成；`name`、`description`、`request` 分别是名称、说明和 curl 文本；`timeout_seconds` 可覆盖集合级超时。
 
-变量的 default 可省略。省略后变量初始为空，但仍然会显示在当前请求的变量列表中。请求中使用的变量必须提前声明，这样可以在加载配置时直接发现拼写错误。
+请求中出现的变量必须在 `variables` 中声明。变量既可以写成 `{{host}}`，也可以在 `extract` 的键中写成 `{{task_id}}`。
 
-request 是一段不会被执行的 curl 文本。它可以是普通 YAML 多行字符串，也可以包裹在 bash、sh 或普通代码块中。代码块中的反斜杠换行会被自动合并，随后使用 shell 引号规则拆分参数。
+### curl 请求
 
-支持的常用 curl 参数：
-
-- -X、--request：请求方法。
-- -H、--header：请求头。
-- -d、--data、--data-raw、--data-binary、--json：请求体。
-- --data-urlencode：在变量展开后对字段或请求体片段进行 URL 编码。
-- -F、--form、--form-string：普通表单和文件上传。
-- -G、--get：将 data 参数放入查询字符串。
-- --location、--compressed 等不影响请求内容的选项会被忽略。
-- -b、--cookie、-A、--user-agent、-e、--referer 会转换成对应请求头。
-
-文件上传直接使用 curl 的 form 写法：
+`request` 是一段静态 curl 文本，不会执行 shell。可以直接写多行文本，也可以放在 `bash`、`sh` 或普通代码块中：
 
 ~~~yaml
 request: |
-  curl --request POST "https://api.example.com/upload" \
+  ```bash
+  curl --request POST "{{host}}/upload" \
+    --header "Authorization: Bearer {{token}}" \
     --form "file=@{{upload_file}};type=text/plain;filename={{upload_name}}" \
     --form-string "note={{note}}"
+  ```
 ~~~
 
-文件路径是 file_directory 下的文件名或相对路径；绝对路径也可以直接使用。请求体会保持 curl 中的原始文本，合法 JSON 会在预览中自动进行 JSON 染色。
-
-### 返回变量提取
-
-使用 extract 将 JSON 响应中的字段复制到剪贴板：
+解析器会合并反斜杠换行和 PowerShell 反引号换行，并按静态命令参数拆分文本，但不会执行命令替换、管道、重定向或多个命令。PowerShell 中请使用 `curl.exe`，不要使用会被 PowerShell 解析为 `Invoke-WebRequest` 的 `curl` 别名：
 
 ~~~yaml
+request: |
+  ```powershell
+  curl.exe --request GET "https://example.test/items/{{item_id}}" `
+    --header "Accept: application/json"
+  ```
+~~~
+
+支持的 curl 参数：
+
+- `-X`、`--request`、`--url`。
+- `-H`、`--header`。
+- `-d`、`--data`、`--data-raw`、`--data-binary`、`--json`、`--data-urlencode`。
+- `-F`、`--form`、`--form-string`。
+- `-G`、`--get`，把 data 参数放进查询字符串。
+- `-o`、`--output`，把响应保存为指定文件；相对路径位于 `download_directory` 下。
+- `-O`、`--remote-name`、`-J`、`--remote-header-name`，按 URL 或 `Content-Disposition` 文件名保存响应。
+- `-b`、`--cookie`、`-A`、`--user-agent`、`-e`、`--referer`，会转换成请求头。
+- `--location`、`--compressed`、`--silent` 等不影响请求内容的选项会被忽略。
+
+文件上传使用 `--form` 的 `@` 写法。路径相对 `file_directory`，也可以写绝对路径：
+
+```yaml
+request: |
+  curl --request POST "{{host}}/files" \
+    --form "file=@{{upload_file}};type=application/pdf"
+```
+
+`--data-urlencode` 会在变量展开后编码字段；合法 JSON 请求体会在「预览」和响应区使用 JSON 高亮。
+
+带有输出参数的 curl 请求会按字节保存响应，不会把二进制内容当作文本显示。没有输出参数、但请求或响应表明内容是附件/二进制文件时，也会自动保存到默认目录。响应区会显示实际保存路径；重复发送同一个下载请求会覆盖同名文件。
+
+### 返回字段提取
+
+用 `extract` 声明响应字段和目标变量：
+
+```yaml
 requests:
   - name: 创建任务
     description: 创建任务并提取任务 ID。
     request: |
-      curl --request POST "https://api.example.com/tasks" \
+      curl --request POST "{{host}}/tasks" \
         --header "Content-Type: application/json" \
         --data-raw '{"name":"{{task_name}}"}'
     extract:
       task_id: data.taskId
-~~~
+      first_file: data.files[0].fileId
+      status: /data/status
+```
 
-extract 的键是目标变量名，值是响应路径。路径支持点路径、数组下标和 JSON Pointer：
-
-~~~yaml
-extract:
-  task_id: data.taskId
-  first_file: data.files[0].fileId
-  status: /data/status
-~~~
-
-请求完成后，在响应区点击「提取」即可把字段值复制到系统剪贴板；再在变量列表点击对应行的「填入」，即可写入当前运行时变量。
-
-解析器只处理静态 curl 参数，不执行 shell 命令替换、管道、重定向或多个命令。无法识别的 curl 参数会在配置加载时给出明确错误。
+请求成功后，配置了 `extract` 的变量会在 Variables 区显示「提取」按钮。点击「提取」会按路径从当前接口最近一次成功响应的 JSON 中取值，并直接写入全局变量；「粘贴」从系统剪贴板写入变量，「清理」只清理本次运行的变量值。响应区不提供提取按钮。路径支持点号路径、数组下标和 JSON Pointer；响应必须是 JSON。
 
 ## 开发检查
 
-~~~bash
+```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
-~~~
+```

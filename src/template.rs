@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::config::{ApiRequest, BodyPart};
+use crate::config::{ApiRequest, BodyPart, DownloadTarget};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -12,6 +12,7 @@ pub(crate) struct ResolvedRequest {
     pub(crate) raw_body: Option<String>,
     pub(crate) form: BTreeMap<String, String>,
     pub(crate) files: Vec<ResolvedFile>,
+    pub(crate) download: Option<DownloadTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,15 @@ pub(crate) fn resolve_request(
                     .map(|value| expand_text(value, variables)),
             })
             .collect(),
+        download: request.download.as_ref().map(|target| match target {
+            DownloadTarget::Path(path) => DownloadTarget::Path(expand_text(path, variables)),
+            DownloadTarget::RemoteName {
+                use_content_disposition,
+            } => DownloadTarget::RemoteName {
+                use_content_disposition: *use_content_disposition,
+            },
+            DownloadTarget::Auto => DownloadTarget::Auto,
+        }),
     }
 }
 
@@ -90,6 +100,9 @@ pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
             names.insert(variable.to_string());
         }
     }
+    if let Some(DownloadTarget::Path(path)) = &request.download {
+        collect_text(path, &mut names);
+    }
     names.into_iter().collect()
 }
 
@@ -110,6 +123,9 @@ pub(crate) fn unresolved_request_names(request: &ResolvedRequest) -> Vec<String>
         if let Some(content_type) = &file.content_type {
             collect_text(content_type, &mut names);
         }
+    }
+    if let Some(DownloadTarget::Path(path)) = &request.download {
+        collect_text(path, &mut names);
     }
     names.into_iter().collect()
 }
@@ -312,12 +328,14 @@ mod tests {
             name: "Health".to_string(),
             method: "GET".to_string(),
             url: "https://example.com/health/{{version}}".to_string(),
+            timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
             body_parts: Vec::new(),
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
+            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([("version".to_string(), "v1".to_string())]);
@@ -332,12 +350,14 @@ mod tests {
             name: "任务时间线".to_string(),
             method: "GET".to_string(),
             url: "http://172.16.68.42/gmp/tasks/{{task_id}}".to_string(),
+            timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
             body_parts: Vec::new(),
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
+            download: None,
             extracts: Vec::new(),
         };
         assert_eq!(
@@ -353,6 +373,7 @@ mod tests {
             name: "Create".to_string(),
             method: "POST".to_string(),
             url: "/users".to_string(),
+            timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
             body_parts: vec![BodyPart::Raw(
@@ -361,6 +382,7 @@ mod tests {
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
+            download: None,
             extracts: Vec::new(),
         };
         assert_eq!(variable_names(&request), vec!["name"]);
@@ -373,6 +395,7 @@ mod tests {
             name: "Upload".to_string(),
             method: "POST".to_string(),
             url: "/upload".to_string(),
+            timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
             body_parts: Vec::new(),
@@ -384,6 +407,7 @@ mod tests {
                 filename: Some("{{file_name}}".to_string()),
                 content_type: Some("text/plain".to_string()),
             }],
+            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([
@@ -404,18 +428,47 @@ mod tests {
             name: "Search".to_string(),
             method: "GET".to_string(),
             url: "http://localhost/search".to_string(),
+            timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
             body_parts: Vec::new(),
             query_parts: vec![BodyPart::UrlEncoded("q={{query}}".to_string())],
             form: BTreeMap::new(),
             files: Vec::new(),
+            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([(String::from("query"), String::from("a b&c"))]);
         let resolved = resolve_request(&request, &variables);
 
         assert_eq!(resolved.url, "http://localhost/search?q=a%20b%26c");
+    }
+
+    #[test]
+    fn expands_download_path_variables() {
+        let request = ApiRequest {
+            id: "download".to_string(),
+            name: "Download".to_string(),
+            method: "GET".to_string(),
+            url: "https://example.test/report".to_string(),
+            timeout_seconds: 30,
+            description: String::new(),
+            headers: BTreeMap::new(),
+            body_parts: Vec::new(),
+            query_parts: Vec::new(),
+            form: BTreeMap::new(),
+            files: Vec::new(),
+            download: Some(DownloadTarget::Path("{{file_name}}".to_string())),
+            extracts: Vec::new(),
+        };
+        let variables = BTreeMap::from([(String::from("file_name"), String::from("report.pdf"))]);
+        let resolved = resolve_request(&request, &variables);
+
+        assert_eq!(
+            resolved.download,
+            Some(DownloadTarget::Path("report.pdf".to_string()))
+        );
+        assert_eq!(variable_names(&request), vec!["file_name"]);
     }
 
     #[test]

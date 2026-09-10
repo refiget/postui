@@ -1,7 +1,4 @@
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::process::Command;
 
 use arboard::Clipboard;
 
@@ -12,63 +9,46 @@ pub(crate) struct SystemClipboard {
 
 #[derive(Clone, Copy, Debug)]
 enum CommandClipboard {
+    #[cfg(not(windows))]
     Wayland,
+    #[cfg(not(windows))]
     Xclip,
+    #[cfg(not(windows))]
     Xsel,
+    #[cfg(windows)]
+    PowerShell,
 }
 
 impl CommandClipboard {
-    fn copy_command(self) -> (&'static str, &'static [&'static str]) {
+    fn command(self) -> (&'static str, &'static [&'static str], &'static str) {
         match self {
-            Self::Wayland => ("wl-copy", &["--type", "text/plain;charset=utf-8"]),
-            Self::Xclip => ("xclip", &["-selection", "clipboard", "-in"]),
-            Self::Xsel => ("xsel", &["--clipboard", "--input"]),
-        }
-    }
-
-    fn paste_command(self) -> (&'static str, &'static [&'static str]) {
-        match self {
+            #[cfg(not(windows))]
             Self::Wayland => (
                 "wl-paste",
                 &["--no-newline", "--type", "text/plain;charset=utf-8"],
+                "wl-clipboard",
             ),
-            Self::Xclip => ("xclip", &["-selection", "clipboard", "-out"]),
-            Self::Xsel => ("xsel", &["--clipboard", "--output"]),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Wayland => "wl-clipboard",
-            Self::Xclip => "xclip",
-            Self::Xsel => "xsel",
+            #[cfg(not(windows))]
+            Self::Xclip => ("xclip", &["-selection", "clipboard", "-out"], "xclip"),
+            #[cfg(not(windows))]
+            Self::Xsel => ("xsel", &["--clipboard", "--output"], "xsel"),
+            #[cfg(windows)]
+            Self::PowerShell => (
+                "powershell.exe",
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write((Get-Clipboard -Raw))",
+                ],
+                "PowerShell",
+            ),
         }
     }
 }
 
 impl SystemClipboard {
-    pub(crate) fn set_text(&mut self, value: &str) -> Result<(), String> {
-        tracing::debug!(
-            value_bytes = value.len(),
-            session = %desktop_session(),
-            "写入系统剪贴板"
-        );
-        match self.set_text_native(value) {
-            Ok(()) => {
-                tracing::debug!(backend = "arboard", "系统剪贴板写入完成");
-                Ok(())
-            }
-            Err(native_error) => {
-                tracing::warn!(error = %native_error, "原生剪贴板写入失败，尝试命令行回退");
-                self.set_text_command(value).map_err(|command_error| {
-                    let error = clipboard_error(&native_error, &command_error);
-                    tracing::error!(error = %error, "系统剪贴板写入失败");
-                    error
-                })
-            }
-        }
-    }
-
     pub(crate) fn get_text(&mut self) -> Result<String, String> {
         tracing::debug!(session = %desktop_session(), "读取系统剪贴板");
         match self.get_text_native() {
@@ -91,52 +71,28 @@ impl SystemClipboard {
         }
     }
 
-    fn set_text_native(&mut self, value: &str) -> Result<(), String> {
-        self.get_or_init()?
-            .set_text(value)
-            .map_err(|error| format!("原生剪贴板写入失败: {error}"))
-    }
-
     fn get_text_native(&mut self) -> Result<String, String> {
         self.get_or_init()?
             .get_text()
             .map_err(|error| format!("原生剪贴板读取失败: {error}"))
     }
 
-    fn set_text_command(&self, value: &str) -> Result<(), String> {
-        let mut errors = Vec::new();
-        for backend in command_backends() {
-            let (program, arguments) = backend.copy_command();
-            match write_command(program, arguments, value) {
-                Ok(()) => {
-                    tracing::debug!(backend = backend.label(), "命令行剪贴板写入完成");
-                    return Ok(());
-                }
-                Err(error) => {
-                    tracing::debug!(backend = backend.label(), error = %error, "命令行剪贴板写入不可用");
-                    errors.push(format!("{}: {error}", backend.label()));
-                }
-            }
-        }
-        Err(command_error_message(errors))
-    }
-
     fn get_text_command(&self) -> Result<String, String> {
         let mut errors = Vec::new();
         for backend in command_backends() {
-            let (program, arguments) = backend.paste_command();
+            let (program, arguments, label) = backend.command();
             match read_command(program, arguments) {
                 Ok(value) => {
                     tracing::debug!(
-                        backend = backend.label(),
+                        backend = label,
                         value_bytes = value.len(),
                         "命令行剪贴板读取完成"
                     );
                     return Ok(value);
                 }
                 Err(error) => {
-                    tracing::debug!(backend = backend.label(), error = %error, "命令行剪贴板读取不可用");
-                    errors.push(format!("{}: {error}", backend.label()));
+                    tracing::debug!(backend = label, error = %error, "命令行剪贴板读取不可用");
+                    errors.push(format!("{label}: {error}"));
                 }
             }
         }
@@ -159,57 +115,46 @@ impl SystemClipboard {
 }
 
 fn command_backends() -> Vec<CommandClipboard> {
-    let mut backends = Vec::with_capacity(3);
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        backends.push(CommandClipboard::Wayland);
+    #[cfg(windows)]
+    {
+        vec![CommandClipboard::PowerShell]
     }
-    if std::env::var_os("DISPLAY").is_some() {
-        backends.extend([CommandClipboard::Xclip, CommandClipboard::Xsel]);
+
+    #[cfg(not(windows))]
+    {
+        let mut backends = Vec::with_capacity(3);
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            backends.push(CommandClipboard::Wayland);
+        }
+        if std::env::var_os("DISPLAY").is_some() {
+            backends.extend([CommandClipboard::Xclip, CommandClipboard::Xsel]);
+        }
+        if backends.is_empty() {
+            backends.extend([
+                CommandClipboard::Wayland,
+                CommandClipboard::Xclip,
+                CommandClipboard::Xsel,
+            ]);
+        }
+        backends
     }
-    if backends.is_empty() {
-        backends.extend([
-            CommandClipboard::Wayland,
-            CommandClipboard::Xclip,
-            CommandClipboard::Xsel,
-        ]);
-    }
-    backends
 }
 
 fn desktop_session() -> &'static str {
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        "wayland"
-    } else if std::env::var_os("DISPLAY").is_some() {
-        "x11"
-    } else {
-        "unknown"
+    #[cfg(windows)]
+    {
+        "windows"
     }
-}
 
-fn write_command(program: &str, arguments: &[&str], value: &str) -> Result<(), String> {
-    let mut child = Command::new(program)
-        .args(arguments)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("无法启动 {program}: {error}"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| format!("无法打开 {program} 的标准输入"))?;
-    stdin
-        .write_all(value.as_bytes())
-        .map_err(|error| format!("写入 {program} 失败: {error}"))?;
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("等待 {program} 结束失败: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(command_status_error(program, &output.stderr))
+    #[cfg(not(windows))]
+    {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            "wayland"
+        } else if std::env::var_os("DISPLAY").is_some() {
+            "x11"
+        } else {
+            "unknown"
+        }
     }
 }
 
@@ -240,9 +185,16 @@ fn command_error_message(errors: Vec<String>) -> String {
     } else {
         errors.join("；")
     };
-    format!(
-        "命令行剪贴板不可用: {attempts}。麒麟/统信 Wayland 请安装 wl-clipboard；X11 请安装 xclip 或 xsel"
-    )
+    #[cfg(windows)]
+    {
+        format!("命令行剪贴板不可用: {attempts}。Windows 10 请确认 PowerShell 可用")
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "命令行剪贴板不可用: {attempts}。麒麟/统信 Wayland 请安装 wl-clipboard；X11 请安装 xclip 或 xsel"
+        )
+    }
 }
 
 fn clipboard_error(native_error: &str, command_error: &str) -> String {
@@ -253,12 +205,20 @@ fn clipboard_error(native_error: &str, command_error: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
     #[test]
     fn reports_clipboard_installation_guidance() {
         let message = command_error_message(vec!["xclip: 未安装".to_string()]);
         assert!(message.contains("wl-clipboard"));
         assert!(message.contains("xclip"));
         assert!(message.contains("xsel"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_windows_clipboard_installation_guidance() {
+        let message = command_error_message(vec!["PowerShell: 未安装".to_string()]);
+        assert!(message.contains("PowerShell"));
     }
 
     #[test]
