@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 use serde_json::Value;
 
 use crate::config::{ApiRequest, BodyPart, DownloadTarget};
@@ -8,6 +9,7 @@ use crate::config::{ApiRequest, BodyPart, DownloadTarget};
 pub(crate) struct ResolvedRequest {
     pub(crate) method: String,
     pub(crate) url: String,
+    pub(crate) query_parts: Vec<String>,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) raw_body: Option<String>,
     pub(crate) form: BTreeMap<String, String>,
@@ -28,7 +30,12 @@ pub(crate) fn resolve_request(
     variables: &BTreeMap<String, String>,
 ) -> ResolvedRequest {
     let mut url = expand_text(&request.url, variables);
-    let query = resolve_data_parts(&request.query_parts, variables);
+    let query_parts = request
+        .query_parts
+        .iter()
+        .map(|part| resolve_data_part(part, variables))
+        .collect::<Vec<_>>();
+    let query = query_parts.join("&");
     if !query.is_empty() {
         url = append_query(&url, &query);
     }
@@ -36,6 +43,7 @@ pub(crate) fn resolve_request(
     ResolvedRequest {
         method: request.method.clone(),
         url,
+        query_parts,
         headers: expand_text_map(&request.headers, variables),
         raw_body: (!request.body_parts.is_empty())
             .then(|| resolve_data_parts(&request.body_parts, variables)),
@@ -106,30 +114,13 @@ pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
     names.into_iter().collect()
 }
 
-pub(crate) fn unresolved_request_names(request: &ResolvedRequest) -> Vec<String> {
+pub(crate) fn variable_names_in_text(input: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
-    collect_text(&request.url, &mut names);
-    collect_text_map(&request.headers, &mut names);
-    collect_text_map(&request.form, &mut names);
-    if let Some(body) = &request.raw_body {
-        collect_text(body, &mut names);
-    }
-    for file in &request.files {
-        collect_text(&file.field, &mut names);
-        collect_text(&file.path, &mut names);
-        if let Some(filename) = &file.filename {
-            collect_text(filename, &mut names);
-        }
-        if let Some(content_type) = &file.content_type {
-            collect_text(content_type, &mut names);
-        }
-    }
-    if let Some(DownloadTarget::Path(path)) = &request.download {
-        collect_text(path, &mut names);
-    }
+    collect_text(input, &mut names);
     names.into_iter().collect()
 }
 
+#[cfg(test)]
 pub(crate) fn extract_json_value(body: &str, path: &str) -> Result<String, String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("响应不是有效 JSON，无法提取: {error}"))?;
@@ -196,15 +187,19 @@ fn expand_text(input: &str, variables: &BTreeMap<String, String>) -> String {
 fn resolve_data_parts(parts: &[BodyPart], variables: &BTreeMap<String, String>) -> String {
     parts
         .iter()
-        .map(|part| match part {
-            BodyPart::Raw(value) => expand_text(value, variables),
-            BodyPart::UrlEncoded(value) => urlencode_data(&expand_text(value, variables)),
-        })
+        .map(|part| resolve_data_part(part, variables))
         .collect::<Vec<_>>()
         .join("&")
 }
 
-fn body_part_value(part: &BodyPart) -> &str {
+fn resolve_data_part(part: &BodyPart, variables: &BTreeMap<String, String>) -> String {
+    match part {
+        BodyPart::Raw(value) => expand_text(value, variables),
+        BodyPart::UrlEncoded(value) => urlencode_data(&expand_text(value, variables)),
+    }
+}
+
+pub(crate) fn body_part_value(part: &BodyPart) -> &str {
     match part {
         BodyPart::Raw(value) | BodyPart::UrlEncoded(value) => value,
     }
@@ -216,6 +211,44 @@ fn urlencode_data(value: &str) -> String {
         encode_component(content)
     } else {
         format!("{}={}", encode_component(name), encode_component(content))
+    }
+}
+
+pub(crate) fn decode_urlencoded_data(value: &str) -> String {
+    let (name, content) = value.split_once('=').unwrap_or(("", value));
+    if name.is_empty() {
+        decode_component(content)
+    } else {
+        format!("{}={}", decode_component(name), decode_component(content))
+    }
+}
+
+fn decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -292,6 +325,7 @@ fn strip_variable_delimiters(value: &str) -> &str {
         .unwrap_or(value)
 }
 
+#[cfg(test)]
 fn path_segments(path: &str) -> Vec<&str> {
     path.split(['.', '[', ']'])
         .map(str::trim)
@@ -442,6 +476,15 @@ mod tests {
         let resolved = resolve_request(&request, &variables);
 
         assert_eq!(resolved.url, "http://localhost/search?q=a%20b%26c");
+    }
+
+    #[test]
+    fn decodes_urlencoded_data_for_editing() {
+        assert_eq!(
+            decode_urlencoded_data("name=%E6%96%87%E6%A1%A3%20%26%20edge"),
+            "name=文档 & edge"
+        );
+        assert_eq!(decode_urlencoded_data("name=%ZZ"), "name=%ZZ");
     }
 
     #[test]

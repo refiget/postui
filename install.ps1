@@ -69,12 +69,17 @@ function Require-PackageFiles([string]$PackageDirectory) {
     $requiredFiles = @(
         (Join-Path $PackageDirectory "postui.exe"),
         (Join-Path $PackageDirectory "config.yaml"),
-        (Join-Path $PackageDirectory ".postui\requests.yaml")
+        (Join-Path $PackageDirectory ".postui\config.yaml")
     )
     foreach ($path in $requiredFiles) {
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
             Fail "发布目录缺少文件: $path"
         }
+    }
+
+    $requestsDirectory = Join-Path $PackageDirectory ".postui\requests"
+    if (!(Test-Path -LiteralPath $requestsDirectory -PathType Container)) {
+        Fail "发布目录缺少目录: $requestsDirectory"
     }
 }
 

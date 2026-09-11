@@ -1,0 +1,6 @@
+# @name 创建任务
+# @description --json 自动补充 JSON 请求头，并保留原始请求体。
+# @extract task_id = data.taskId
+curl --location --request POST "http://{{host}}/v1/tasks" \
+  --header "X-Debug-Token: {{token}}" \
+  --json '{"taskId":"{{task_id}}","name":"{{item_name}}","value":"{{item_value}}"}'

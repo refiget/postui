@@ -181,11 +181,13 @@ fi
 
 binary_path=$package_dir/postui.bin
 config_path=$package_dir/config.yaml
-requests_path=$package_dir/.postui/requests.yaml
+collection_config_path=$package_dir/.postui/config.yaml
+requests_dir=$package_dir/.postui/requests
 
 [ -f "$binary_path" ] || die "发布目录中没有 postui.bin: $package_dir"
 [ -f "$config_path" ] || die "发布目录中没有 config.yaml: $package_dir"
-[ -f "$requests_path" ] || die "发布目录中没有 .postui/requests.yaml: $package_dir"
+[ -f "$collection_config_path" ] || die "发布目录中没有 .postui/config.yaml: $package_dir"
+[ -d "$requests_dir" ] || die "发布目录中没有 .postui/requests: $package_dir"
 command_exists install || die "系统没有 install 命令"
 command_exists cp || die "系统没有 cp 命令"
 command_exists mkdir || die "系统没有 mkdir 命令"

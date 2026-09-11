@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use ratatui::style::Color;
 use serde::Deserialize;
 
-const DEFAULT_REQUEST_CONFIG: &str = ".postui/requests.yaml";
+const DEFAULT_REQUEST_CONFIG: &str = ".postui";
 const DEFAULT_THEME: &str = "gruvbox-dark";
 pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
 
@@ -429,14 +429,13 @@ mod tests {
 
     #[test]
     fn normalizes_default_global_config() {
-        let raw: RawGlobalConfig = serde_yaml::from_str(
-            "request_config: .postui/requests.yaml\nlanguage: en\ntheme: gruvbox-dark",
-        )
-        .unwrap();
+        let raw: RawGlobalConfig =
+            serde_yaml::from_str("request_config: .postui\nlanguage: en\ntheme: gruvbox-dark")
+                .unwrap();
         let config =
             normalize(Path::new("/tmp/postui/config.yaml"), raw).expect("全局配置应当可以规范化");
         assert!(config.path.is_some());
-        assert!(config.request_config.ends_with(".postui/requests.yaml"));
+        assert!(config.request_config.ends_with(".postui"));
         assert_eq!(config.language, Language::English);
         assert_eq!(config.theme.name, "gruvbox-dark");
         assert!(config.theme.highlight_enabled);

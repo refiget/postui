@@ -21,123 +21,81 @@ impl UiText {
         self.pick("Requests", "接口列表")
     }
 
+    pub(crate) fn collection(self) -> &'static str {
+        self.pick("Collection", "集合")
+    }
+
     pub(crate) fn variables(self) -> &'static str {
-        self.pick("Variables", "全局变量")
+        self.pick("Variables", "变量")
+    }
+
+    pub(crate) fn headers(self) -> &'static str {
+        self.pick("Headers", "请求头")
+    }
+
+    pub(crate) fn request_editor(self) -> &'static str {
+        self.pick("Request", "请求")
+    }
+
+    pub(crate) fn params(self) -> &'static str {
+        self.pick("Params", "参数")
+    }
+
+    pub(crate) fn body(self) -> &'static str {
+        self.pick("Body", "请求体")
+    }
+
+    pub(crate) fn query(self) -> &'static str {
+        self.pick("Query", "查询")
+    }
+
+    pub(crate) fn raw(self) -> &'static str {
+        self.pick("Raw", "原始")
+    }
+
+    pub(crate) fn url_encoded(self) -> &'static str {
+        self.pick("URL Encoded", "URL 编码")
+    }
+
+    pub(crate) fn form(self) -> &'static str {
+        self.pick("Form", "表单")
+    }
+
+    pub(crate) fn request_selector(self) -> &'static str {
+        self.pick("Requests/", "接口/")
     }
 
     pub(crate) fn send_actions(self) -> &'static str {
-        self.pick("Actions", "发送操作")
+        self.pick("Send", "发送")
     }
 
     pub(crate) fn ready(self) -> &'static str {
-        self.pick("Ready", "就绪")
+        self.pick("Ready", "待发送")
     }
 
     pub(crate) fn request_complete(self, status: u16, elapsed_ms: u128) -> String {
         match self.language {
-            Language::English => format!("Request complete · HTTP {status} · {elapsed_ms} ms"),
-            Language::Chinese => format!("请求完成 · HTTP {status} · {elapsed_ms} ms"),
+            Language::English => format!("HTTP {status} · {elapsed_ms} ms"),
+            Language::Chinese => format!("HTTP {status} · {elapsed_ms} ms"),
         }
     }
 
     pub(crate) fn switched_to(self, focus: &str) -> String {
         match self.language {
-            Language::English => format!("Focus: {focus}"),
-            Language::Chinese => format!("已切换到 {focus}"),
+            Language::English => format!("Focus · {focus}"),
+            Language::Chinese => format!("当前区域 · {focus}"),
         }
     }
 
     pub(crate) fn selected_request(self, name: &str) -> String {
         match self.language {
-            Language::English => format!("Selected {name}"),
-            Language::Chinese => format!("已选择 {name}"),
-        }
-    }
-
-    pub(crate) fn request_list_closed(self) -> &'static str {
-        self.pick("Request list closed", "已关闭接口列表")
-    }
-
-    pub(crate) fn edit_cancelled(self) -> &'static str {
-        self.pick("Edit cancelled", "已取消编辑")
-    }
-
-    pub(crate) fn no_editable_variables(self) -> &'static str {
-        self.pick(
-            "No editable variables for this request",
-            "当前接口没有可编辑的变量",
-        )
-    }
-
-    pub(crate) fn edit_variable(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Edit {name} · Enter save · Esc cancel"),
-            Language::Chinese => format!("编辑变量 {name} · Enter 保存 · Esc 取消"),
-        }
-    }
-
-    pub(crate) fn variable_updated(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Updated variable: {name}"),
-            Language::Chinese => format!("已更新全局变量: {name}"),
-        }
-    }
-
-    pub(crate) fn no_clearable_variables(self) -> &'static str {
-        self.pick(
-            "No variable to clear for this request",
-            "当前接口没有可清理的变量",
-        )
-    }
-
-    pub(crate) fn variable_cleared(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Cleared variable: {name}"),
-            Language::Chinese => format!("已清理全局变量: {name}"),
-        }
-    }
-
-    pub(crate) fn no_extractable_variable(self) -> &'static str {
-        self.pick(
-            "This variable has no response extraction",
-            "当前变量没有响应提取配置",
-        )
-    }
-
-    pub(crate) fn no_successful_response(self) -> &'static str {
-        self.pick(
-            "No successful response to extract",
-            "当前接口没有可提取的成功响应",
-        )
-    }
-
-    pub(crate) fn variable_extracted(self, variable: &str) -> String {
-        match self.language {
-            Language::English => format!("Extracted response value: {variable}"),
-            Language::Chinese => format!("已从响应提取变量: {variable}"),
-        }
-    }
-
-    pub(crate) fn no_pasteable_variables(self) -> &'static str {
-        self.pick(
-            "No variable to paste into for this request",
-            "当前接口没有可粘贴的变量",
-        )
-    }
-
-    pub(crate) fn clipboard_empty(self) -> &'static str {
-        self.pick("Clipboard has no text", "系统剪贴板没有文本")
-    }
-
-    pub(crate) fn pasted_to_variable(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Pasted into variable: {name}"),
-            Language::Chinese => format!("已从剪贴板粘贴到变量: {name}"),
+            Language::English => format!("Request · {name}"),
+            Language::Chinese => format!("当前接口 · {name}"),
         }
     }
 
     pub(crate) fn request_in_progress(self) -> &'static str {
-        self.pick("Request in progress, please wait", "请求正在执行，请稍候")
+        self.pick("Request still running", "请求尚未完成")
     }
 
     pub(crate) fn request_status_not_sent(self) -> &'static str {
@@ -185,28 +143,109 @@ impl UiText {
         self.pick("URL", "地址")
     }
 
-    pub(crate) fn method(self) -> &'static str {
-        self.pick("Method", "方法")
-    }
-
-    pub(crate) fn status(self) -> &'static str {
-        self.pick("Status", "状态")
-    }
-
-    pub(crate) fn identifier(self) -> &'static str {
-        self.pick("ID", "标识")
-    }
-
     pub(crate) fn description(self) -> &'static str {
         self.pick("Description", "说明")
     }
 
     pub(crate) fn request_config(self) -> &'static str {
-        self.pick("Request config", "请求配置")
+        self.pick("Config", "配置")
+    }
+
+    pub(crate) fn current_value(self) -> &'static str {
+        self.pick("Current", "当前值")
+    }
+
+    pub(crate) fn value(self) -> &'static str {
+        self.pick("Value", "值")
+    }
+
+    pub(crate) fn default_value(self) -> &'static str {
+        self.pick("Default", "默认值")
+    }
+
+    pub(crate) fn source(self) -> &'static str {
+        self.pick("Source", "来源")
+    }
+
+    pub(crate) fn value_type(self) -> &'static str {
+        self.pick("Type", "类型")
+    }
+
+    pub(crate) fn inherited(self) -> &'static str {
+        self.pick("Collection", "集合")
+    }
+
+    pub(crate) fn request_scope(self) -> &'static str {
+        self.pick("Request", "请求")
+    }
+
+    pub(crate) fn no_variables(self) -> &'static str {
+        self.pick("No variables", "暂无变量")
+    }
+
+    pub(crate) fn no_headers(self) -> &'static str {
+        self.pick("No headers", "暂无请求头")
+    }
+
+    pub(crate) fn apply(self) -> &'static str {
+        self.pick("Save", "保存")
+    }
+
+    pub(crate) fn close(self) -> &'static str {
+        self.pick("Cancel", "取消")
+    }
+
+    pub(crate) fn variables_applied(self) -> &'static str {
+        self.pick("Variables saved for this run", "变量已保存（本次运行）")
+    }
+
+    pub(crate) fn headers_applied(self) -> &'static str {
+        self.pick("Headers saved for this run", "请求头已保存（本次运行）")
+    }
+
+    pub(crate) fn no_params(self) -> &'static str {
+        self.pick("No params", "暂无参数")
+    }
+
+    pub(crate) fn editable_value_hint(self) -> &'static str {
+        self.pick("Click an underlined value to edit", "点击下划线值修改")
+    }
+
+    pub(crate) fn json_value_hint(self) -> &'static str {
+        self.pick("Click a value to edit", "点击值修改")
+    }
+
+    pub(crate) fn unsupported_method(self, method: &str) -> String {
+        match self.language {
+            Language::English => {
+                format!("Cannot send {method} · GET and POST only")
+            }
+            Language::Chinese => format!("无法发送 {method} · 仅支持 GET / POST"),
+        }
+    }
+
+    pub(crate) fn edit_headers(self) -> &'static str {
+        self.pick("Headers", "请求头")
+    }
+
+    pub(crate) fn edit_params(self) -> &'static str {
+        self.pick("Params", "参数")
+    }
+
+    pub(crate) fn edit_body(self) -> &'static str {
+        self.pick("Body", "请求体")
+    }
+
+    pub(crate) fn params_applied(self) -> &'static str {
+        self.pick("Params saved for this run", "参数已保存（本次运行）")
+    }
+
+    pub(crate) fn add_row(self) -> &'static str {
+        self.pick("Add", "新增")
     }
 
     pub(crate) fn empty_description(self) -> &'static str {
-        self.pick("(not set)", "（未填写）")
+        self.pick("—", "—")
     }
 
     pub(crate) fn send_button(self, loading: bool) -> &'static str {
@@ -217,90 +256,16 @@ impl UiText {
         }
     }
 
-    pub(crate) fn no_variables(self) -> &'static str {
-        self.pick("This request has no variables", "这个接口没有可替换的变量")
-    }
-
-    pub(crate) fn unset(self) -> &'static str {
-        self.pick("(unset)", "（未设置）")
-    }
-
-    pub(crate) fn clear_button(self) -> &'static str {
-        self.pick("Clear", "清理")
-    }
-
-    pub(crate) fn request_headers(self) -> &'static str {
-        self.pick("Headers", "请求头")
-    }
-
-    pub(crate) fn request_body(self) -> &'static str {
-        self.pick("Body", "请求体")
-    }
-
-    pub(crate) fn form(self) -> &'static str {
-        self.pick("Form", "表单")
-    }
-
-    pub(crate) fn files(self) -> &'static str {
-        self.pick("Files", "文件")
-    }
-
-    pub(crate) fn download(self) -> &'static str {
-        self.pick("Download", "下载")
-    }
-
-    pub(crate) fn directory(self) -> &'static str {
-        self.pick("Directory", "目录")
-    }
-
-    pub(crate) fn auto_filename(self) -> &'static str {
-        self.pick("auto filename", "自动取文件名")
-    }
-
-    pub(crate) fn remote_filename(self) -> &'static str {
-        self.pick("remote filename", "远程文件名")
-    }
-
-    pub(crate) fn remote_filename_from_header(self) -> &'static str {
-        self.pick(
-            "remote filename (Content-Disposition)",
-            "远程文件名（Content-Disposition）",
-        )
-    }
-
-    pub(crate) fn unresolved(self, names: &str) -> String {
-        match self.language {
-            Language::English => format!("Unresolved: {names}"),
-            Language::Chinese => format!("未替换: {names}"),
-        }
-    }
-
-    pub(crate) fn preview(self) -> &'static str {
-        self.pick("Preview", "预览")
-    }
-
     pub(crate) fn response(self) -> &'static str {
         self.pick("Response", "响应")
     }
 
     pub(crate) fn waiting_response(self) -> &'static str {
-        self.pick("Waiting for response…", "正在等待响应…")
+        self.pick("Waiting…", "等待响应…")
     }
 
     pub(crate) fn request_not_sent(self) -> &'static str {
-        self.pick("This request has not been sent", "还没有发送这个请求")
-    }
-
-    pub(crate) fn extract_button(self) -> &'static str {
-        self.pick("Extract", "提取")
-    }
-
-    pub(crate) fn paste_button(self) -> &'static str {
-        self.pick("Paste", "粘贴")
-    }
-
-    pub(crate) fn response_headers(self) -> &'static str {
-        self.pick("Response headers", "响应头")
+        self.pick("Not sent", "尚未发送")
     }
 
     pub(crate) fn response_body(self) -> &'static str {
@@ -309,8 +274,8 @@ impl UiText {
 
     pub(crate) fn download_saved(self, path: &str) -> String {
         match self.language {
-            Language::English => format!("Saved file: {path}"),
-            Language::Chinese => format!("文件已保存: {path}"),
+            Language::English => format!("Saved to {path}"),
+            Language::Chinese => format!("已保存至 {path}"),
         }
     }
 
@@ -318,12 +283,15 @@ impl UiText {
         self.pick("(empty)", "（空）")
     }
 
-    pub(crate) fn send_hint(self) -> &'static str {
-        self.pick("Press r to send", "按 r 发送请求")
+    pub(crate) fn remaining_items(self, count: usize) -> String {
+        match self.language {
+            Language::English => format!("+ {count} more"),
+            Language::Chinese => format!("另有 {count} 项"),
+        }
     }
 
-    pub(crate) fn choose_request(self) -> &'static str {
-        self.pick("Choose request", "选择接口")
+    pub(crate) fn send_hint(self) -> &'static str {
+        self.pick("Click Send or press r", "点击发送，或按 r")
     }
 
     pub(crate) fn footer_focus(self) -> &'static str {
@@ -334,20 +302,12 @@ impl UiText {
         self.pick("Move", "移动")
     }
 
-    pub(crate) fn footer_select_edit(self) -> &'static str {
-        self.pick("Select/Edit", "选择/编辑")
-    }
-
-    pub(crate) fn footer_edit(self) -> &'static str {
-        self.pick("Edit", "编辑")
+    pub(crate) fn footer_select(self) -> &'static str {
+        self.pick("Select", "选择")
     }
 
     pub(crate) fn footer_send(self) -> &'static str {
         self.pick("Send", "发送")
-    }
-
-    pub(crate) fn footer_clear(self) -> &'static str {
-        self.pick("Clear", "清理")
     }
 
     pub(crate) fn footer_quit(self) -> &'static str {
@@ -361,10 +321,6 @@ impl UiText {
     pub(crate) fn footer_click(self) -> &'static str {
         self.pick("Click", "点击")
     }
-
-    pub(crate) fn footer_action(self) -> &'static str {
-        self.pick("Act", "操作")
-    }
 }
 
 #[cfg(test)]
@@ -374,14 +330,14 @@ mod tests {
     #[test]
     fn defaults_to_english_copy() {
         let text = UiText::new(Language::English);
-        assert_eq!(text.preview(), "Preview");
+        assert_eq!(text.request_selector(), "Requests/");
         assert_eq!(text.send_button(false), "Send");
     }
 
     #[test]
     fn chinese_copy_is_available() {
         let text = UiText::new(Language::Chinese);
-        assert_eq!(text.preview(), "预览");
+        assert_eq!(text.request_selector(), "接口/");
         assert_eq!(text.send_button(false), "发送");
     }
 }

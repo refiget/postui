@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [string]$ConfigPath,
-    [string]$RequestsPath,
+    [string]$CollectionPath,
     [string]$OutputDir
 )
 
@@ -22,23 +22,30 @@ function Require-File([string]$Path, [string]$Description) {
     }
 }
 
+function Require-Directory([string]$Path, [string]$Description) {
+    if (!(Test-Path -LiteralPath $Path -PathType Container)) {
+        Fail "找不到${Description}: $Path"
+    }
+}
+
 try {
     $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
         $ConfigPath = Join-Path $projectRoot "config.yaml"
     }
-    if ([string]::IsNullOrWhiteSpace($RequestsPath)) {
-        $RequestsPath = Join-Path $projectRoot ".postui\requests.yaml"
+    if ([string]::IsNullOrWhiteSpace($CollectionPath)) {
+        $CollectionPath = Join-Path $projectRoot ".postui"
     }
     if ([string]::IsNullOrWhiteSpace($OutputDir)) {
         $OutputDir = Join-Path $projectRoot "打包区"
     }
 
     $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
-    $RequestsPath = [IO.Path]::GetFullPath($RequestsPath)
+    $CollectionPath = [IO.Path]::GetFullPath($CollectionPath)
     $OutputDir = [IO.Path]::GetFullPath($OutputDir)
     Require-File $ConfigPath "全局配置文件"
-    Require-File $RequestsPath "请求配置文件"
+    Require-File (Join-Path $CollectionPath "config.yaml") "请求集合配置文件"
+    Require-Directory (Join-Path $CollectionPath "requests") "请求集合目录"
     Require-File (Join-Path $projectRoot "install.ps1") "PowerShell 安装脚本"
 
     Write-Host "构建 Windows amd64 release: $target"
@@ -57,7 +64,10 @@ try {
 
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $packageRoot "postui.exe") -Force
     Copy-Item -LiteralPath $ConfigPath -Destination (Join-Path $packageRoot "config.yaml") -Force
-    Copy-Item -LiteralPath $RequestsPath -Destination (Join-Path $packageRoot ".postui\requests.yaml") -Force
+    Copy-Item -LiteralPath (Join-Path $CollectionPath "config.yaml") `
+        -Destination (Join-Path $packageRoot ".postui\config.yaml") -Force
+    Copy-Item -LiteralPath (Join-Path $CollectionPath "requests") `
+        -Destination (Join-Path $packageRoot ".postui\requests") -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot "install.ps1") -Destination (Join-Path $packageRoot "install.ps1") -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination (Join-Path $packageRoot "README.md") -Force
 

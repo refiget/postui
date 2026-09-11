@@ -1,0 +1,3 @@
+# @name 纯文本响应
+# @description 非 JSON 响应按普通文本处理。
+curl "http://{{host}}/v1/plain"

@@ -1,0 +1,4 @@
+# @name 重定向
+# @description --location 由 reqwest 的默认重定向行为完成。
+# @extract redirect_service = service
+curl --location "http://{{host}}/v1/redirect"

@@ -14,7 +14,8 @@ PostUI 是一个配置驱动的终端接口测试工具，适用于需要快速�
 postui                 # 启动脚本
 postui.bin             # 二进制文件
 config.yaml            # 全局配置
-.postui/requests.yaml  # 请求集合
+.postui/config.yaml    # 请求集合设置
+.postui/requests/      # 每个请求一个 .http 文件
 ```
 
 进入目录后运行：
@@ -23,27 +24,24 @@ config.yaml            # 全局配置
 ./postui
 ```
 
-从发布目录启动时，启动脚本会使用发布目录中的 `config.yaml`；从其他目录启动时，如果当前目录存在 `.postui/requests.yaml`，则优先使用当前项目的请求集合。`postui init` 会把当前程序所在目录加入当前用户 `~/.zshrc` 或 `~/.bashrc` 的 `PATH`，随后执行提示中的 `source` 命令即可使用 `postui`。
+从发布目录启动时，启动脚本会使用发布目录中的 `config.yaml`；从其他目录启动时，如果当前目录存在 `.postui/` 集合目录，则优先使用当前项目的请求集合。`postui init` 会把当前程序所在目录加入当前用户 `~/.zshrc` 或 `~/.bashrc` 的 `PATH`，随后执行提示中的 `source` 命令即可使用 `postui`。
 
 Windows amd64 发布目录包含：
 
 ```text
 postui.exe             # 二进制文件
 config.yaml            # 全局配置
-.postui/requests.yaml  # 请求集合
+.postui/config.yaml    # 请求集合设置
+.postui/requests/      # 每个请求一个 .http 文件
 ```
 
 在 PowerShell 中运行：
 
 ```powershell
-.\postui.exe --config .\config.yaml --requests .\.postui\requests.yaml
+.\postui.exe --config .\config.yaml --requests .\.postui
 ```
 
 安装后，程序会从 `%APPDATA%\postui\config.yaml` 读取用户配置；直接运行未安装的发布目录时请显式指定配置文件。`postui init` 只修改当前用户的 PATH（HKCU），不会写入系统 PATH，也不需要管理员权限；执行后重新打开 PowerShell 即可使用 `postui`。
-
-### 安装
-
-安装命令暂不在文档中展开，后续统一提供一键安装方式。
 
 ### 从源码运行
 
@@ -72,13 +70,13 @@ Copy-Item .\target\x86_64-pc-windows-msvc\release\postui.exe .\postui.exe
 
 Windows 构建使用原生 MSVC 工具链；`+crt-static` 用于减少对 VC 运行库安装的依赖，但仍依赖 Windows 系统 DLL。项目只发布 Windows x86_64，不提供 32 位或 ARM 版本。
 
-在 Windows 构建个人发布包（读取本地的 `config.yaml` 和 `.postui/requests.yaml`，不会把它们加入 Git）可以运行：
+在 Windows 构建个人发布包（读取本地的 `config.yaml` 和 `.postui/`，不会把它们加入 Git）可以运行：
 
 ```powershell
 .\package-windows.ps1
 ```
 
-默认输出到 `打包区\postui-windows-amd64.zip`。也可以用 `-ConfigPath`、`-RequestsPath` 和 `-OutputDir` 指定输入及输出位置。
+默认输出到 `打包区\postui-windows-amd64.zip`。也可以用 `-ConfigPath`、`-CollectionPath` 和 `-OutputDir` 指定输入及输出位置。
 
 ### 全局配置查找顺序
 
@@ -88,17 +86,19 @@ Windows 构建使用原生 MSVC 工具链；`+crt-static` 用于减少对 VC 运
 2. Linux 的 `$HOME/postui.yaml`、`$HOME/.postui.yaml`；`HOME` 不是 `/root` 时也会检查 `/root` 下的同名文件。Windows 的 `%USERPROFILE%\postui.yaml`、`%USERPROFILE%\.postui.yaml`。
 3. Linux 的 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`；Windows 的 `%APPDATA%\postui\config.yaml`。
 
-显式指定的文件读取失败会直接报错，不会继续查找其他位置。没有显式指定 `--config` 或 `--requests` 时，程序优先读取当前目录的 `.postui/requests.yaml`，再使用全局配置的 `request_config`；两者都没有时使用内置配置路径并按文件不存在处理。
+显式指定的文件读取失败会直接报错，不会继续查找其他位置。没有显式指定 `--config` 或 `--requests` 时，程序从当前目录向父目录查找 `.postui/` 集合目录，再使用全局配置的 `request_config`；两者都没有时使用内置配置路径并按目录不存在处理。这样从项目的 `.postui/requests/` 子目录启动也能找到项目集合。
 
 请求集合也可以单独覆盖：
 
 ```bash
-postui --config ./config.yaml --requests ./.postui/other.yaml
+postui --config ./config.yaml --requests ./.postui/other-collection
 ```
 
 ## 界面操作
 
-「粘贴」优先使用系统原生剪贴板接口。Linux 如果不可用，会尝试 `wl-paste`、`xclip` 或 `xsel`；Windows 会尝试系统 PowerShell 的 `Get-Clipboard`。
+主界面左侧的 `Requests/` 列表用于选择接口，集合名称和 `Variables` 入口位于列表上方。右侧分为两个固定容器：上方是 `Preview`，下方是 `Response`。每次切换接口都会立即进入 `Overview`，完整展示解析后的 URL、Headers、Body、Form、Files 和下载设置；内容较长时可用 `j/k`、上下键或鼠标滚轮查看。`Params`、`Headers`、`Body` 是可编辑子页：按 `Enter`、`p`、`h`、`b` 或点击编辑按钮后直接在当前面板中修改，`a` 新增一行、`d` 删除一行、`Esc` 放弃修改，完成后点击 `Apply`。`Send` 是独立的主操作，存在未应用修改时会禁用。`Response` 显示状态码、耗时和响应体，JSON 会使用语法高亮，内容过长时使用终端滚动条。
+
+目前发送范围限定为 `GET` 和 `POST`。其他方法仍可在集合中预览，但发送按钮会禁用。键盘可以使用 `Tab` 在接口列表、变量、预览和发送操作之间切换；预览聚焦时用 `←→` 切换标签，`v` 打开 Variables，`h` 编辑 Headers，`r` 发送，`q` 退出。变量以及 Params、Headers、Body 的修改只在本次运行生效，不会回写配置文件。
 
 ## Debug 日志
 
@@ -115,14 +115,14 @@ cargo run -- --debug --log-file ./logs/postui-debug.log --config ./config.yaml
 
 ## 配置文件
 
-配置可以使用 YAML；文件扩展名为 `.json` 时使用 JSON 解析。当前版本只接受下面的格式，未知字段会在加载时报告错误。
+全局配置和请求集合配置使用 YAML；主题文件支持 YAML 或 JSON。未知字段会在加载时报告错误。
 
 ### 全局配置
 
 全局配置只决定请求集合和界面样式：
 
 ```yaml
-request_config: .postui/requests.yaml
+request_config: .postui
 language: en
 theme: gruvbox-dark
 
@@ -164,7 +164,18 @@ syntax: base16-mocha.dark
 
 ### 请求集合
 
-默认文件是当前工作目录下的 `.postui/requests.yaml`。首次成功解析后，会在同目录生成 `.postui/requests.cache.json`；配置文件内容变化时缓存自动失效并重新解析：
+请求集合是一个目录，默认是当前工作目录下的 `.postui/`。首次成功解析后，会在该目录生成 `requests.cache.json`；集合配置或任意请求文件内容变化时缓存自动失效并重新解析：
+
+```text
+.postui/
+├── config.yaml
+├── requests.cache.json
+└── requests/
+    ├── 01-user-list.http
+    └── 02-user-detail.http
+```
+
+`config.yaml` 只保存集合级设置，接口本身直接写在请求文件中：
 
 ```yaml
 name: 我的接口
@@ -172,61 +183,46 @@ file_directory: ../files
 download_directory: tmp
 timeout_seconds: 30
 
+headers:
+  Accept: application/json
+  X-Environment: "{{environment}}"
+
 variables:
-  - name: host
-    default: https://api.example.com
-  - name: token
-  - name: user_id
-
-requests:
-  - id: user-list
-    name: 用户列表
-    description: 查询用户列表。
-    request: |
-      curl --location "{{host}}/users" \
-        --header "Authorization: Bearer {{token}}"
-
-  - id: user-detail
-    name: 用户详情
-    description: 查询指定用户。
-    timeout_seconds: 10
-    request: |
-      curl --location "{{host}}/users/{{user_id}}"
+  host: https://api.example.com
+  token:
+  user_id:
 ```
 
 字段说明：
 
 - `name`：请求集合名称，可省略。
-- `file_directory`：上传文件的根目录，默认是 `files`。相对路径以请求集合文件所在目录为基准。
-- `download_directory`：下载文件的根目录，默认是 `tmp`。相对路径以请求集合文件所在目录为基准；默认请求集合位于 `.postui/requests.yaml` 时，文件保存到 `.postui/tmp/`。
-- `timeout_seconds`：集合级请求超时时间，默认 30 秒；写成 0 也使用 30 秒。单个接口也可以设置同名字段覆盖集合级值。
-- `variables`：变量声明列表。`default` 可省略，省略后初始为空。
-- `requests`：接口列表。`id` 可省略，省略时按顺序生成；`name`、`description`、`request` 分别是名称、说明和 curl 文本；`timeout_seconds` 可覆盖集合级超时。
+- `file_directory`：上传文件的根目录，默认是 `files`。相对路径以 `config.yaml` 所在目录为基准。
+- `download_directory`：下载文件的根目录，默认是 `tmp`。相对路径以 `config.yaml` 所在目录为基准；默认集合位于 `.postui/` 时，文件保存到 `.postui/tmp/`。
+- `timeout_seconds`：集合级请求超时时间，默认 30 秒；写成 0 也使用 30 秒。
+- `headers`：集合级默认请求头，所有接口继承；请求文件中同名 Header 会覆盖集合默认值。
+- `variables`：变量默认值映射。值省略或写成 `null` 表示没有默认值。
 
-请求中出现的变量必须在 `variables` 中声明。变量既可以写成 `{{host}}`，也可以在 `extract` 的键中写成 `{{task_id}}`。
+请求中出现但未在 `variables` 中声明的变量仍会被识别。程序使用配置中的默认值替换变量，不会回写配置文件。集合 Header 中出现的变量也会自动加入变量列表。
 
-### curl 请求
+### 请求文件
 
-`request` 是一段静态 curl 文本，不会执行 shell。可以直接写多行文本，也可以放在 `bash`、`sh` 或普通代码块中：
+每个 `.http`、`.rest` 或 `.curl` 文件就是一个接口，文件内容直接是静态 curl 文本，不再套一层 `requests` 或 `request` 字段。文件中的注释指令可以提供名称、说明、超时和返回字段提取：
 
-~~~yaml
-request: |
-  ```bash
-  curl --request POST "{{host}}/upload" \
-    --header "Authorization: Bearer {{token}}" \
-    --form "file=@{{upload_file}};type=text/plain;filename={{upload_name}}" \
-    --form-string "note={{note}}"
-  ```
+~~~text
+# @name 用户详情
+# @description 查询指定用户。
+# @timeout 10
+# @extract task_id = data.taskId
+curl --location "{{host}}/users/{{user_id}}"
 ~~~
+
+没有 `@name` 时使用文件名；文件名开头的数字序号和连接符会被去掉，例如 `02-user-detail.http` 显示为 `user-detail`。相对路径会作为请求的稳定 id，因此可以用子目录组织请求。`@extract` 可以写多行，响应路径支持点号路径、数组下标和 JSON Pointer。
 
 解析器会合并反斜杠换行和 PowerShell 反引号换行，并按静态命令参数拆分文本，但不会执行命令替换、管道、重定向或多个命令。PowerShell 中请使用 `curl.exe`，不要使用会被 PowerShell 解析为 `Invoke-WebRequest` 的 `curl` 别名：
 
-~~~yaml
-request: |
-  ```powershell
-  curl.exe --request GET "https://example.test/items/{{item_id}}" `
-    --header "Accept: application/json"
-  ```
+~~~powershell
+curl.exe --request GET "https://example.test/items/{{item_id}}" `
+  --header "Accept: application/json"
 ~~~
 
 支持的 curl 参数：
@@ -243,35 +239,20 @@ request: |
 
 文件上传使用 `--form` 的 `@` 写法。路径相对 `file_directory`，也可以写绝对路径：
 
-```yaml
-request: |
-  curl --request POST "{{host}}/files" \
-    --form "file=@{{upload_file}};type=application/pdf"
-```
+~~~text
+curl --request POST "{{host}}/files" \
+  --form "file=@{{upload_file}};type=application/pdf"
+~~~
 
-`--data-urlencode` 会在变量展开后编码字段；合法 JSON 请求体会在「预览」和响应区使用 JSON 高亮。
+`--data-urlencode` 会在变量展开后编码字段；合法 JSON 请求体会在响应区使用 JSON 高亮。
 
 带有输出参数的 curl 请求会按字节保存响应，不会把二进制内容当作文本显示。没有输出参数、但请求或响应表明内容是附件/二进制文件时，也会自动保存到默认目录。响应区会显示实际保存路径；重复发送同一个下载请求会覆盖同名文件。
 
 ### 返回字段提取
 
-用 `extract` 声明响应字段和目标变量：
+`@extract` 语法保留在请求文件格式中。Variables 窗口显示每个变量的当前值和默认值；Preview 的 Headers 标签显示集合继承的 Header 和当前请求 Header，编辑窗口可以临时修改、启用或停用请求级 Header。
 
-```yaml
-requests:
-  - name: 创建任务
-    description: 创建任务并提取任务 ID。
-    request: |
-      curl --request POST "{{host}}/tasks" \
-        --header "Content-Type: application/json" \
-        --data-raw '{"name":"{{task_name}}"}'
-    extract:
-      task_id: data.taskId
-      first_file: data.files[0].fileId
-      status: /data/status
-```
-
-请求成功后，配置了 `extract` 的变量会在 Variables 区显示「提取」按钮。点击「提取」会按路径从当前接口最近一次成功响应的 JSON 中取值，并直接写入全局变量；「粘贴」从系统剪贴板写入变量，「清理」只清理本次运行的变量值。响应区不提供提取按钮。路径支持点号路径、数组下标和 JSON Pointer；响应必须是 JSON。
+缓存文件是 `.postui/requests.cache.json`，指纹同时覆盖集合 `config.yaml` 和 `requests/` 下的全部请求文件。新增、修改或删除请求后，下一次启动会重新解析。
 
 ## 开发检查
 

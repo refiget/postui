@@ -12,6 +12,7 @@ repository = "https://github.com/refiget/postui"
 anyhow = "1.0"
 crossterm = "0.28"
 ratatui = "0.29"
+ratatui-interact = { version = "0.2.0", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -20,9 +21,3 @@ shlex = "2.0"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
-
-[target.'cfg(windows)'.dependencies]
-arboard = { version = "3.6", default-features = false }

@@ -1,0 +1,8 @@
+# @name 多文件上传
+# @description multipart 字段、两个文件和自定义文件名。
+# @extract upload_size = data.files[0].size
+curl --request POST "http://{{host}}/v1/upload" \
+  --form "file=@{{upload_file}};type=text/plain;filename={{upload_filename}}" \
+  --form "second=@{{second_upload_file}};type=text/plain" \
+  --form-string "note={{note}}" \
+  --form-string "user={{user}}"

@@ -9,11 +9,16 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod curl;
+
+use curl::parse_curl;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RequestConfig {
     pub(crate) name: String,
     pub(crate) file_directory: PathBuf,
     pub(crate) download_directory: PathBuf,
+    pub(crate) headers: BTreeMap<String, String>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
     pub(crate) requests: Vec<ApiRequest>,
     pub(crate) timeout_seconds: u64,
@@ -70,7 +75,7 @@ pub(crate) struct ResponseExtract {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawRequestConfig {
+struct RawCollectionConfig {
     #[serde(default = "default_name")]
     name: String,
     #[serde(default = "default_file_directory")]
@@ -78,33 +83,39 @@ struct RawRequestConfig {
     #[serde(default = "default_download_directory")]
     download_directory: PathBuf,
     #[serde(default)]
-    variables: Vec<RawVariable>,
+    variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
-    requests: Vec<RawApiRequest>,
+    headers: BTreeMap<String, String>,
     #[serde(default = "default_timeout_seconds")]
     timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawVariable {
-    name: String,
-    #[serde(default)]
-    default: Option<Value>,
+impl Default for RawCollectionConfig {
+    fn default() -> Self {
+        Self {
+            name: default_name(),
+            file_directory: default_file_directory(),
+            download_directory: default_download_directory(),
+            variables: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            timeout_seconds: default_timeout_seconds(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawApiRequest {
-    #[serde(default)]
-    id: Option<String>,
+#[derive(Debug, Clone)]
+struct RequestFile {
+    path: PathBuf,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedRequest {
     name: String,
-    #[serde(default)]
+    id: String,
     timeout_seconds: Option<u64>,
-    #[serde(default)]
     description: String,
     request: String,
-    #[serde(default)]
     extract: BTreeMap<String, String>,
 }
 
@@ -142,46 +153,45 @@ fn default_download_directory() -> PathBuf {
     PathBuf::from("tmp")
 }
 
-pub(crate) fn load(path: &Path) -> Result<RequestConfig> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("无法读取配置文件: {}", path.display()))?;
+pub(crate) fn load(collection_path: &Path) -> Result<RequestConfig> {
+    if !collection_path.is_dir() {
+        bail!("请求集合必须是目录: {}", collection_path.display())
+    }
 
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let collection_config_path = collection_path.join("config.yaml");
+    let collection_config = read_optional_file(&collection_config_path)?;
+    let request_files = read_request_files(&collection_path.join("requests"))?;
+    let fingerprint = collection_fingerprint(
+        collection_path,
+        collection_config.as_deref(),
+        &request_files,
+    );
     tracing::debug!(
-        path = %path.display(),
-        format = if extension.is_empty() { "yaml" } else { extension.as_str() },
-        bytes = text.len(),
-        "读取配置文件"
+        path = %collection_path.display(),
+        config_path = %collection_config_path.display(),
+        config_present = collection_config.is_some(),
+        request_count = request_files.len(),
+        "读取请求集合"
     );
 
-    let (config, cache_hit) = match crate::cache::load(path, text.as_bytes()) {
-        Some(config) => match validate_declared_variables(&config) {
-            Ok(()) => (config, true),
-            Err(error) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    error = ?error,
-                    "请求配置缓存内容无效，重新解析配置"
-                );
-                let config = parse_source(path, &text, &extension)?;
-                (config, false)
-            }
-        },
+    let (config, cache_hit) = match crate::cache::load(collection_path, &fingerprint) {
+        Some(config) => (config, true),
         None => {
-            let config = parse_source(path, &text, &extension)?;
+            let config = parse_collection_config(
+                &collection_config_path,
+                collection_config.as_deref(),
+                collection_path,
+                &request_files,
+            )?;
             (config, false)
         }
     };
 
-    if !cache_hit && let Err(error) = crate::cache::store(path, text.as_bytes(), &config) {
+    if !cache_hit && let Err(error) = crate::cache::store(collection_path, &fingerprint, &config) {
         tracing::debug!(
-            path = %path.display(),
+            path = %collection_path.display(),
             error = ?error,
-            "请求配置缓存写入失败，继续使用解析结果"
+            "请求集合缓存写入失败，继续使用解析结果"
         );
     }
 
@@ -189,6 +199,7 @@ pub(crate) fn load(path: &Path) -> Result<RequestConfig> {
         name = %config.name,
         request_count = config.requests.len(),
         variable_count = config.variables.len(),
+        collection_header_count = config.headers.len(),
         timeout_seconds = config.timeout_seconds,
         file_directory = %config.file_directory.display(),
         download_directory = %config.download_directory.display(),
@@ -198,26 +209,31 @@ pub(crate) fn load(path: &Path) -> Result<RequestConfig> {
     Ok(config)
 }
 
-fn parse_source(path: &Path, text: &str, extension: &str) -> Result<RequestConfig> {
-    let raw: RawRequestConfig = if extension == "json" {
-        serde_json::from_str(text).with_context(|| "JSON 配置格式无效")?
-    } else {
-        serde_yaml::from_str(text).with_context(|| "YAML 配置格式无效")?
+fn parse_collection_config(
+    path: &Path,
+    text: Option<&str>,
+    collection_path: &Path,
+    request_files: &[RequestFile],
+) -> Result<RequestConfig> {
+    let raw = match text {
+        Some(text) => serde_yaml::from_str(text)
+            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?,
+        None => RawCollectionConfig::default(),
     };
-
-    let base_directory = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    normalize_at(raw, base_directory)
+    normalize_config(raw, collection_path, request_files)
 }
 
-fn normalize_at(raw: RawRequestConfig, base_directory: &Path) -> Result<RequestConfig> {
-    if raw.requests.is_empty() {
-        bail!("配置文件中至少需要一个接口")
+fn normalize_config(
+    raw: RawCollectionConfig,
+    collection_path: &Path,
+    request_files: &[RequestFile],
+) -> Result<RequestConfig> {
+    if request_files.is_empty() {
+        bail!("请求集合中至少需要一个 .http、.rest 或 .curl 文件")
     }
 
-    let variables = normalize_variables(raw.variables)?;
+    let mut variables = normalize_variables(raw.variables)?;
+    let headers = normalize_headers(raw.headers)?;
     let timeout_seconds = if raw.timeout_seconds == 0 {
         default_timeout_seconds()
     } else {
@@ -225,22 +241,23 @@ fn normalize_at(raw: RawRequestConfig, base_directory: &Path) -> Result<RequestC
     };
 
     let file_directory = resolve_directory(
-        base_directory,
+        collection_path,
         &raw.file_directory,
         default_file_directory(),
         "file_directory",
     )?;
     let download_directory = resolve_directory(
-        base_directory,
+        collection_path,
         &raw.download_directory,
         default_download_directory(),
         "download_directory",
     )?;
 
     let mut request_ids = BTreeSet::new();
-    let mut requests = Vec::with_capacity(raw.requests.len());
-    for (index, raw_request) in raw.requests.into_iter().enumerate() {
-        let request = normalize_request(raw_request, index, timeout_seconds)?;
+    let mut requests = Vec::with_capacity(request_files.len());
+    for file in request_files {
+        let raw_request = parse_request_file(file, collection_path)?;
+        let request = normalize_request(raw_request, timeout_seconds)?;
         if !request_ids.insert(request.id.clone()) {
             bail!("接口 id 重复: {}", request.id)
         }
@@ -261,6 +278,24 @@ fn normalize_at(raw: RawRequestConfig, base_directory: &Path) -> Result<RequestC
         requests.push(request);
     }
 
+    for request in &requests {
+        for name in crate::template::variable_names(request) {
+            variables
+                .entry(name)
+                .or_insert_with(|| VariableDefinition { default: None });
+        }
+    }
+    for (name, value) in &headers {
+        for variable in crate::template::variable_names_in_text(name)
+            .into_iter()
+            .chain(crate::template::variable_names_in_text(value))
+        {
+            variables
+                .entry(variable)
+                .or_insert_with(|| VariableDefinition { default: None });
+        }
+    }
+
     let config = RequestConfig {
         name: if raw.name.trim().is_empty() {
             default_name()
@@ -269,16 +304,224 @@ fn normalize_at(raw: RawRequestConfig, base_directory: &Path) -> Result<RequestC
         },
         file_directory,
         download_directory,
+        headers,
         variables,
         requests,
         timeout_seconds,
     };
-    validate_declared_variables(&config)?;
     Ok(config)
 }
 
+fn read_optional_file(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("无法读取集合配置: {}", path.display())),
+    }
+}
+
+fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
+    if !requests_directory.is_dir() {
+        bail!(
+            "请求集合缺少 requests 目录: {}",
+            requests_directory.display()
+        )
+    }
+
+    let mut paths = Vec::new();
+    collect_request_paths(requests_directory, &mut paths)?;
+    paths.sort();
+
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("无法读取请求文件: {}", path.display()))?;
+        tracing::debug!(path = %path.display(), bytes = text.len(), "读取请求文件");
+        files.push(RequestFile { path, text });
+    }
+    if files.is_empty() {
+        bail!(
+            "请求集合中没有 .http、.rest 或 .curl 文件: {}",
+            requests_directory.display()
+        )
+    }
+    Ok(files)
+}
+
+fn collect_request_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| format!("无法读取请求目录: {}", directory.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("无法枚举请求目录: {}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("无法读取文件类型: {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_request_paths(&path, paths)?;
+        } else if file_type.is_file() && is_request_file(&path) {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_request_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "http" | "rest" | "curl"
+            )
+        })
+}
+
+fn collection_fingerprint(
+    collection_path: &Path,
+    collection_config: Option<&str>,
+    request_files: &[RequestFile],
+) -> Vec<u8> {
+    let mut fingerprint = Vec::new();
+    append_fingerprint_part(&mut fingerprint, b"config.yaml");
+    append_fingerprint_part(
+        &mut fingerprint,
+        collection_config.unwrap_or("<missing-config>").as_bytes(),
+    );
+    for file in request_files {
+        let relative = file
+            .path
+            .strip_prefix(collection_path)
+            .unwrap_or(&file.path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        append_fingerprint_part(&mut fingerprint, relative.as_bytes());
+        append_fingerprint_part(&mut fingerprint, file.text.as_bytes());
+    }
+    fingerprint
+}
+
+fn append_fingerprint_part(fingerprint: &mut Vec<u8>, part: &[u8]) {
+    fingerprint.extend_from_slice(&(part.len() as u64).to_le_bytes());
+    fingerprint.extend_from_slice(part);
+}
+
+fn parse_request_file(file: &RequestFile, collection_path: &Path) -> Result<ParsedRequest> {
+    let id = file
+        .path
+        .strip_prefix(collection_path)
+        .unwrap_or(&file.path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut name = None;
+    let mut description = None;
+    let mut timeout_seconds = None;
+    let mut extract = BTreeMap::new();
+
+    for (line_number, line) in file.text.lines().enumerate() {
+        let Some((directive, value)) = request_directive(line) else {
+            continue;
+        };
+        match directive {
+            "name" => {
+                if name.replace(value.to_string()).is_some() {
+                    bail!("请求 {} 重复声明 @name (第 {} 行)", id, line_number + 1)
+                }
+            }
+            "description" => {
+                if description.replace(value.to_string()).is_some() {
+                    bail!(
+                        "请求 {} 重复声明 @description (第 {} 行)",
+                        id,
+                        line_number + 1
+                    )
+                }
+            }
+            "timeout" => {
+                let timeout = value
+                    .parse::<u64>()
+                    .with_context(|| format!("请求 {} 的 @timeout 无效: {}", id, value))?;
+                if timeout_seconds.replace(timeout).is_some() {
+                    bail!("请求 {} 重复声明 @timeout (第 {} 行)", id, line_number + 1)
+                }
+            }
+            "extract" => {
+                let Some((variable, path)) =
+                    value.split_once('=').or_else(|| value.split_once(':'))
+                else {
+                    bail!(
+                        "请求 {} 的 @extract 格式应为 variable = response.path (第 {} 行)",
+                        id,
+                        line_number + 1
+                    )
+                };
+                let variable = variable.trim().to_string();
+                let path = path.trim().to_string();
+                if variable.is_empty() || path.is_empty() {
+                    bail!(
+                        "请求 {} 的 @extract 不能为空 (第 {} 行)",
+                        id,
+                        line_number + 1
+                    )
+                }
+                if extract.insert(variable, path).is_some() {
+                    bail!("请求 {} 重复声明 @extract (第 {} 行)", id, line_number + 1)
+                }
+            }
+            other => bail!("请求 {} 使用了未知指令: @{}", id, other),
+        }
+    }
+
+    let name = name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| request_display_name(&file.path));
+    let description = description.unwrap_or_default();
+    Ok(ParsedRequest {
+        name,
+        id,
+        timeout_seconds,
+        description,
+        request: file.text.clone(),
+        extract,
+    })
+}
+
+fn request_directive(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim();
+    let directive = trimmed
+        .strip_prefix("# @")
+        .or_else(|| trimmed.strip_prefix("// @"))?;
+    let (name, value) = directive.split_once(char::is_whitespace)?;
+    Some((name, value.trim()))
+}
+
+fn request_display_name(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "request".to_string());
+    let Some(separator) = stem.find(['-', '_']) else {
+        return stem;
+    };
+    if separator > 0
+        && stem[..separator]
+            .chars()
+            .all(|value| value.is_ascii_digit())
+    {
+        let display = stem[separator + 1..].trim();
+        if !display.is_empty() {
+            return display.to_string();
+        }
+    }
+    stem
+}
+
 fn resolve_directory(
-    base_directory: &Path,
+    collection_path: &Path,
     configured_path: &Path,
     default_path: PathBuf,
     field: &str,
@@ -289,11 +532,10 @@ fn resolve_directory(
         configured_path.to_path_buf()
     };
     let resolved_path = if configured_path.is_absolute() {
-        configured_path.clone()
+        normalize_path(&configured_path)
     } else {
-        base_directory.join(&configured_path)
+        normalize_path(&collection_path.join(&configured_path))
     };
-    let resolved_path = normalize_path(&resolved_path);
     if resolved_path.exists() && !resolved_path.is_dir() {
         bail!("配置项 {field} 不是目录: {}", resolved_path.display())
     }
@@ -349,20 +591,15 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn normalize_variables(
-    raw_variables: Vec<RawVariable>,
+    raw_variables: BTreeMap<String, Option<Value>>,
 ) -> Result<BTreeMap<String, VariableDefinition>> {
     let mut variables = BTreeMap::new();
-    for raw in raw_variables {
-        let Some(name) = normalize_variable_name(&raw.name) else {
-            bail!("变量名称无效: {}", raw.name)
+    for (raw_name, default) in raw_variables {
+        let Some(name) = normalize_variable_name(&raw_name) else {
+            bail!("变量名称无效: {raw_name}")
         };
         if variables
-            .insert(
-                name.clone(),
-                VariableDefinition {
-                    default: raw.default,
-                },
-            )
+            .insert(name.clone(), VariableDefinition { default })
             .is_some()
         {
             bail!("变量名称重复: {name}")
@@ -371,15 +608,26 @@ fn normalize_variables(
     Ok(variables)
 }
 
-fn normalize_request(
-    raw: RawApiRequest,
-    index: usize,
-    default_timeout_seconds: u64,
-) -> Result<ApiRequest> {
-    let id = raw
-        .id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("request-{}", index + 1));
+fn normalize_headers(raw_headers: BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::<String, String>::new();
+    for (raw_name, value) in raw_headers {
+        let name = raw_name.trim().to_string();
+        if name.is_empty() {
+            bail!("集合 Header 名称不能为空")
+        }
+        if headers
+            .keys()
+            .any(|existing| existing.eq_ignore_ascii_case(&name))
+        {
+            bail!("集合 Header 名称重复: {name}")
+        }
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result<ApiRequest> {
+    let id = raw.id;
     let name = if raw.name.trim().is_empty() {
         id.clone()
     } else {
@@ -426,487 +674,6 @@ fn normalize_request(
         normalize_extract(&request.id, extract)?;
     }
     Ok(request)
-}
-
-fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand> {
-    if source.trim().is_empty() {
-        bail!("接口 {} 缺少 request 内容", request_id)
-    }
-    let command = clean_command_block(source);
-    if command.contains("$(") || command.contains(char::from(96)) {
-        bail!("接口 {} 的 request 不支持 shell 命令替换", request_id)
-    }
-    let tokens = shlex::split(&command)
-        .ok_or_else(|| anyhow::anyhow!("接口 {} 的 request 存在未闭合的引号", request_id))?;
-    let Some(start) = tokens.iter().position(|token| is_curl_command(token)) else {
-        bail!("接口 {} 的 request 中没有找到 curl 命令", request_id)
-    };
-
-    let mut parsed = ParsedCommand::default();
-    parse_curl_tokens(&mut parsed, &tokens[start + 1..], request_id)?;
-
-    let Some(url) = parsed.url.take() else {
-        bail!("接口 {} 的 curl 命令缺少 URL", request_id)
-    };
-    if parsed.get_mode {
-        parsed.query_data = std::mem::take(&mut parsed.data);
-    }
-    parsed.url = Some(url);
-    let has_data = !parsed.data.is_empty();
-    let has_form = !parsed.form.is_empty() || !parsed.files.is_empty();
-    if has_data {
-        if parsed.method.is_none() {
-            parsed.method = Some("POST".to_string());
-        }
-        insert_header_if_missing(
-            &mut parsed.headers,
-            "Content-Type",
-            "application/x-www-form-urlencoded",
-        );
-    } else if has_form && parsed.method.is_none() {
-        parsed.method = Some("POST".to_string());
-    }
-    if has_data && has_form {
-        bail!("接口 {} 的 curl 命令不能同时使用 data 和 form", request_id)
-    }
-    if parsed.download.is_none() && accepts_binary_response(&parsed.headers) {
-        parsed.download = Some(DownloadTarget::Auto);
-    }
-    Ok(parsed)
-}
-
-fn parse_curl_tokens(
-    parsed: &mut ParsedCommand,
-    tokens: &[String],
-    request_id: &str,
-) -> Result<()> {
-    let mut stop_options = false;
-    let mut index = 0;
-    while index < tokens.len() {
-        let token = &tokens[index];
-        if stop_options {
-            set_url(&mut parsed.url, token, request_id)?;
-            index += 1;
-            continue;
-        }
-        if token == "--" {
-            stop_options = true;
-            index += 1;
-            continue;
-        }
-        parse_curl_option(parsed, tokens, &mut index, request_id)?;
-        index += 1;
-    }
-    Ok(())
-}
-
-fn parse_curl_option(
-    parsed: &mut ParsedCommand,
-    tokens: &[String],
-    index: &mut usize,
-    request_id: &str,
-) -> Result<()> {
-    let token = &tokens[*index];
-    if let Some((option, value)) = attached_option(token) {
-        return parse_option_value(parsed, option, value, request_id);
-    }
-
-    if is_value_option(token) {
-        let value = next_argument(tokens, index, token, request_id)?;
-        return parse_option_value(parsed, token, &value, request_id);
-    }
-
-    match token.as_str() {
-        "-G" | "--get" => {
-            parsed.get_mode = true;
-            parsed.method = Some("GET".to_string());
-        }
-        "-O" | "--remote-name" | "--remote-name-all" => {
-            set_remote_name(parsed, request_id)?;
-        }
-        "-J" | "--remote-header-name" => {
-            parsed.remote_header_name = true;
-            enable_content_disposition(&mut parsed.download);
-        }
-        _ if is_ignored_curl_flag(token) => {}
-        _ if is_download_flag_cluster(token) => {
-            parse_download_flag_cluster(parsed, token, request_id)?;
-        }
-        _ if token.starts_with('-') => {
-            bail!("接口 {} 的 curl 参数暂不支持: {}", request_id, token)
-        }
-        _ => {
-            set_url(&mut parsed.url, token, request_id)?;
-        }
-    }
-    Ok(())
-}
-
-fn attached_option(token: &str) -> Option<(&str, &str)> {
-    for option in ["-X", "-H", "-d", "-F", "-o"] {
-        if let Some(value) = token.strip_prefix(option).filter(|value| !value.is_empty()) {
-            return Some((option, value));
-        }
-    }
-
-    let (option, value) = token.split_once('=')?;
-    is_value_option(option).then_some((option, value))
-}
-
-fn is_value_option(option: &str) -> bool {
-    matches!(
-        option,
-        "-X" | "--request"
-            | "-H"
-            | "--header"
-            | "-d"
-            | "--url"
-            | "--data"
-            | "--data-ascii"
-            | "--data-binary"
-            | "--data-raw"
-            | "--data-urlencode"
-            | "--json"
-            | "-F"
-            | "--form"
-            | "--form-string"
-            | "-o"
-            | "--output"
-            | "-b"
-            | "--cookie"
-            | "-A"
-            | "--user-agent"
-            | "-e"
-            | "--referer"
-    )
-}
-
-fn parse_option_value(
-    parsed: &mut ParsedCommand,
-    option: &str,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    match option {
-        "-X" | "--request" => parsed.method = Some(value.to_string()),
-        "-H" | "--header" => parse_header(&mut parsed.headers, value, request_id)?,
-        "-d" | "--data" | "--data-ascii" | "--data-binary" | "--data-raw" | "--data-urlencode"
-        | "--json" => parse_body_argument(parsed, option, value, request_id)?,
-        "-F" | "--form" => parse_form(parsed, value, request_id)?,
-        "--form-string" => parse_form_string(&mut parsed.form, value, request_id)?,
-        "-o" | "--output" => set_download_path(parsed, value, request_id)?,
-        "-b" | "--cookie" => {
-            parsed
-                .headers
-                .insert("Cookie".to_string(), value.to_string());
-        }
-        "-A" | "--user-agent" => {
-            parsed
-                .headers
-                .insert("User-Agent".to_string(), value.to_string());
-        }
-        "-e" | "--referer" => {
-            parsed
-                .headers
-                .insert("Referer".to_string(), value.to_string());
-        }
-        "--url" => set_url(&mut parsed.url, value, request_id)?,
-        _ => unreachable!("unsupported curl value option: {option}"),
-    }
-    Ok(())
-}
-
-fn clean_command_block(source: &str) -> String {
-    let mut command = String::new();
-    let mut saw_fence = false;
-    let mut in_fence = false;
-
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            if saw_fence && in_fence {
-                in_fence = false;
-            } else if !saw_fence {
-                saw_fence = true;
-                in_fence = true;
-            }
-            continue;
-        }
-        if saw_fence && !in_fence {
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        let line = line.trim_end();
-        if let Some(line) = line.strip_suffix('\\') {
-            command.push_str(line);
-            command.push(' ');
-        } else if let Some(line) = line.strip_suffix(char::from(96)) {
-            command.push_str(line);
-            command.push(' ');
-        } else {
-            command.push_str(line);
-            command.push('\n');
-        }
-    }
-    command
-}
-
-fn is_curl_command(token: &str) -> bool {
-    Path::new(token)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| {
-            value.eq_ignore_ascii_case("curl") || value.eq_ignore_ascii_case("curl.exe")
-        })
-}
-
-fn next_argument(
-    tokens: &[String],
-    index: &mut usize,
-    option: &str,
-    request_id: &str,
-) -> Result<String> {
-    *index += 1;
-    tokens
-        .get(*index)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("接口 {} 的 curl 参数 {} 缺少值", request_id, option))
-}
-
-fn set_url(url: &mut Option<String>, value: &str, request_id: &str) -> Result<()> {
-    if url.replace(value.to_string()).is_some() {
-        bail!("接口 {} 的 curl 命令包含多个 URL", request_id)
-    }
-    Ok(())
-}
-
-fn set_download_path(parsed: &mut ParsedCommand, value: &str, request_id: &str) -> Result<()> {
-    let value = value.trim();
-    if value.is_empty() {
-        bail!("接口 {} 的 curl 输出文件路径不能为空", request_id)
-    }
-    if value == "-" {
-        return Ok(());
-    }
-    if parsed.download.is_some() {
-        bail!("接口 {} 的 curl 命令包含多个下载目标", request_id)
-    }
-    parsed.download = Some(DownloadTarget::Path(value.to_string()));
-    Ok(())
-}
-
-fn set_remote_name(parsed: &mut ParsedCommand, request_id: &str) -> Result<()> {
-    if parsed.download.is_some() {
-        bail!("接口 {} 的 curl 命令包含多个下载目标", request_id)
-    }
-    parsed.download = Some(DownloadTarget::RemoteName {
-        use_content_disposition: parsed.remote_header_name,
-    });
-    Ok(())
-}
-
-fn enable_content_disposition(download: &mut Option<DownloadTarget>) {
-    if let Some(DownloadTarget::RemoteName {
-        use_content_disposition,
-    }) = download
-    {
-        *use_content_disposition = true;
-    }
-}
-
-fn is_download_flag_cluster(value: &str) -> bool {
-    value.len() > 2
-        && value.starts_with('-')
-        && value[1..].chars().all(|flag| matches!(flag, 'O' | 'J'))
-}
-
-fn parse_download_flag_cluster(
-    parsed: &mut ParsedCommand,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    for flag in value[1..].chars() {
-        match flag {
-            'O' => set_remote_name(parsed, request_id)?,
-            'J' => {
-                parsed.remote_header_name = true;
-                enable_content_disposition(&mut parsed.download);
-            }
-            _ => unreachable!("validated download flag cluster"),
-        }
-    }
-    Ok(())
-}
-
-fn accepts_binary_response(headers: &BTreeMap<String, String>) -> bool {
-    headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("accept")
-            && value.split(',').any(|media_type| {
-                let media_type = media_type.trim().to_ascii_lowercase();
-                is_binary_media_type(&media_type)
-            })
-    })
-}
-
-fn is_binary_media_type(value: &str) -> bool {
-    !value.ends_with("+json")
-        && !value.ends_with("+xml")
-        && (value == "application/octet-stream"
-            || value == "application/pdf"
-            || value == "application/zip"
-            || value.starts_with("application/vnd.")
-            || value.starts_with("image/")
-            || value.starts_with("audio/")
-            || value.starts_with("video/"))
-}
-
-fn parse_header(
-    headers: &mut BTreeMap<String, String>,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    let Some((name, value)) = value.split_once(':') else {
-        bail!("接口 {} 的 curl 请求头格式无效: {}", request_id, value)
-    };
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("接口 {} 的 curl 请求头名称不能为空", request_id)
-    }
-    headers.insert(name.to_string(), value.trim().to_string());
-    Ok(())
-}
-
-fn parse_form(parsed: &mut ParsedCommand, value: &str, request_id: &str) -> Result<()> {
-    let (field, content) = split_form_field(value, request_id)?;
-    if let Some(file) = content.strip_prefix('@') {
-        let mut parts = file.split(';');
-        let path = parts.next().unwrap_or_default().trim();
-        if path.is_empty() {
-            bail!("接口 {} 的 curl 上传文件路径不能为空", request_id)
-        }
-        let mut filename = None;
-        let mut content_type = None;
-        for part in parts {
-            let Some((key, value)) = part.split_once('=') else {
-                bail!("接口 {} 的 curl 文件参数格式无效: {}", request_id, part)
-            };
-            match key.trim() {
-                "filename" => filename = Some(value.trim().to_string()),
-                "type" => content_type = Some(value.trim().to_string()),
-                key => bail!("接口 {} 的 curl 文件参数暂不支持: {}", request_id, key),
-            }
-        }
-        parsed.files.push(FileUpload {
-            field: field.to_string(),
-            path: path.to_string(),
-            filename,
-            content_type,
-        });
-    } else {
-        parsed.form.insert(field.to_string(), content.to_string());
-    }
-    Ok(())
-}
-
-fn parse_form_string(
-    form: &mut BTreeMap<String, String>,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    let (field, content) = split_form_field(value, request_id)?;
-    form.insert(field.to_string(), content.to_string());
-    Ok(())
-}
-
-fn split_form_field<'a>(value: &'a str, request_id: &str) -> Result<(&'a str, &'a str)> {
-    let Some((field, content)) = value.split_once('=') else {
-        bail!("接口 {} 的 curl 表单字段格式无效: {}", request_id, value)
-    };
-    let field = field.trim();
-    if field.is_empty() {
-        bail!("接口 {} 的 curl 表单字段名称不能为空", request_id)
-    }
-    Ok((field, content))
-}
-
-fn parse_body_argument(
-    parsed: &mut ParsedCommand,
-    option: &str,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    match option {
-        "--data-urlencode" => parsed.data.push(BodyPart::UrlEncoded(value.to_string())),
-        "--json" => {
-            reject_body_file(value, option, request_id)?;
-            parsed.data.push(BodyPart::Raw(value.to_string()));
-            insert_header_if_missing(&mut parsed.headers, "Content-Type", "application/json");
-            insert_header_if_missing(&mut parsed.headers, "Accept", "application/json");
-        }
-        "--data-raw" => parsed.data.push(BodyPart::Raw(value.to_string())),
-        _ => {
-            reject_body_file(value, option, request_id)?;
-            parsed.data.push(BodyPart::Raw(value.to_string()));
-        }
-    }
-    Ok(())
-}
-
-fn reject_body_file(value: &str, option: &str, request_id: &str) -> Result<()> {
-    if value.starts_with('@') {
-        bail!(
-            "接口 {} 的 curl 参数 {} 不支持通过 @ 读取请求体文件，请使用 --form 上传文件",
-            request_id,
-            option
-        )
-    }
-    Ok(())
-}
-
-fn insert_header_if_missing(headers: &mut BTreeMap<String, String>, name: &str, value: &str) {
-    if !headers.keys().any(|key| key.eq_ignore_ascii_case(name)) {
-        headers.insert(name.to_string(), value.to_string());
-    }
-}
-
-fn is_ignored_curl_flag(value: &str) -> bool {
-    matches!(
-        value,
-        "--location"
-            | "--compressed"
-            | "--silent"
-            | "--show-error"
-            | "--fail"
-            | "--fail-with-body"
-            | "--globoff"
-            | "--path-as-is"
-            | "--http1.1"
-            | "--http2"
-            | "--http2-prior-knowledge"
-            | "--no-buffer"
-            | "--verbose"
-            | "-s"
-            | "-S"
-            | "-f"
-            | "-v"
-            | "-i"
-            | "-sS"
-    )
-}
-
-fn validate_declared_variables(config: &RequestConfig) -> Result<()> {
-    let declared = config.variables.keys().collect::<BTreeSet<_>>();
-    for request in &config.requests {
-        for name in crate::template::variable_names(request) {
-            if !declared.contains(&name) {
-                bail!("接口 {} 使用了未声明的变量: {name}", request.name,)
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
@@ -964,8 +731,8 @@ mod tests {
 
     #[test]
     fn loads_simplified_config() {
-        let config = load(Path::new(".postui/requests.yaml")).expect("示例请求配置应当可以加载");
-        assert_eq!(config.requests.len(), 12);
+        let config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
+        assert_eq!(config.requests.len(), 17);
         assert_eq!(config.requests[0].method, "GET");
         assert_eq!(
             config
@@ -974,35 +741,46 @@ mod tests {
                 .and_then(|value| value.to_str()),
             Some("files")
         );
-        assert_eq!(config.download_directory, PathBuf::from(".postui/tmp"));
-        assert_eq!(config.requests[4].files[0].path, "{{demo_file}}");
-        assert!(config.requests[0].extracts.iter().any(|extract| {
-            extract.variable == "echoed_source" && extract.path == "args.source"
-        }));
-        assert!(
-            config.requests[1].body_parts.iter().any(
-                |part| matches!(part, BodyPart::Raw(body) if body.contains("{{demo_message}}"))
-            )
+        assert_eq!(config.download_directory, PathBuf::from("mock/.postui/tmp"));
+        assert_eq!(
+            config
+                .headers
+                .get("X-PostUI-Collection")
+                .map(String::as_str),
+            Some("{{collection_name}}")
         );
-        assert!(config.variables["request_uuid"].default.is_none());
+        assert!(config.variables.contains_key("collection_name"));
+        assert_eq!(config.requests[8].files[0].path, "{{upload_file}}");
+        assert!(
+            config.requests[0].extracts.iter().any(|extract| {
+                extract.variable == "health_service" && extract.path == "service"
+            })
+        );
+        assert!(
+            config.requests[2]
+                .body_parts
+                .iter()
+                .any(|part| matches!(part, BodyPart::Raw(body) if body.contains("{{task_id}}")))
+        );
+        assert!(config.variables["empty_file"].default.is_none());
     }
 
     #[test]
     fn resolves_directories_relative_to_the_request_config() {
-        let raw: RawRequestConfig = serde_yaml::from_str(
+        let raw: RawCollectionConfig = serde_yaml::from_str(
             r#"
 name: path-test
 file_directory: ../files
 download_directory: ../temp
-requests:
-  - id: download
-    name: Download
-    request: curl --output result.bin https://example.test/file
 "#,
         )
         .expect("目录配置应当可以解析");
 
-        let config = normalize_at(raw, Path::new("/workspace/project/.postui"))
+        let files = vec![RequestFile {
+            path: PathBuf::from("/workspace/project/.postui/requests/download.http"),
+            text: "curl --output result.bin https://example.test/file".to_string(),
+        }];
+        let config = normalize_config(raw, Path::new("/workspace/project/.postui"), &files)
             .expect("目录配置应当可以规范化");
 
         assert_eq!(
@@ -1057,31 +835,52 @@ requests:
 
     #[test]
     fn applies_request_timeout_over_the_collection_default() {
-        let raw: RawRequestConfig = serde_yaml::from_str(
+        let raw: RawCollectionConfig = serde_yaml::from_str(
             r#"
 name: timeout-test
 timeout_seconds: 12
-requests:
-  - id: inherited
-    name: Inherited
-    request: curl https://example.test/inherited
-  - id: custom
-    name: Custom
-    timeout_seconds: 4
-    request: curl https://example.test/custom
-  - id: fallback
-    name: Fallback
-    timeout_seconds: 0
-    request: curl https://example.test/fallback
 "#,
         )
         .expect("超时配置应当可以解析");
 
-        let config = normalize_at(raw, Path::new(".")).expect("超时配置应当可以规范化");
+        let files = vec![
+            RequestFile {
+                path: PathBuf::from("inherited.http"),
+                text: "curl https://example.test/inherited".to_string(),
+            },
+            RequestFile {
+                path: PathBuf::from("custom.http"),
+                text: "# @timeout 4\ncurl https://example.test/custom".to_string(),
+            },
+            RequestFile {
+                path: PathBuf::from("fallback.http"),
+                text: "# @timeout 0\ncurl https://example.test/fallback".to_string(),
+            },
+        ];
+        let config = normalize_config(raw, Path::new("."), &files).expect("超时配置应当可以规范化");
         assert_eq!(config.timeout_seconds, 12);
         assert_eq!(config.requests[0].timeout_seconds, 12);
         assert_eq!(config.requests[1].timeout_seconds, 4);
         assert_eq!(config.requests[2].timeout_seconds, 12);
+    }
+
+    #[test]
+    fn parses_request_metadata_and_discovers_variables() {
+        let raw = RawCollectionConfig::default();
+        let files = vec![RequestFile {
+            path: PathBuf::from("requests/01-health.http"),
+            text: "# @name Health check\n# @description A simple check\n# @extract service = data.service\ncurl http://{{host}}/health".to_string(),
+        }];
+
+        let config =
+            normalize_config(raw, Path::new("."), &files).expect("请求文件元数据应当可以解析");
+        assert_eq!(config.requests[0].id, "requests/01-health.http");
+        assert_eq!(config.requests[0].name, "Health check");
+        assert_eq!(config.requests[0].description, "A simple check");
+        assert_eq!(config.requests[0].extracts[0].variable, "service");
+        assert_eq!(config.requests[0].extracts[0].path, "data.service");
+        assert!(config.variables.contains_key("host"));
+        assert!(config.variables.contains_key("service"));
     }
 
     #[test]

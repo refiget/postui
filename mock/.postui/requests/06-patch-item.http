@@ -1,0 +1,6 @@
+# @name 部分更新项目（长参数）
+# @description 测试 --option=value 形式。
+curl --request=PATCH \
+  --url="http://{{host}}/v1/items/{{item_id}}" \
+  --header="Content-Type: application/json" \
+  --data-raw='{"value":"{{item_value}}"}'

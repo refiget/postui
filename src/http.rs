@@ -558,7 +558,7 @@ mod tests {
             return;
         }
 
-        let config_path = Path::new("mock/.postui/requests.yaml");
+        let config_path = Path::new("mock/.postui");
         let log_path = env::var_os("POSTUI_E2E_LOG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("target/postui-fastapi-e2e.log"));
@@ -603,52 +603,52 @@ mod tests {
             );
 
             match request.id.as_str() {
-                "health" => {
+                "requests/01-health.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "service"), "postui-fastapi-mock");
                 }
-                "search" => {
+                "requests/02-search.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.query.q"), "文档审查 & edge");
                     assert_eq!(json_field(&response, "data.query.page"), "2");
                 }
-                "create-task" => {
+                "requests/03-create-task.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 201);
                     assert_eq!(json_field(&response, "data.taskId"), "task-from-config");
                     assert_eq!(json_field(&response, "data.payload.name"), "文档接口测试");
                 }
-                "task-status" => {
+                "requests/04-task-status.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.taskId"), "task-from-config");
                     assert_eq!(json_field(&response, "data.status"), "processing");
                     assert_eq!(json_field(&response, "data.items[0].id"), "file-001");
                 }
-                "put-item" => {
+                "requests/05-put-item.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.method"), "PUT");
                 }
-                "patch-item" => {
+                "requests/06-patch-item.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.method"), "PATCH");
                 }
-                "delete-item" => {
+                "requests/07-delete-item.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.deleted"), "true");
                 }
-                "form" => {
+                "requests/08-form.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.form.name"), "文档接口测试");
                     assert_eq!(json_field(&response, "data.form.note"), "multipart note");
                 }
-                "upload" => {
+                "requests/09-upload.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(
@@ -661,7 +661,7 @@ mod tests {
                     );
                     assert_eq!(json_field(&response, "data.note"), "multipart note");
                 }
-                "headers" => {
+                "requests/10-headers.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "data.token"), "mock-secret-token");
@@ -672,30 +672,30 @@ mod tests {
                         "http://example.test/source"
                     );
                 }
-                "redirect" => {
+                "requests/11-redirect.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(json_field(&response, "service"), "postui-fastapi-mock");
                 }
-                "error" => {
+                "requests/12-error.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 422);
                     assert_eq!(json_field(&response, "error.code"), "MOCK_VALIDATION");
                 }
-                "empty" => {
+                "requests/13-empty.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 204);
                     assert!(response.body.is_empty());
                 }
-                "plain" => {
+                "requests/14-plain.http" => {
                     let response = successful_ref(&result, request.id.as_str());
                     assert_eq!(response.status, 200);
                     assert_eq!(response.body, "postui mock plain text\n");
                 }
-                "timeout" | "missing-file" => {
+                "requests/15-timeout.http" | "requests/16-missing-file.http" => {
                     assert!(result.is_err(), "{} 应当返回错误", request.id);
                 }
-                "empty-file-variable" => {
+                "requests/17-empty-file-variable.http" => {
                     assert!(result.is_err(), "{} 应当返回错误", request.id);
                 }
                 other => panic!("未覆盖的 mock 请求: {other}"),
@@ -842,6 +842,7 @@ mod tests {
         let request = ResolvedRequest {
             method: "POST".to_string(),
             url: format!("http://{address}/upload"),
+            query_parts: Vec::new(),
             headers: BTreeMap::new(),
             raw_body: None,
             form: BTreeMap::new(),
@@ -916,6 +917,7 @@ mod tests {
         let request = ResolvedRequest {
             method: "GET".to_string(),
             url: format!("http://{address}/reports/latest"),
+            query_parts: Vec::new(),
             headers: BTreeMap::new(),
             raw_body: None,
             form: BTreeMap::new(),

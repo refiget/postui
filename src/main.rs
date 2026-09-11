@@ -6,8 +6,8 @@ compile_error!("postui 仅支持 Linux amd64 (x86_64) 和 Windows x86_64");
 
 mod app;
 mod cache;
-mod clipboard;
 mod config;
+mod editor;
 mod highlight;
 mod http;
 mod i18n;
@@ -108,7 +108,7 @@ fn run_app(options: CliOptions) -> Result<()> {
     tracing::debug!(
         path = %request_config_path.display(),
         explicit_global_config,
-        "选择请求配置文件"
+        "选择请求集合"
     );
     let request_config = match load_request_config(&request_config_path) {
         Ok(config) => config,
@@ -116,10 +116,10 @@ fn run_app(options: CliOptions) -> Result<()> {
             tracing::error!(
                 path = %request_config_path.display(),
                 error = ?error,
-                "请求配置加载失败"
+                "请求集合加载失败"
             );
             return Err(error.context(format!(
-                "加载请求配置失败: {}",
+                "加载请求集合失败: {}",
                 request_config_path.display()
             )));
         }
@@ -238,7 +238,7 @@ fn parse_args() -> Result<CliCommand> {
             }
             "-r" | "--requests" => {
                 let Some(path) = args.next() else {
-                    bail!("--requests 需要一个文件路径")
+                    bail!("--requests 需要一个请求集合目录")
                 };
                 request_config = Some(PathBuf::from(path));
             }
@@ -281,11 +281,11 @@ fn parse_args() -> Result<CliCommand> {
 fn print_help() {
     print!(
         "用法:\n\
-  postui [--config <全局配置>] [--requests <请求配置>] [--debug] [--log-file <路径>]\n\
+  postui [--config <全局配置>] [--requests <请求集合目录>] [--debug] [--log-file <路径>]\n\
   postui init\n\n\
 全局配置优先级: 显式 --config，其次用户 Home 下的 postui.yaml 或 .postui.yaml，再到平台配置目录；都不存在时使用内置默认配置。\n\
-未显式指定 --config 或 --requests 时，优先读取当前目录的 .postui/requests.yaml；否则使用全局配置的 request_config。\n\
-请求配置也可以用 --requests 覆盖。\n\
+未显式指定 --config 或 --requests 时，从当前目录向父目录查找 .postui 集合目录；找不到时使用全局配置的 request_config。\n\
+请求集合也可以用 --requests 覆盖。\n\
 默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\
 postui init 会在 Linux 更新 ~/.zshrc 或 ~/.bashrc；Windows 更新当前用户 PATH。两者都不会写入系统级配置。\n"
@@ -618,16 +618,27 @@ fn config_directory(home: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn discover_local_request_config() -> Option<PathBuf> {
-    let path = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".postui/requests.yaml");
-    if path.is_file() {
-        tracing::debug!(path = %path.display(), "自动发现当前目录请求配置");
-        Some(path)
-    } else {
-        tracing::debug!(path = %path.display(), "当前目录没有请求配置");
-        None
+    let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let path = find_local_request_config(&current_directory);
+    match path.as_deref() {
+        Some(path) => tracing::debug!(
+            start = %current_directory.display(),
+            path = %path.display(),
+            "自动发现本地请求集合"
+        ),
+        None => tracing::debug!(
+            start = %current_directory.display(),
+            "当前目录及父目录没有请求集合"
+        ),
     }
+    path
+}
+
+fn find_local_request_config(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|directory| directory.join(".postui"))
+        .find(|path| path.is_dir())
 }
 
 fn resolve_cli_path(path: &Path) -> PathBuf {
@@ -669,6 +680,14 @@ mod tests {
         assert_eq!(
             resolve_cli_path(Path::new(r"C:\\PostUI\\config.yaml")),
             PathBuf::from(r"C:\\PostUI\\config.yaml")
+        );
+    }
+
+    #[test]
+    fn finds_collection_from_a_nested_request_directory() {
+        assert_eq!(
+            super::find_local_request_config(Path::new("mock/.postui/requests")),
+            Some(PathBuf::from("mock/.postui"))
         );
     }
 
