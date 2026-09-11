@@ -16,24 +16,27 @@ __pycache__/
 *.log
 logs/
 *.pid
+/temp/
 **/requests.cache.json
+/mock/temp/
 
 # 本地环境变量；示例文件可以提交
 .env
 .env.*
 !.env.example
 
-# 用户上传文件，只保留目录说明文件
-/files/*
-!/files/请将待审查文件放入此目录.txt
+# 用户上传文件，只保留目录说明文件；真实文件不得提交
+/test_files/*
+!/test_files/请将待审查文件放入此目录.txt
 
-# 个人项目转换配置，仅保留在本机
+# 个人项目配置，仅保留在本机；公开模板使用 config.example.yaml
 /config.yaml
 /.postui/
 /themes/
 
-# 本地发布包，不纳入源代码仓库
+# 本地发布包与辅助工具数据，不纳入源代码仓库
 /打包区/
+/.codegraph/
 
 # 编辑器与操作系统文件
 .DS_Store

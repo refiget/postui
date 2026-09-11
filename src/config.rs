@@ -20,6 +20,8 @@ pub(crate) struct RequestConfig {
     pub(crate) download_directory: PathBuf,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
+    #[serde(default)]
+    pub(crate) editable_variables: BTreeSet<String>,
     pub(crate) requests: Vec<ApiRequest>,
     pub(crate) timeout_seconds: u64,
 }
@@ -42,15 +44,7 @@ pub(crate) struct ApiRequest {
     pub(crate) query_parts: Vec<BodyPart>,
     pub(crate) form: BTreeMap<String, String>,
     pub(crate) files: Vec<FileUpload>,
-    pub(crate) download: Option<DownloadTarget>,
     pub(crate) extracts: Vec<ResponseExtract>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum DownloadTarget {
-    Path(String),
-    RemoteName { use_content_disposition: bool },
-    Auto,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,9 +72,9 @@ pub(crate) struct ResponseExtract {
 struct RawCollectionConfig {
     #[serde(default = "default_name")]
     name: String,
-    #[serde(default = "default_file_directory")]
+    #[serde(default)]
     file_directory: PathBuf,
-    #[serde(default = "default_download_directory")]
+    #[serde(default)]
     download_directory: PathBuf,
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
@@ -94,8 +88,8 @@ impl Default for RawCollectionConfig {
     fn default() -> Self {
         Self {
             name: default_name(),
-            file_directory: default_file_directory(),
-            download_directory: default_download_directory(),
+            file_directory: PathBuf::new(),
+            download_directory: PathBuf::new(),
             variables: BTreeMap::new(),
             headers: BTreeMap::new(),
             timeout_seconds: default_timeout_seconds(),
@@ -128,8 +122,6 @@ struct ParsedCommand {
     query_data: Vec<BodyPart>,
     form: BTreeMap<String, String>,
     files: Vec<FileUpload>,
-    download: Option<DownloadTarget>,
-    remote_header_name: bool,
     get_mode: bool,
 }
 
@@ -143,14 +135,6 @@ fn default_method() -> String {
 
 fn default_timeout_seconds() -> u64 {
     30
-}
-
-fn default_file_directory() -> PathBuf {
-    PathBuf::from("files")
-}
-
-fn default_download_directory() -> PathBuf {
-    PathBuf::from("tmp")
 }
 
 pub(crate) fn load(collection_path: &Path) -> Result<RequestConfig> {
@@ -233,6 +217,7 @@ fn normalize_config(
     }
 
     let mut variables = normalize_variables(raw.variables)?;
+    let editable_variables = variables.keys().cloned().collect();
     let headers = normalize_headers(raw.headers)?;
     let timeout_seconds = if raw.timeout_seconds == 0 {
         default_timeout_seconds()
@@ -243,13 +228,13 @@ fn normalize_config(
     let file_directory = resolve_directory(
         collection_path,
         &raw.file_directory,
-        default_file_directory(),
+        default_data_directory(collection_path, "test_files"),
         "file_directory",
     )?;
     let download_directory = resolve_directory(
         collection_path,
         &raw.download_directory,
-        default_download_directory(),
+        default_data_directory(collection_path, "temp"),
         "download_directory",
     )?;
 
@@ -272,7 +257,6 @@ fn normalize_config(
             extract_count = request.extracts.len(),
             body_part_count = request.body_parts.len(),
             query_part_count = request.query_parts.len(),
-            download = ?request.download,
             "规范化接口配置"
         );
         requests.push(request);
@@ -306,6 +290,7 @@ fn normalize_config(
         download_directory,
         headers,
         variables,
+        editable_variables,
         requests,
         timeout_seconds,
     };
@@ -526,12 +511,13 @@ fn resolve_directory(
     default_path: PathBuf,
     field: &str,
 ) -> Result<PathBuf> {
-    let configured_path = if configured_path.as_os_str().is_empty() {
+    let using_default = configured_path.as_os_str().is_empty();
+    let configured_path = if using_default {
         default_path
     } else {
         configured_path.to_path_buf()
     };
-    let resolved_path = if configured_path.is_absolute() {
+    let resolved_path = if using_default || configured_path.is_absolute() {
         normalize_path(&configured_path)
     } else {
         normalize_path(&collection_path.join(&configured_path))
@@ -547,6 +533,17 @@ fn resolve_directory(
         "解析文件目录配置"
     );
     Ok(resolved_path)
+}
+
+fn default_data_directory(collection_path: &Path, name: &str) -> PathBuf {
+    let project_directory = collection_path
+        .ancestors()
+        .find(|path| path.file_name() == Some(std::ffi::OsStr::new(".postui")))
+        .and_then(Path::parent)
+        .or_else(|| collection_path.parent())
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    project_directory.join(name)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -659,7 +656,6 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
         query_parts: parsed.query_data,
         form: parsed.form,
         files: parsed.files,
-        download: parsed.download,
         extracts: raw
             .extract
             .into_iter()
@@ -670,8 +666,16 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
     for file in &request.files {
         validate_file(&request.id, file)?;
     }
+    let mut extract_variables = BTreeSet::new();
     for extract in &mut request.extracts {
         normalize_extract(&request.id, extract)?;
+        if !extract_variables.insert(extract.variable.clone()) {
+            bail!(
+                "接口 {} 重复声明响应提取变量: {}",
+                request.id,
+                extract.variable
+            )
+        }
     }
     Ok(request)
 }
@@ -739,9 +743,9 @@ mod tests {
                 .file_directory
                 .file_name()
                 .and_then(|value| value.to_str()),
-            Some("files")
+            Some("test_files")
         );
-        assert_eq!(config.download_directory, PathBuf::from("mock/.postui/tmp"));
+        assert_eq!(config.download_directory, PathBuf::from("mock/temp"));
         assert_eq!(
             config
                 .headers
@@ -786,6 +790,31 @@ download_directory: ../temp
         assert_eq!(
             config.file_directory,
             PathBuf::from("/workspace/project/files")
+        );
+        assert_eq!(
+            config.download_directory,
+            PathBuf::from("/workspace/project/temp")
+        );
+    }
+
+    #[test]
+    fn default_directories_are_siblings_of_the_postui_directory() {
+        let files = vec![RequestFile {
+            path: PathBuf::from(
+                "/workspace/project/.postui/collections/example/requests/health.http",
+            ),
+            text: "curl https://example.test/health".to_string(),
+        }];
+        let config = normalize_config(
+            RawCollectionConfig::default(),
+            Path::new("/workspace/project/.postui/collections/example"),
+            &files,
+        )
+        .expect("默认目录应当可以解析");
+
+        assert_eq!(
+            config.file_directory,
+            PathBuf::from("/workspace/project/test_files")
         );
         assert_eq!(
             config.download_directory,
@@ -881,6 +910,24 @@ timeout_seconds: 12
         assert_eq!(config.requests[0].extracts[0].path, "data.service");
         assert!(config.variables.contains_key("host"));
         assert!(config.variables.contains_key("service"));
+        assert_eq!(
+            config.editable_variables,
+            BTreeSet::new(),
+            "请求中发现的变量应作为运行时变量，不应出现在变量编辑器"
+        );
+    }
+
+    #[test]
+    fn rejects_extract_variables_that_normalize_to_the_same_name() {
+        let files = vec![RequestFile {
+            path: PathBuf::from("requests/extract.http"),
+            text: "# @extract task_id = data.id\n# @extract {{task_id}} = data.other\ncurl https://example.test/task".to_string(),
+        }];
+
+        let error = normalize_config(RawCollectionConfig::default(), Path::new("."), &files)
+            .expect_err("规范化后重复的提取变量应报错");
+
+        assert!(error.to_string().contains("重复声明响应提取变量"));
     }
 
     #[test]
@@ -920,41 +967,15 @@ timeout_seconds: 12
     }
 
     #[test]
-    fn parses_curl_download_targets() {
-        let output = parse_curl(
+    fn curl_output_options_do_not_change_request_configuration() {
+        let parsed = parse_curl(
             "curl --location --output '{{download_name}}' https://example.test/report",
-            "download",
+            "response",
         )
-        .expect("output 参数应当可以解析");
-        assert_eq!(
-            output.download,
-            Some(DownloadTarget::Path("{{download_name}}".to_string()))
-        );
+        .expect("旧 curl 输出参数应当可以兼容解析");
 
-        let remote_name = parse_curl(
-            "curl -OJ https://example.test/reports/latest",
-            "remote-download",
-        )
-        .expect("remote name 参数应当可以解析");
-        assert_eq!(
-            remote_name.download,
-            Some(DownloadTarget::RemoteName {
-                use_content_disposition: true
-            })
-        );
-
-        let automatic = parse_curl(
-            "curl --header 'accept: application/octet-stream' https://example.test/file",
-            "automatic-download",
-        )
-        .expect("二进制 Accept 应当可以解析");
-        assert_eq!(automatic.download, Some(DownloadTarget::Auto));
-
-        let json_response = parse_curl(
-            "curl --header 'Accept: application/vnd.api+json' https://example.test/data",
-            "json-response",
-        )
-        .expect("JSON media type 应当可以解析");
-        assert_eq!(json_response.download, None);
+        assert_eq!(parsed.url.as_deref(), Some("https://example.test/report"));
+        assert!(parsed.data.is_empty());
+        assert!(parsed.form.is_empty());
     }
 }

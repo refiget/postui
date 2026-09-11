@@ -6,41 +6,41 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let line = if area.width >= 80 {
         Line::from(vec![
             Span::styled("Tab", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_focus())),
+            Span::raw(format!(" {}  │  ", text.footer_focus())),
             Span::styled("↑↓/jk", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_move())),
+            Span::raw(format!(" {}  │  ", text.footer_move())),
             Span::styled("Enter", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_select())),
+            Span::raw(format!(" {}  │  ", text.footer_select())),
             Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.variables())),
+            Span::raw(format!(" {}  │  ", text.variables())),
             Span::styled("←→", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.request_editor())),
+            Span::raw(format!(" {}  │  ", text.request_editor())),
             Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_send())),
+            Span::raw(format!(" {}  │  ", text.footer_send())),
             Span::styled("q", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_quit())),
+            Span::raw(format!(" {}  │  ", text.footer_quit())),
             Span::styled(text.footer_mouse(), Style::default().fg(theme.accent)),
             Span::raw(format!(" {}", text.footer_click())),
         ])
     } else if area.width >= 48 {
         Line::from(vec![
             Span::styled("Tab", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_focus())),
+            Span::raw(format!(" {}  │  ", text.footer_focus())),
             Span::styled("↑↓", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_move())),
+            Span::raw(format!(" {}  │  ", text.footer_move())),
             Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.variables())),
+            Span::raw(format!(" {}  │  ", text.variables())),
             Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_send())),
+            Span::raw(format!(" {}  │  ", text.footer_send())),
             Span::styled("q", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}", text.footer_quit())),
         ])
     } else {
         Line::from(vec![
             Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.variables())),
+            Span::raw(format!(" {}  │  ", text.variables())),
             Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  ", text.footer_send())),
+            Span::raw(format!(" {}  │  ", text.footer_send())),
             Span::styled("q", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}", text.footer_quit())),
         ])
@@ -51,37 +51,66 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub(super) fn draw_header(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    content_area: Rect,
+    send_button: Rect,
+    app: &App,
+) {
     let theme = &app.global_config.theme;
-    let text = app.text();
     let mut line = vec![
         Span::styled(
-            " PostUI ",
+            " POSTUI ",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("· {}", app.config.name),
+            format!("  {}", app.config.name),
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ];
     if area.width >= 72 {
         line.push(Span::styled(
-            format!("  {}: {}", text.request_config(), app.config_path.display()),
+            format!("  │  {}", app.config_path.display()),
             Style::default().fg(theme.muted),
         ));
     }
-    let mut status_line = vec![Span::styled("› ", Style::default().fg(theme.secondary))];
+    let mut status_line = vec![Span::styled("  › ", Style::default().fg(theme.secondary))];
     status_line.extend(highlight::template_spans(
         app.status.as_str(),
         Style::default().fg(theme.text),
         theme,
     ));
-    let header = Paragraph::new(Text::from(vec![Line::from(line), Line::from(status_line)]))
-        .block(panel_block("", area, theme).border_style(Style::default().fg(theme.accent)))
-        .style(Style::default().fg(theme.text));
-    frame.render_widget(header, area);
+    frame.render_widget(
+        panel_block("", area, theme).border_style(Style::default().fg(theme.accent)),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![Line::from(line), Line::from(status_line)]))
+            .style(Style::default().fg(theme.text)),
+        content_area,
+    );
+
+    if !send_button.is_empty() {
+        let request_status = app.request_status(&app.current_request().id);
+        let loading = request_status == RequestStatus::Sending;
+        let label = if loading {
+            format!(
+                "{} {}",
+                request_status_symbol(request_status, app.animation_frame),
+                app.text().send_button(true)
+            )
+        } else {
+            format!("[ {} ]", app.text().send_button(false))
+        };
+        let state = preview_action_button_state(
+            !app.can_execute_preview_action(PreviewAction::Send),
+            app.focused_preview_action() == Some(PreviewAction::Send),
+        );
+        frame.render_widget(send_button_widget(&label, &state, theme), send_button);
+    }
 }
 
 pub(super) fn draw_request_list(
@@ -97,30 +126,64 @@ pub(super) fn draw_request_list(
     let text = app.text();
     let focus = FocusStyles::new(app.focus, theme);
     frame.render_widget(
-        panel_block(text.request_selector(), area, theme).border_style(focus.sidebar_border()),
+        focused_panel_block(
+            text.request_selector(),
+            area,
+            theme,
+            focus.sidebar_focused(),
+        )
+        .border_style(focus.sidebar_border()),
         area,
     );
 
     if !collection_label_area.is_empty() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(collection_label_area);
+        let marker = if app.collection_menu_open {
+            "▴"
+        } else {
+            "▾"
+        };
+        let collection_name = app
+            .collections
+            .get(app.selected_collection)
+            .map(|choice| choice.name.as_str())
+            .unwrap_or(app.config.name.as_str());
+        let fixed_width = Line::from(format!("◆   {}", marker)).width();
         let collection = format!(
-            "{}  {}",
-            text.collection(),
+            "◆ {} {}",
             truncate(
-                &app.config.name,
-                usize::from(collection_label_area.width.saturating_sub(2))
-            )
+                collection_name,
+                usize::from(collection_label_area.width).saturating_sub(fixed_width)
+            ),
+            marker,
         );
+        let style = if focus.collection_focused() {
+            Style::default()
+                .fg(theme.background)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(theme.accent)
+                .bg(theme.selection)
+                .add_modifier(Modifier::BOLD)
+        };
         frame.render_widget(
-            Paragraph::new(collection).style(Style::default().fg(theme.text)),
-            collection_label_area,
+            Paragraph::new(text.collection())
+                .style(Style::default().fg(theme.muted).bg(theme.surface)),
+            rows[0],
         );
+        frame.render_widget(Paragraph::new(collection).style(style), rows[1]);
     }
     if !variables_button_area.is_empty() {
         let mut state = ButtonState::enabled();
         state.set_focused(focus.variables_focused());
-        let label = format!("{} ({})", text.variables(), app.variable_count());
+        let label = format!("◇ {} ({})", text.variables(), app.variable_count());
         frame.render_widget(
-            compact_button_widget(&label, &state, theme),
+            variables_button_widget(&label, &state, theme),
             variables_button_area,
         );
     }
@@ -129,7 +192,7 @@ pub(super) fn draw_request_list(
         .config
         .requests
         .iter()
-        .map(|request| request_item(request, app, theme, list_area.width))
+        .map(|request| request_item(request, theme, list_area.width))
         .collect::<Vec<_>>();
     let list = List::new(items)
         .style(Style::default().bg(theme.surface).fg(theme.text))
@@ -138,7 +201,7 @@ pub(super) fn draw_request_list(
                 .bg(focus.request_selection())
                 .fg(theme.text),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("› ");
     let mut state = ListState::default();
     if !app.config.requests.is_empty() {
         state.select(Some(app.requests_state.selected_request));
@@ -156,30 +219,14 @@ pub(super) fn draw_request_list(
 
 pub(super) fn request_item(
     request: &ApiRequest,
-    app: &App,
     theme: &crate::settings::UiTheme,
     width: u16,
 ) -> ListItem<'static> {
-    let status = app.request_status(&request.id);
-    let status_text = format!("[{}] ", status.tag());
-    let method_text = format!("{} ", request.method);
-    let prefix_width = u16::try_from(
-        Line::from(status_text.as_str()).width() + Line::from(method_text.as_str()).width(),
-    )
-    .unwrap_or(u16::MAX);
     let label_width = width
         .saturating_sub(TABLE_HIGHLIGHT_WIDTH)
-        .saturating_sub(prefix_width);
-    let label = format!("{}  {}", request.name, template::display_url(request));
-    let mut spans = vec![
-        Span::styled(status_text, request_status_style(status, theme)),
-        Span::styled(method_text, method_style(&request.method, theme)),
-    ];
-    if label_width > 0 {
-        spans.push(Span::styled(
-            truncate(&label, usize::from(label_width)),
-            Style::default().fg(theme.text),
-        ));
-    }
-    ListItem::new(Line::from(spans))
+        .saturating_sub(1);
+    ListItem::new(Line::from(Span::styled(
+        truncate(&request.name, usize::from(label_width)),
+        Style::default().fg(theme.text),
+    )))
 }

@@ -17,12 +17,22 @@ impl UiText {
         }
     }
 
-    pub(crate) fn requests(self) -> &'static str {
-        self.pick("Requests", "接口列表")
-    }
-
     pub(crate) fn collection(self) -> &'static str {
         self.pick("Collection", "集合")
+    }
+
+    pub(crate) fn collection_switch_blocked(self) -> &'static str {
+        self.pick(
+            "Wait for the current request before switching collections",
+            "当前请求结束后再切换集合",
+        )
+    }
+
+    pub(crate) fn collection_load_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not load collection: {error}"),
+            Language::Chinese => format!("集合加载失败：{error}"),
+        }
     }
 
     pub(crate) fn variables(self) -> &'static str {
@@ -45,28 +55,24 @@ impl UiText {
         self.pick("Body", "请求体")
     }
 
-    pub(crate) fn query(self) -> &'static str {
-        self.pick("Query", "查询")
-    }
-
-    pub(crate) fn raw(self) -> &'static str {
-        self.pick("Raw", "原始")
-    }
-
-    pub(crate) fn url_encoded(self) -> &'static str {
-        self.pick("URL Encoded", "URL 编码")
+    pub(crate) fn content(self) -> &'static str {
+        self.pick("Content", "内容")
     }
 
     pub(crate) fn form(self) -> &'static str {
         self.pick("Form", "表单")
     }
 
-    pub(crate) fn request_selector(self) -> &'static str {
-        self.pick("Requests/", "接口/")
+    pub(crate) fn files(self) -> &'static str {
+        self.pick("Files", "文件")
     }
 
-    pub(crate) fn send_actions(self) -> &'static str {
-        self.pick("Send", "发送")
+    pub(crate) fn no_content(self) -> &'static str {
+        self.pick("No request content", "无请求内容")
+    }
+
+    pub(crate) fn request_selector(self) -> &'static str {
+        self.pick("Requests", "接口")
     }
 
     pub(crate) fn ready(self) -> &'static str {
@@ -80,26 +86,20 @@ impl UiText {
         }
     }
 
-    pub(crate) fn switched_to(self, focus: &str) -> String {
+    pub(crate) fn response_extract_failures(self, count: usize) -> String {
         match self.language {
-            Language::English => format!("Focus · {focus}"),
-            Language::Chinese => format!("当前区域 · {focus}"),
-        }
-    }
-
-    pub(crate) fn selected_request(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Request · {name}"),
-            Language::Chinese => format!("当前接口 · {name}"),
+            Language::English if count == 1 => "1 field not extracted".to_string(),
+            Language::English => format!("{count} fields not extracted"),
+            Language::Chinese => format!("{count} 个字段提取失败"),
         }
     }
 
     pub(crate) fn request_in_progress(self) -> &'static str {
-        self.pick("Request still running", "请求尚未完成")
+        self.pick("Request is already in progress", "请求正在发送")
     }
 
     pub(crate) fn request_status_not_sent(self) -> &'static str {
-        self.pick("Not sent", "未请求")
+        self.pick("Not sent", "未发送")
     }
 
     pub(crate) fn request_status_sending(self) -> &'static str {
@@ -120,22 +120,22 @@ impl UiText {
 
     pub(crate) fn request_failed(self, error: &str) -> String {
         match self.language {
-            Language::English => format!("Request failed · {error}"),
-            Language::Chinese => format!("请求失败 · {error}"),
+            Language::English => format!("Request failed: {error}"),
+            Language::Chinese => format!("请求失败：{error}"),
         }
     }
 
     pub(crate) fn request_timeout(self, error: &str) -> String {
         match self.language {
-            Language::English => format!("Request timed out · {error}"),
-            Language::Chinese => format!("请求超时 · {error}"),
+            Language::English => format!("Request timed out: {error}"),
+            Language::Chinese => format!("请求超时：{error}"),
         }
     }
 
     pub(crate) fn request_started(self, method: &str, url: &str) -> String {
         match self.language {
-            Language::English => format!("Sending · {method} {url}"),
-            Language::Chinese => format!("请求中 · {method} {url}"),
+            Language::English => format!("Sending {method} {url}"),
+            Language::Chinese => format!("正在发送 {method} {url}"),
         }
     }
 
@@ -147,10 +147,6 @@ impl UiText {
         self.pick("Description", "说明")
     }
 
-    pub(crate) fn request_config(self) -> &'static str {
-        self.pick("Config", "配置")
-    }
-
     pub(crate) fn current_value(self) -> &'static str {
         self.pick("Current", "当前值")
     }
@@ -159,24 +155,12 @@ impl UiText {
         self.pick("Value", "值")
     }
 
+    pub(crate) fn name(self) -> &'static str {
+        self.pick("Name", "名称")
+    }
+
     pub(crate) fn default_value(self) -> &'static str {
         self.pick("Default", "默认值")
-    }
-
-    pub(crate) fn source(self) -> &'static str {
-        self.pick("Source", "来源")
-    }
-
-    pub(crate) fn value_type(self) -> &'static str {
-        self.pick("Type", "类型")
-    }
-
-    pub(crate) fn inherited(self) -> &'static str {
-        self.pick("Collection", "集合")
-    }
-
-    pub(crate) fn request_scope(self) -> &'static str {
-        self.pick("Request", "请求")
     }
 
     pub(crate) fn no_variables(self) -> &'static str {
@@ -196,52 +180,26 @@ impl UiText {
     }
 
     pub(crate) fn variables_applied(self) -> &'static str {
-        self.pick("Variables saved for this run", "变量已保存（本次运行）")
+        self.pick("Variables saved", "变量已保存")
     }
 
     pub(crate) fn headers_applied(self) -> &'static str {
-        self.pick("Headers saved for this run", "请求头已保存（本次运行）")
+        self.pick("Headers saved", "请求头已保存")
     }
 
     pub(crate) fn no_params(self) -> &'static str {
         self.pick("No params", "暂无参数")
     }
 
-    pub(crate) fn editable_value_hint(self) -> &'static str {
-        self.pick("Click an underlined value to edit", "点击下划线值修改")
-    }
-
-    pub(crate) fn json_value_hint(self) -> &'static str {
-        self.pick("Click a value to edit", "点击值修改")
-    }
-
     pub(crate) fn unsupported_method(self, method: &str) -> String {
         match self.language {
-            Language::English => {
-                format!("Cannot send {method} · GET and POST only")
-            }
-            Language::Chinese => format!("无法发送 {method} · 仅支持 GET / POST"),
+            Language::English => format!("{method} is not supported. Use GET or POST."),
+            Language::Chinese => format!("不支持 {method}，请使用 GET 或 POST"),
         }
     }
 
-    pub(crate) fn edit_headers(self) -> &'static str {
-        self.pick("Headers", "请求头")
-    }
-
-    pub(crate) fn edit_params(self) -> &'static str {
-        self.pick("Params", "参数")
-    }
-
-    pub(crate) fn edit_body(self) -> &'static str {
-        self.pick("Body", "请求体")
-    }
-
     pub(crate) fn params_applied(self) -> &'static str {
-        self.pick("Params saved for this run", "参数已保存（本次运行）")
-    }
-
-    pub(crate) fn add_row(self) -> &'static str {
-        self.pick("Add", "新增")
+        self.pick("Params saved", "参数已保存")
     }
 
     pub(crate) fn empty_description(self) -> &'static str {
@@ -260,38 +218,61 @@ impl UiText {
         self.pick("Response", "响应")
     }
 
+    pub(crate) fn response_menu(self) -> &'static str {
+        self.pick("Actions", "操作")
+    }
+
+    pub(crate) fn response_download(self) -> &'static str {
+        self.pick("Download", "下载")
+    }
+
+    pub(crate) fn response_copy(self) -> &'static str {
+        self.pick("Copy", "复制")
+    }
+
+    pub(crate) fn response_action_no_response(self) -> &'static str {
+        self.pick("No response to act on", "暂无可操作的响应")
+    }
+
+    pub(crate) fn response_copied(self) -> &'static str {
+        self.pick("Response copied", "响应已复制")
+    }
+
+    pub(crate) fn response_copy_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not copy response: {error}"),
+            Language::Chinese => format!("复制响应失败：{error}"),
+        }
+    }
+
+    pub(crate) fn response_downloaded(self, path: &str) -> String {
+        match self.language {
+            Language::English => format!("Response saved to {path}"),
+            Language::Chinese => format!("响应已保存至 {path}"),
+        }
+    }
+
+    pub(crate) fn response_download_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not save response: {error}"),
+            Language::Chinese => format!("保存响应失败：{error}"),
+        }
+    }
+
     pub(crate) fn waiting_response(self) -> &'static str {
-        self.pick("Waiting…", "等待响应…")
+        self.pick("Sending request…", "正在发送请求…")
     }
 
     pub(crate) fn request_not_sent(self) -> &'static str {
-        self.pick("Not sent", "尚未发送")
+        self.pick("No response yet", "暂无响应")
     }
 
     pub(crate) fn response_body(self) -> &'static str {
         self.pick("Response body", "响应体")
     }
 
-    pub(crate) fn download_saved(self, path: &str) -> String {
-        match self.language {
-            Language::English => format!("Saved to {path}"),
-            Language::Chinese => format!("已保存至 {path}"),
-        }
-    }
-
     pub(crate) fn empty_response(self) -> &'static str {
-        self.pick("(empty)", "（空）")
-    }
-
-    pub(crate) fn remaining_items(self, count: usize) -> String {
-        match self.language {
-            Language::English => format!("+ {count} more"),
-            Language::Chinese => format!("另有 {count} 项"),
-        }
-    }
-
-    pub(crate) fn send_hint(self) -> &'static str {
-        self.pick("Click Send or press r", "点击发送，或按 r")
+        self.pick("Empty response", "响应为空")
     }
 
     pub(crate) fn footer_focus(self) -> &'static str {
@@ -328,16 +309,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_english_copy() {
+    fn english_copy_is_available() {
         let text = UiText::new(Language::English);
-        assert_eq!(text.request_selector(), "Requests/");
+        assert_eq!(text.request_selector(), "Requests");
         assert_eq!(text.send_button(false), "Send");
     }
 
     #[test]
     fn chinese_copy_is_available() {
         let text = UiText::new(Language::Chinese);
-        assert_eq!(text.request_selector(), "接口/");
+        assert_eq!(text.request_selector(), "接口");
         assert_eq!(text.send_button(false), "发送");
     }
 }

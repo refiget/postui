@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -77,9 +77,9 @@ function Require-PackageFiles([string]$PackageDirectory) {
         }
     }
 
-    $requestsDirectory = Join-Path $PackageDirectory ".postui\requests"
-    if (!(Test-Path -LiteralPath $requestsDirectory -PathType Container)) {
-        Fail "发布目录缺少目录: $requestsDirectory"
+    $collectionsDirectory = Join-Path $PackageDirectory ".postui\collections"
+    if (!(Test-Path -LiteralPath $collectionsDirectory -PathType Container)) {
+        Fail "发布目录缺少目录: $collectionsDirectory"
     }
 }
 
@@ -95,7 +95,7 @@ function Copy-FileIfAllowed([string]$Source, [string]$Destination, [bool]$Overwr
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
-function Copy-DirectoryContentsIfMissing([string]$Source, [string]$Destination) {
+function Copy-DirectoryContents([string]$Source, [string]$Destination, [bool]$Overwrite) {
     if (!(Test-Path -LiteralPath $Source -PathType Container)) {
         Fail "发布目录缺少目录: $Source"
     }
@@ -106,8 +106,13 @@ function Copy-DirectoryContentsIfMissing([string]$Source, [string]$Destination) 
 
     Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
         $destinationPath = Join-Path $Destination $_.Name
-        if (!(Test-Path -LiteralPath $destinationPath)) {
-            Copy-Item -LiteralPath $_.FullName -Destination $destinationPath -Recurse -Force
+        if ($_.PSIsContainer) {
+            if (Test-Path -LiteralPath $destinationPath -PathType Leaf) {
+                Fail "安装目标不是目录: $destinationPath"
+            }
+            Copy-DirectoryContents $_.FullName $destinationPath $Overwrite
+        } else {
+            Copy-FileIfAllowed $_.FullName $destinationPath $Overwrite
         }
     }
 }
@@ -136,13 +141,13 @@ try {
         -Destination (Join-Path $InstallDir "postui.exe") -Force
     Copy-FileIfAllowed (Join-Path $packageDirectory "config.yaml") `
         (Join-Path $DataDir "config.yaml") $ForceConfig
-    Copy-DirectoryContentsIfMissing (Join-Path $packageDirectory ".postui") `
-        (Join-Path $DataDir ".postui")
+    Copy-DirectoryContents (Join-Path $packageDirectory ".postui") `
+        (Join-Path $DataDir ".postui") $ForceConfig
 
-    foreach ($optionalDirectory in @("files", "themes")) {
+    foreach ($optionalDirectory in @("test_files", "themes")) {
         $sourceDirectory = Join-Path $packageDirectory $optionalDirectory
         if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
-            Copy-DirectoryContentsIfMissing $sourceDirectory (Join-Path $DataDir $optionalDirectory)
+            Copy-DirectoryContents $sourceDirectory (Join-Path $DataDir $optionalDirectory) $false
         }
     }
 

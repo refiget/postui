@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use crate::{
     config::BodyPart,
     editor::{EditorAction, TextEditor},
-    i18n::UiText,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -12,30 +11,24 @@ use super::PreviewTab;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogFocus {
     Content,
-    Add,
     Apply,
     Close,
 }
 
 impl DialogFocus {
-    fn next(self, has_add: bool) -> Self {
-        match (self, has_add) {
-            (Self::Content, true) => Self::Add,
-            (Self::Content, false) => Self::Apply,
-            (Self::Add, _) => Self::Apply,
-            (Self::Apply, _) => Self::Close,
-            (Self::Close, _) => Self::Content,
+    fn next(self) -> Self {
+        match self {
+            Self::Content => Self::Apply,
+            Self::Apply => Self::Close,
+            Self::Close => Self::Content,
         }
     }
 
-    fn previous(self, has_add: bool) -> Self {
-        match (self, has_add) {
-            (Self::Content, true) => Self::Close,
-            (Self::Content, false) => Self::Close,
-            (Self::Add, _) => Self::Content,
-            (Self::Apply, true) => Self::Add,
-            (Self::Apply, false) => Self::Content,
-            (Self::Close, _) => Self::Apply,
+    fn previous(self) -> Self {
+        match self {
+            Self::Content => Self::Close,
+            Self::Apply => Self::Content,
+            Self::Close => Self::Apply,
         }
     }
 }
@@ -58,15 +51,6 @@ pub(crate) enum ParamSource {
     Form,
 }
 
-impl ParamSource {
-    pub(crate) fn label(self, text: UiText) -> &'static str {
-        match self {
-            Self::Query => text.query(),
-            Self::Form => text.form(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BodyPartSource {
     Raw,
@@ -74,13 +58,6 @@ pub(crate) enum BodyPartSource {
 }
 
 impl BodyPartSource {
-    pub(crate) fn as_row_type(self, text: UiText) -> &'static str {
-        match self {
-            Self::Raw => text.raw(),
-            Self::UrlEncoded => text.url_encoded(),
-        }
-    }
-
     pub(super) fn to_part(self, value: String) -> BodyPart {
         match self {
             Self::Raw => BodyPart::Raw(value),
@@ -109,6 +86,7 @@ pub(crate) struct ParamsDialogRow {
     pub(crate) key: String,
     pub(crate) value: String,
     pub(crate) part_type: Option<BodyPartSource>,
+    pub(crate) has_equals: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +103,6 @@ pub(crate) struct HeadersDialog {
     pub(crate) rows: Vec<HeaderRow>,
     pub(crate) selected: usize,
     pub(crate) field: HeaderField,
-    pub(crate) focus: DialogFocus,
     pub(crate) editor: Option<TextEditor>,
 }
 
@@ -135,9 +112,7 @@ pub(crate) struct ParamsDialog {
     pub(crate) rows: Vec<ParamsDialogRow>,
     pub(crate) selected: usize,
     pub(crate) field: HeaderField,
-    pub(crate) focus: DialogFocus,
     pub(crate) editor: Option<TextEditor>,
-    pub(crate) add_source: ParamSource,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +125,7 @@ pub(crate) enum Dialog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DialogAction {
     None,
+    Changed,
     Apply,
     Cancel,
 }
@@ -161,7 +137,7 @@ impl VariablesDialog {
                 EditorAction::Continue => DialogAction::None,
                 EditorAction::Commit => {
                     self.commit_editor();
-                    DialogAction::None
+                    DialogAction::Changed
                 }
                 EditorAction::Cancel => {
                     self.editor = None;
@@ -173,11 +149,11 @@ impl VariablesDialog {
         match key.code {
             KeyCode::Esc => DialogAction::Cancel,
             KeyCode::Tab => {
-                self.focus = self.focus.next(false);
+                self.focus = self.focus.next();
                 DialogAction::None
             }
             KeyCode::BackTab => {
-                self.focus = self.focus.previous(false);
+                self.focus = self.focus.previous();
                 DialogAction::None
             }
             KeyCode::Up | KeyCode::Char('k') if self.focus == DialogFocus::Content => {
@@ -195,7 +171,6 @@ impl VariablesDialog {
                 }
                 DialogFocus::Apply => DialogAction::Apply,
                 DialogFocus::Close => DialogAction::Cancel,
-                DialogFocus::Add => DialogAction::None,
             },
             _ => DialogAction::None,
         }
@@ -239,7 +214,7 @@ impl HeadersDialog {
                 EditorAction::Continue => DialogAction::None,
                 EditorAction::Commit => {
                     self.commit_editor();
-                    DialogAction::None
+                    DialogAction::Changed
                 }
                 EditorAction::Cancel => {
                     self.editor = None;
@@ -250,51 +225,35 @@ impl HeadersDialog {
 
         match key.code {
             KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Tab => {
-                self.focus = self.focus.next(true);
-                DialogAction::None
-            }
-            KeyCode::BackTab => {
-                self.focus = self.focus.previous(true);
-                DialogAction::None
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.focus == DialogFocus::Content => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') if self.focus == DialogFocus::Content => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Left if self.focus == DialogFocus::Content => {
+            KeyCode::Left => {
                 self.field = HeaderField::Name;
                 DialogAction::None
             }
-            KeyCode::Right if self.focus == DialogFocus::Content => {
+            KeyCode::Right => {
                 self.field = HeaderField::Value;
                 DialogAction::None
             }
-            KeyCode::Char('d') if self.focus == DialogFocus::Content => {
+            KeyCode::Char('d') => {
                 self.remove_selected();
+                DialogAction::Changed
+            }
+            KeyCode::Enter => {
+                self.start_edit();
                 DialogAction::None
             }
-            KeyCode::Enter => match self.focus {
-                DialogFocus::Content => {
-                    self.start_edit();
-                    DialogAction::None
-                }
-                DialogFocus::Add => {
-                    self.add_row();
-                    DialogAction::None
-                }
-                DialogFocus::Apply => DialogAction::Apply,
-                DialogFocus::Close => DialogAction::Cancel,
-            },
-            KeyCode::Char(' ') if self.focus == DialogFocus::Content => {
+            KeyCode::Char(' ') => {
                 self.toggle_selected();
-                DialogAction::None
+                DialogAction::Changed
             }
-            KeyCode::Char('a') if self.focus == DialogFocus::Content => {
+            KeyCode::Char('a') => {
                 self.add_row();
                 DialogAction::None
             }
@@ -324,11 +283,20 @@ impl HeadersDialog {
         let Some(row) = self.rows.get_mut(self.selected) else {
             return;
         };
-        match self.field {
-            HeaderField::Name => row.name = editor.value,
-            HeaderField::Value => row.value = editor.value,
+        let changed = match self.field {
+            HeaderField::Name if row.name != editor.value => {
+                row.name = editor.value;
+                true
+            }
+            HeaderField::Value if row.value != editor.value => {
+                row.value = editor.value;
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            row.source = HeaderSource::Request;
         }
-        row.source = HeaderSource::Request;
     }
 
     pub(super) fn add_row(&mut self) {
@@ -340,7 +308,6 @@ impl HeadersDialog {
         });
         self.selected = self.rows.len().saturating_sub(1);
         self.field = HeaderField::Name;
-        self.focus = DialogFocus::Content;
         self.editor = Some(TextEditor::new(String::new()));
     }
 
@@ -368,7 +335,6 @@ impl HeadersDialog {
             return;
         }
         self.selected = index;
-        self.focus = DialogFocus::Content;
         self.field = field;
         if edit {
             self.start_edit();
@@ -383,7 +349,7 @@ impl ParamsDialog {
                 EditorAction::Continue => DialogAction::None,
                 EditorAction::Commit => {
                     self.commit_editor();
-                    DialogAction::None
+                    DialogAction::Changed
                 }
                 EditorAction::Cancel => {
                     self.editor = None;
@@ -394,55 +360,31 @@ impl ParamsDialog {
 
         match key.code {
             KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Tab => {
-                self.focus = self.focus.next(true);
-                DialogAction::None
-            }
-            KeyCode::BackTab => {
-                self.focus = self.focus.previous(true);
-                DialogAction::None
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.focus == DialogFocus::Content => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') if self.focus == DialogFocus::Content => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Left if self.focus == DialogFocus::Content => {
+            KeyCode::Left => {
                 self.field = HeaderField::Name;
                 DialogAction::None
             }
-            KeyCode::Right if self.focus == DialogFocus::Content => {
+            KeyCode::Right => {
                 self.field = HeaderField::Value;
                 DialogAction::None
             }
-            KeyCode::Char('d') if self.focus == DialogFocus::Content => {
+            KeyCode::Char('d') => {
                 self.remove_selected();
+                DialogAction::Changed
+            }
+            KeyCode::Enter => {
+                self.start_edit();
                 DialogAction::None
             }
-            KeyCode::Char('q') if self.focus == DialogFocus::Content => {
-                self.add_source = ParamSource::Query;
-                DialogAction::None
-            }
-            KeyCode::Char('f') if self.focus == DialogFocus::Content => {
-                self.add_source = ParamSource::Form;
-                DialogAction::None
-            }
-            KeyCode::Enter => match self.focus {
-                DialogFocus::Content => {
-                    self.start_edit();
-                    DialogAction::None
-                }
-                DialogFocus::Add => {
-                    self.add_row();
-                    DialogAction::None
-                }
-                DialogFocus::Apply => DialogAction::Apply,
-                DialogFocus::Close => DialogAction::Cancel,
-            },
-            KeyCode::Char('a') if self.focus == DialogFocus::Content => {
+            KeyCode::Char('a') => {
                 self.add_row();
                 DialogAction::None
             }
@@ -476,29 +418,26 @@ impl ParamsDialog {
             return;
         };
         match self.field {
-            HeaderField::Name => row.key = editor.value,
-            HeaderField::Value => row.value = editor.value,
+            HeaderField::Name if row.key != editor.value => row.key = editor.value,
+            HeaderField::Value if row.value != editor.value => {
+                row.value = editor.value;
+                if row.source == ParamSource::Query {
+                    row.has_equals = true;
+                }
+            }
+            _ => {}
         }
     }
 
     pub(super) fn add_row(&mut self) {
-        let source = self.add_source;
-        let (key, value, part_type) = match source {
-            ParamSource::Query => (
-                String::new(),
-                String::new(),
-                Some(BodyPartSource::UrlEncoded),
-            ),
-            ParamSource::Form => (String::new(), String::new(), None),
-        };
         self.rows.push(ParamsDialogRow {
-            source,
-            key,
-            value,
-            part_type,
+            source: ParamSource::Query,
+            key: String::new(),
+            value: String::new(),
+            part_type: Some(BodyPartSource::UrlEncoded),
+            has_equals: true,
         });
         self.selected = self.rows.len().saturating_sub(1);
-        self.focus = DialogFocus::Content;
         self.field = HeaderField::Name;
         self.editor = Some(TextEditor::new(String::new()));
     }
@@ -516,7 +455,6 @@ impl ParamsDialog {
             return;
         }
         self.selected = index;
-        self.focus = DialogFocus::Content;
         self.field = field;
         if edit {
             self.start_edit();
@@ -578,14 +516,6 @@ impl Dialog {
         }
     }
 
-    pub(super) fn focus(&self) -> DialogFocus {
-        match self {
-            Self::Variables(dialog) => dialog.focus,
-            Self::Headers(dialog) => dialog.focus,
-            Self::Params(dialog) => dialog.focus,
-        }
-    }
-
     pub(super) fn click_header_row(&mut self, index: usize, field: HeaderField, edit: bool) {
         if let Self::Headers(dialog) = self {
             dialog.click_row(index, field, edit);
@@ -619,20 +549,10 @@ pub(super) fn remove_header_map(headers: &mut BTreeMap<String, String>, name: &s
     }
 }
 
-pub(super) fn resolved_header_value<'a>(
-    headers: &'a BTreeMap<String, String>,
-    name: &str,
-) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
-}
-
-pub(super) fn split_key_value(value: &str) -> (String, String) {
+pub(super) fn split_key_value(value: &str) -> (String, String, bool) {
     if let Some((key, value)) = value.split_once('=') {
-        (key.to_string(), value.to_string())
+        (key.to_string(), value.to_string(), true)
     } else {
-        (value.to_string(), String::new())
+        (value.to_string(), String::new(), false)
     }
 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::RequestConfig;
 
-const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 6;
 const CACHE_FILE_NAME: &str = "requests.cache.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -188,13 +188,13 @@ mod tests {
     use super::*;
     use crate::config::{ApiRequest, VariableDefinition};
     use serde_json::Value;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn test_config() -> RequestConfig {
         RequestConfig {
             name: "cache-test".to_string(),
-            file_directory: PathBuf::from("files"),
-            download_directory: PathBuf::from("tmp"),
+            file_directory: PathBuf::from("../test_files"),
+            download_directory: PathBuf::from("../temp"),
             headers: BTreeMap::new(),
             variables: BTreeMap::from([(
                 "host".to_string(),
@@ -202,6 +202,7 @@ mod tests {
                     default: Some(Value::String("example.test".to_string())),
                 },
             )]),
+            editable_variables: BTreeSet::from(["host".to_string()]),
             requests: vec![ApiRequest {
                 id: "health".to_string(),
                 name: "Health".to_string(),
@@ -214,7 +215,6 @@ mod tests {
                 query_parts: Vec::new(),
                 form: BTreeMap::new(),
                 files: Vec::new(),
-                download: None,
                 extracts: Vec::new(),
             }],
             timeout_seconds: 30,

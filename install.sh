@@ -58,9 +58,10 @@ copy_if_needed() {
     copy_file "$source_path" "$destination_path" "$mode"
 }
 
-copy_directory_contents_if_missing() {
+copy_directory_contents() {
     source_path=$1
     destination_path=$2
+    overwrite=$3
 
     [ -d "$source_path" ] || die "发布目录中没有目录: $source_path"
     if [ -e "$destination_path" ] && [ ! -d "$destination_path" ]; then
@@ -72,10 +73,17 @@ copy_directory_contents_if_missing() {
         [ -e "$source_entry" ] || continue
         entry_name=${source_entry##*/}
         destination_entry=$destination_path/$entry_name
-        if [ -e "$destination_entry" ]; then
-            continue
+        if [ -d "$source_entry" ]; then
+            if [ -e "$destination_entry" ] && [ ! -d "$destination_entry" ]; then
+                die "安装路径不是目录: $destination_entry"
+            fi
+            (copy_directory_contents "$source_entry" "$destination_entry" "$overwrite")
+        elif [ -f "$source_entry" ]; then
+            if [ -e "$destination_entry" ] && [ "$overwrite" -ne 1 ]; then
+                continue
+            fi
+            (copy_file "$source_entry" "$destination_entry" 644)
         fi
-        cp -R "$source_entry" "$destination_entry"
     done
 }
 
@@ -181,13 +189,13 @@ fi
 
 binary_path=$package_dir/postui.bin
 config_path=$package_dir/config.yaml
-collection_config_path=$package_dir/.postui/config.yaml
-requests_dir=$package_dir/.postui/requests
+project_config_path=$package_dir/.postui/config.yaml
+collections_dir=$package_dir/.postui/collections
 
 [ -f "$binary_path" ] || die "发布目录中没有 postui.bin: $package_dir"
 [ -f "$config_path" ] || die "发布目录中没有 config.yaml: $package_dir"
-[ -f "$collection_config_path" ] || die "发布目录中没有 .postui/config.yaml: $package_dir"
-[ -d "$requests_dir" ] || die "发布目录中没有 .postui/requests: $package_dir"
+[ -f "$project_config_path" ] || die "发布目录中没有 .postui/config.yaml: $package_dir"
+[ -d "$collections_dir" ] || die "发布目录中没有 .postui/collections: $package_dir"
 command_exists install || die "系统没有 install 命令"
 command_exists cp || die "系统没有 cp 命令"
 command_exists mkdir || die "系统没有 mkdir 命令"
@@ -204,26 +212,18 @@ else
 
 set -eu
 package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-
-# Running from the install directory opens the bundled demo configuration.
-# From elsewhere, let the binary discover project and user configuration.
-current_dir=$(CDPATH= cd -- . && pwd)
-if [ "$current_dir" = "$package_dir" ]; then
-    exec "$package_dir/postui.bin" --config "$package_dir/config.yaml" "$@"
-fi
-
 exec "$package_dir/postui.bin" "$@"
 EOF
     chmod 755 "$install_dir/postui"
 fi
 
 copy_if_needed "$config_path" "$install_dir/config.yaml" 644
-copy_directory_contents_if_missing "$package_dir/.postui" "$install_dir/.postui"
-if [ -d "$package_dir/files" ]; then
-    copy_directory_contents_if_missing "$package_dir/files" "$install_dir/files"
+copy_directory_contents "$package_dir/.postui" "$install_dir/.postui" "$force_config"
+if [ -d "$package_dir/test_files" ]; then
+    copy_directory_contents "$package_dir/test_files" "$install_dir/test_files" 0
 fi
 if [ -d "$package_dir/themes" ]; then
-    copy_directory_contents_if_missing "$package_dir/themes" "$install_dir/themes"
+    copy_directory_contents "$package_dir/themes" "$install_dir/themes" 0
 fi
 
 if [ "$skip_init" -eq 0 ]; then

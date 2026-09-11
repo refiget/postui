@@ -276,7 +276,7 @@ fn color(field: &str, value: Option<String>, default: &str) -> Result<Color> {
             anyhow::anyhow!("主题颜色无效: {field}={value}，请使用 #RRGGBB 或标准颜色名")
         });
     };
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         bail!("主题颜色无效: {field}={value}，# 格式必须是六位十六进制")
     }
     let red = u8::from_str_radix(&hex[0..2], 16)
@@ -425,6 +425,7 @@ mod tests {
             color("test", Some("cyan".to_string()), "white").unwrap(),
             Color::Cyan
         );
+        assert!(color("test", Some("#红红".to_string()), "white").is_err());
     }
 
     #[test]

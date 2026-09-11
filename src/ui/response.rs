@@ -12,34 +12,61 @@ pub(super) struct ScrollAreas {
     pub(super) scrollbar: Rect,
 }
 
-pub(super) fn response_sections(area: Rect) -> ResponseLayout {
+pub(super) fn response_sections(area: Rect, menu_button: Rect) -> ResponseLayout {
     let inner = area.inner(Margin::new(1, 1));
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
+    if inner.is_empty() {
+        return ResponseLayout {
+            status: Rect::default(),
+            body: ScrollAreas {
+                content: Rect::default(),
+                scrollbar: Rect::default(),
+            },
+        };
+    }
+    let status_width = if menu_button.is_empty() {
+        inner.width
+    } else {
+        inner
+            .width
+            .saturating_sub(menu_button.width.saturating_add(1))
+    };
     ResponseLayout {
-        status: sections[0],
-        body: inner_scroll_areas(sections[1]),
+        status: Rect::new(inner.x, inner.y, status_width, 1),
+        body: inner_scroll_areas(Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        )),
     }
 }
 
-pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect, app: &App) {
     let theme = &app.global_config.theme;
     let text = app.text();
     frame.render_widget(panel_block(text.response(), area, theme), area);
+    draw_response_menu_button(frame, menu_button, app);
     let request = app.current_request();
     let request_status = app.request_status(&request.id);
     let loading = request_status == RequestStatus::Sending;
     let response = app.current_response();
     let error = app.current_error();
-    let sections = response_sections(area);
+    let sections = response_sections(area, menu_button);
 
     let status = match (loading, response, error) {
-        (true, _, _) => Line::from(Span::styled(
-            text.waiting_response(),
-            Style::default().fg(theme.secondary),
-        )),
+        (true, _, _) => Line::from(vec![
+            Span::styled(
+                format!(
+                    "{} ",
+                    request_status_symbol(request_status, app.animation_frame)
+                ),
+                request_status_style(request_status, theme),
+            ),
+            Span::styled(
+                text.waiting_response(),
+                Style::default().fg(theme.secondary),
+            ),
+        ]),
         (false, Some(response), _) => {
             let status_style = request_status_style(request_status, theme);
             let status = if response.reason.is_empty() {
@@ -48,6 +75,13 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 format!("HTTP {} {}", response.status, response.reason)
             };
             Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{} ",
+                        request_status_symbol(request_status, app.animation_frame)
+                    ),
+                    status_style,
+                ),
                 Span::styled(status, status_style),
                 Span::styled(
                     format!("  {} ms", response.elapsed_ms),
@@ -57,11 +91,27 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         (false, None, Some(error)) => {
             let message = request_status.error_message(text, error);
-            Line::from(Span::styled(message, Style::default().fg(theme.error)))
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{} ",
+                        request_status_symbol(request_status, app.animation_frame)
+                    ),
+                    request_status_style(request_status, theme),
+                ),
+                Span::styled(message, Style::default().fg(theme.error)),
+            ])
         }
-        (false, None, None) => {
-            Line::from(Span::styled(text.request_not_sent(), label_style(theme)))
-        }
+        (false, None, None) => Line::from(vec![
+            Span::styled(
+                format!(
+                    "{} ",
+                    request_status_symbol(request_status, app.animation_frame)
+                ),
+                request_status_style(request_status, theme),
+            ),
+            Span::styled(text.request_not_sent(), label_style(theme)),
+        ]),
     };
     frame.render_widget(Paragraph::new(status), sections.status);
 
@@ -71,19 +121,16 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
             text.response_body(),
             section_style(theme),
         )));
-        match response.download_path.as_ref() {
-            Some(path) => body_lines.push(Line::from(Span::styled(
-                text.download_saved(&path.display().to_string()),
-                Style::default().fg(theme.success),
-            ))),
-            None if response.body.is_empty() => body_lines.push(Line::from(Span::styled(
+        if response.body.is_empty() {
+            body_lines.push(Line::from(Span::styled(
                 text.empty_response(),
                 label_style(theme),
-            ))),
-            None => match highlight::json_text_lines_if_valid(&response.body, theme) {
+            )));
+        } else {
+            match highlight::json_text_lines_if_valid(&response.body, theme) {
                 Some(lines) => body_lines.extend(lines),
                 None => body_lines.extend(highlight::plain_lines(&response.body, theme)),
-            },
+            }
         }
     } else if let Some(error) = error {
         let message = request_status.error_message(text, error);
@@ -91,8 +138,6 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
             message,
             Style::default().fg(theme.error),
         )));
-    } else {
-        body_lines.push(Line::from(text.send_hint()));
     }
     let content_length = wrapped_line_count(&body_lines, sections.body.content.width);
     let paragraph = Paragraph::new(body_lines).wrap(Wrap { trim: false });
@@ -111,6 +156,99 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
         usize::from(offset),
         theme,
     );
+}
+
+pub(super) fn response_menu_area(panel: Rect, trigger: Rect) -> Rect {
+    if panel.is_empty() || trigger.is_empty() {
+        return Rect::default();
+    }
+    let width = 20.min(panel.width.saturating_sub(2));
+    let height = 4.min(panel.bottom().saturating_sub(trigger.bottom()));
+    if width < 3 || height < 3 {
+        return Rect::default();
+    }
+    Rect::new(
+        panel.right().saturating_sub(width).saturating_sub(1),
+        trigger.bottom(),
+        width,
+        height,
+    )
+}
+
+pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.is_empty() {
+        return;
+    }
+    let theme = &app.global_config.theme;
+    let text = app.text();
+    let style = Style::default()
+        .fg(theme.text)
+        .bg(theme.selection)
+        .add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        Paragraph::new(format!("{} ▾", text.response_menu()))
+            .alignment(Alignment::Center)
+            .style(style),
+        area,
+    );
+}
+
+pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.is_empty() || area.width < 3 || area.height < 3 {
+        return;
+    }
+    let theme = &app.global_config.theme;
+    let text = app.text();
+    let items = ResponseMenuAction::all()
+        .into_iter()
+        .map(|action| {
+            let style = Style::default().fg(theme.text).bg(theme.surface);
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{}  ", response_action_symbol(action)), style),
+                Span::styled(response_action_label(action, text), style),
+            ]))
+            .style(style)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::PLAIN)
+            .border_style(Style::default().fg(theme.accent))
+            .style(Style::default().bg(theme.surface)),
+        area,
+    );
+    let inner = area.inner(Margin::new(1, 1));
+    if inner.is_empty() {
+        return;
+    }
+    let mut state = ListState::default().with_selected(Some(
+        app.response_state
+            .menu_selected
+            .min(ResponseMenuAction::all().len().saturating_sub(1)),
+    ));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .fg(theme.background)
+            .bg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+fn response_action_symbol(action: ResponseMenuAction) -> &'static str {
+    match action {
+        ResponseMenuAction::Download => "↓",
+        ResponseMenuAction::Copy => "⧉",
+    }
+}
+
+fn response_action_label(action: ResponseMenuAction, text: crate::i18n::UiText) -> &'static str {
+    match action {
+        ResponseMenuAction::Download => text.response_download(),
+        ResponseMenuAction::Copy => text.response_copy(),
+    }
 }
 
 pub(super) fn panel_scroll_areas(area: Rect) -> ScrollAreas {

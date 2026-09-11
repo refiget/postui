@@ -102,11 +102,39 @@ pub(super) fn request_status_style(
 ) -> Style {
     let color = match status {
         RequestStatus::NotSent => theme.muted,
-        RequestStatus::Sending => theme.warning,
+        RequestStatus::Sending | RequestStatus::Timeout => theme.warning,
         RequestStatus::Success => theme.success,
-        RequestStatus::Failed | RequestStatus::Timeout => theme.error,
+        RequestStatus::Failed => theme.error,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+pub(super) fn request_status_symbol(status: RequestStatus, animation_frame: usize) -> &'static str {
+    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    match status {
+        RequestStatus::NotSent => "●",
+        RequestStatus::Sending => SPINNER[animation_frame % SPINNER.len()],
+        RequestStatus::Success => "●",
+        RequestStatus::Failed | RequestStatus::Timeout => "●",
+    }
+}
+
+pub(super) fn request_status_spans(
+    status: RequestStatus,
+    text: crate::i18n::UiText,
+    theme: &crate::settings::UiTheme,
+    animation_frame: usize,
+) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            format!("{} ", request_status_symbol(status, animation_frame)),
+            request_status_style(status, theme),
+        ),
+        Span::styled(
+            status.label(text).to_string(),
+            Style::default().fg(theme.muted),
+        ),
+    ]
 }
 
 pub(super) fn label_style(theme: &crate::settings::UiTheme) -> Style {
@@ -124,7 +152,39 @@ pub(super) fn panel_block(
     area: Rect,
     theme: &crate::settings::UiTheme,
 ) -> Block<'static> {
-    let block = rounded_block(title, theme);
+    let block = bordered_block(title, theme, border::PLAIN);
+    if area.width >= 2 && area.height >= 2 {
+        block
+    } else {
+        Block::default()
+    }
+}
+
+pub(super) fn focused_panel_block(
+    title: impl Into<Line<'static>>,
+    area: Rect,
+    theme: &crate::settings::UiTheme,
+    focused: bool,
+) -> Block<'static> {
+    let symbols = if focused {
+        border::THICK
+    } else {
+        border::PLAIN
+    };
+    let block = bordered_block(title, theme, symbols);
+    if area.width >= 2 && area.height >= 2 {
+        block
+    } else {
+        Block::default()
+    }
+}
+
+pub(super) fn dialog_block(
+    title: impl Into<Line<'static>>,
+    area: Rect,
+    theme: &crate::settings::UiTheme,
+) -> Block<'static> {
+    let block = bordered_block(title, theme, border::DOUBLE);
     if area.width >= 2 && area.height >= 2 {
         block
     } else {
@@ -140,12 +200,20 @@ pub(super) fn send_button_widget<'a>(
     button_widget(
         label,
         state,
-        primary_button_style(theme),
-        ButtonVariant::Block,
+        send_button_style(theme),
+        ButtonVariant::SingleLine,
     )
 }
 
-pub(super) fn action_button_widget<'a>(
+pub(super) fn send_button_style(theme: &crate::settings::UiTheme) -> ButtonStyle {
+    let mut style = ButtonStyle::new(ButtonVariant::SingleLine)
+        .focused(theme.text, theme.selection)
+        .unfocused(theme.accent, theme.surface);
+    style.disabled_fg = theme.muted;
+    style
+}
+
+pub(super) fn variables_button_widget<'a>(
     label: &'a str,
     state: &'a ButtonState,
     theme: &crate::settings::UiTheme,
@@ -153,8 +221,8 @@ pub(super) fn action_button_widget<'a>(
     button_widget(
         label,
         state,
-        secondary_button_style(theme),
-        ButtonVariant::Block,
+        primary_button_style(theme),
+        ButtonVariant::SingleLine,
     )
 }
 
@@ -178,9 +246,9 @@ pub(super) fn button_widget<'a>(
 }
 
 pub(super) fn primary_button_style(theme: &crate::settings::UiTheme) -> ButtonStyle {
-    let mut style = ButtonStyle::new(ButtonVariant::Block)
-        .focused(theme.background, theme.accent)
-        .unfocused(theme.accent, theme.surface);
+    let mut style = ButtonStyle::new(ButtonVariant::SingleLine)
+        .focused(theme.text, theme.primary)
+        .unfocused(theme.background, theme.accent);
     style.disabled_fg = theme.muted;
     style
 }
@@ -193,13 +261,14 @@ pub(super) fn secondary_button_style(theme: &crate::settings::UiTheme) -> Button
     style
 }
 
-pub(super) fn rounded_block(
+fn bordered_block(
     title: impl Into<Line<'static>>,
     theme: &crate::settings::UiTheme,
+    symbols: border::Set,
 ) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_set(symbols)
         .style(Style::default().bg(theme.surface).fg(theme.text))
         .title(title)
 }

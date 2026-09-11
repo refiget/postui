@@ -6,12 +6,14 @@ compile_error!("postui 仅支持 Linux amd64 (x86_64) 和 Windows x86_64");
 
 mod app;
 mod cache;
+mod clipboard;
 mod config;
 mod editor;
 mod highlight;
 mod http;
 mod i18n;
 mod logging;
+mod response_output;
 mod settings;
 mod template;
 mod ui;
@@ -29,6 +31,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use crossterm::{
+    cursor::Show,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -55,7 +58,6 @@ fn main() -> Result<()> {
 }
 
 fn run_app(options: CliOptions) -> Result<()> {
-    let explicit_global_config = options.config_path.is_some();
     let global_config_path = options
         .config_path
         .as_deref()
@@ -93,21 +95,11 @@ fn run_app(options: CliOptions) -> Result<()> {
         },
         None => settings::default_config(),
     };
-    let request_config_path = options
-        .request_config_path
-        .as_deref()
-        .map(resolve_cli_path)
-        .or_else(|| {
-            if explicit_global_config {
-                None
-            } else {
-                discover_local_request_config()
-            }
-        })
-        .unwrap_or_else(|| resolve_cli_path(&global_config.request_config));
+    let request_config_path =
+        resolve_request_config_path(options.request_config_path.as_deref(), &global_config);
     tracing::debug!(
         path = %request_config_path.display(),
-        explicit_global_config,
+        configured = global_config.path.is_some(),
         "选择请求集合"
     );
     let request_config = match load_request_config(&request_config_path) {
@@ -126,10 +118,8 @@ fn run_app(options: CliOptions) -> Result<()> {
     };
     let mut app = App::new(request_config, request_config_path, global_config);
 
-    enable_raw_mode().context("启用终端 raw 模式失败")?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("初始化终端界面失败")?;
-    let backend = CrosstermBackend::new(stdout);
+    let terminal_session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("创建终端失败")?;
     tracing::debug!("终端界面已初始化");
 
@@ -138,21 +128,43 @@ fn run_app(options: CliOptions) -> Result<()> {
         tracing::error!(error = ?error, "TUI 事件循环异常退出");
     }
 
-    disable_raw_mode().ok();
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )
-    .ok();
-    terminal.show_cursor().ok();
+    drop(terminal);
+    drop(terminal_session);
     tracing::debug!("终端界面已恢复");
     result
+}
+
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("启用终端 raw 模式失败")?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+            disable_raw_mode().ok();
+            return Err(error).context("初始化终端界面失败");
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        disable_raw_mode().ok();
+        execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        )
+        .ok();
+    }
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     tracing::debug!("进入 TUI 事件循环");
     while !app.should_quit {
+        app.advance_animation();
         app.poll_messages();
         terminal.draw(|frame| ui::draw(frame, app))?;
 
@@ -218,7 +230,10 @@ struct CliOptions {
 }
 
 fn parse_args() -> Result<CliCommand> {
-    let mut args = env::args().skip(1);
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand> {
     let mut config = None;
     let mut request_config = None;
     let mut debug = false;
@@ -228,28 +243,43 @@ fn parse_args() -> Result<CliCommand> {
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "-h" | "--help" => return Ok(CliCommand::Help),
-            "init" => init = true,
+            "init" => {
+                if init {
+                    bail!("postui init 只能指定一次")
+                }
+                init = true;
+            }
             "--debug" => debug = true,
             "-c" | "--config" => {
                 let Some(path) = args.next() else {
                     bail!("--config 需要一个文件路径")
                 };
-                config = Some(PathBuf::from(path));
+                if config.replace(PathBuf::from(path)).is_some() {
+                    bail!("全局配置只能指定一次")
+                }
             }
             "-r" | "--requests" => {
                 let Some(path) = args.next() else {
                     bail!("--requests 需要一个请求集合目录")
                 };
-                request_config = Some(PathBuf::from(path));
+                if request_config.replace(PathBuf::from(path)).is_some() {
+                    bail!("请求集合只能指定一次")
+                }
             }
             "--log-file" => {
                 let Some(path) = args.next() else {
                     bail!("--log-file 需要一个文件路径")
                 };
-                log_file = Some(PathBuf::from(path));
+                if log_file.replace(PathBuf::from(path)).is_some() {
+                    bail!("日志文件只能指定一次")
+                }
             }
             value if value.starts_with('-') => bail!("未知参数: {value}"),
-            path => config = Some(PathBuf::from(path)),
+            path => {
+                if config.replace(PathBuf::from(path)).is_some() {
+                    bail!("全局配置只能指定一次")
+                }
+            }
         }
     }
 
@@ -258,6 +288,9 @@ fn parse_args() -> Result<CliCommand> {
     }
 
     if init {
+        if config.is_some() {
+            bail!("postui init 不接受配置路径或 --config")
+        }
         if request_config.is_some() {
             bail!("postui init 不接受 --requests")
         }
@@ -283,8 +316,8 @@ fn print_help() {
         "用法:\n\
   postui [--config <全局配置>] [--requests <请求集合目录>] [--debug] [--log-file <路径>]\n\
   postui init\n\n\
-全局配置优先级: 显式 --config，其次用户 Home 下的 postui.yaml 或 .postui.yaml，再到平台配置目录；都不存在时使用内置默认配置。\n\
-未显式指定 --config 或 --requests 时，从当前目录向父目录查找 .postui 集合目录；找不到时使用全局配置的 request_config。\n\
+全局配置优先级: 显式 --config，其次当前项目的 .postui/config.yaml、程序目录 config.yaml，再到用户和平台配置目录；都不存在时使用内置默认配置。\n\
+未显式指定 --requests 时，使用入口配置的 request_config；旧式 .postui/requests 集合仍兼容。\n\
 请求集合也可以用 --requests 覆盖。\n\
 默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\
@@ -571,16 +604,22 @@ fn upsert_shell_init_block(current: &str, block: &str) -> Result<String> {
 }
 
 fn discover_global_config_path() -> Option<PathBuf> {
+    let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(path) = find_project_config(&current_directory) {
+        tracing::debug!(path = %path.display(), "自动发现项目配置");
+        return Some(path);
+    }
+
+    if let Some(path) = executable_config_path() {
+        tracing::debug!(path = %path.display(), "自动发现程序目录配置");
+        return Some(path);
+    }
+
     let home = user_home_directory();
     let mut candidates = Vec::new();
     if let Some(home) = home.as_deref() {
         candidates.push(home.join("postui.yaml"));
         candidates.push(home.join(".postui.yaml"));
-    }
-    #[cfg(not(windows))]
-    if home.as_deref() != Some(Path::new("/root")) {
-        candidates.push(PathBuf::from("/root/postui.yaml"));
-        candidates.push(PathBuf::from("/root/.postui.yaml"));
     }
     let config_home = config_directory(home.as_deref());
     if let Some(config_home) = config_home {
@@ -591,6 +630,34 @@ fn discover_global_config_path() -> Option<PathBuf> {
         tracing::debug!(path = %path.display(), "自动发现全局配置");
     }
     found
+}
+
+fn executable_config_path() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .map(|directory| directory.join("config.yaml"))
+        .filter(|path| path.is_file())
+}
+
+fn resolve_request_config_path(
+    explicit: Option<&Path>,
+    global: &settings::GlobalConfig,
+) -> PathBuf {
+    if let Some(path) = explicit {
+        return resolve_cli_path(path);
+    }
+    if global.path.is_some() {
+        return global.request_config.clone();
+    }
+    discover_local_request_config().unwrap_or_else(|| resolve_cli_path(&global.request_config))
+}
+
+fn find_project_config(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|directory| directory.join(".postui/config.yaml"))
+        .find(|path| path.is_file())
 }
 
 fn user_home_directory() -> Option<PathBuf> {
@@ -638,7 +705,7 @@ fn find_local_request_config(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .map(|directory| directory.join(".postui"))
-        .find(|path| path.is_dir())
+        .find(|path| path.join("requests").is_dir())
 }
 
 fn resolve_cli_path(path: &Path) -> PathBuf {
@@ -663,7 +730,40 @@ fn default_log_path(config_path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::resolve_cli_path;
+    use super::{CliCommand, parse_args_from, resolve_cli_path, resolve_request_config_path};
+    use crate::settings::GlobalConfig;
+
+    fn test_args(arguments: &[&str]) -> std::vec::IntoIter<String> {
+        arguments
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn default_command_uses_automatic_configuration() {
+        let command = parse_args_from(test_args(&[])).expect("无参数启动应当有效");
+        let CliCommand::Run(options) = command else {
+            panic!("无参数应启动应用")
+        };
+        assert!(options.config_path.is_none());
+        assert!(options.request_config_path.is_none());
+    }
+
+    #[test]
+    fn init_rejects_configuration_arguments() {
+        assert!(parse_args_from(test_args(&["init", "--config", "custom.yaml"])).is_err());
+        assert!(parse_args_from(test_args(&["init", "custom.yaml"])).is_err());
+    }
+
+    #[test]
+    fn duplicate_path_arguments_are_rejected() {
+        assert!(parse_args_from(test_args(&["--config", "first.yaml", "second.yaml"])).is_err());
+        assert!(
+            parse_args_from(test_args(&["--requests", "first", "--requests", "second"])).is_err()
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -688,6 +788,28 @@ mod tests {
         assert_eq!(
             super::find_local_request_config(Path::new("mock/.postui/requests")),
             Some(PathBuf::from("mock/.postui"))
+        );
+    }
+
+    #[test]
+    fn finds_project_config_from_a_nested_collection_directory() {
+        assert_eq!(
+            super::find_project_config(Path::new(".postui/collections/example/requests")),
+            Some(PathBuf::from(".postui/config.yaml"))
+        );
+    }
+
+    #[test]
+    fn loaded_entry_config_selects_its_collection() {
+        let global = GlobalConfig {
+            path: Some(PathBuf::from("/project/.postui/config.yaml")),
+            request_config: PathBuf::from("/project/.postui/collections/api"),
+            ..GlobalConfig::default()
+        };
+
+        assert_eq!(
+            resolve_request_config_path(None, &global),
+            global.request_config
         );
     }
 

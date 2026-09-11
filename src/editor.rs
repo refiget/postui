@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TextEditor {
@@ -131,8 +132,12 @@ impl BodyValueEditor {
         let before = &self.document[..self.span.start];
         let line = before.bytes().filter(|byte| *byte == b'\n').count();
         let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-        (line, before[line_start..].chars().count())
+        (line, terminal_width(&before[line_start..]))
     }
+}
+
+pub(crate) fn terminal_width(value: &str) -> usize {
+    Line::from(value).width()
 }
 
 pub(crate) fn text_position(value: &str, line: usize, column: usize) -> usize {
@@ -145,10 +150,17 @@ pub(crate) fn text_position(value: &str, line: usize, column: usize) -> usize {
     let line_end = value[line_start..]
         .find('\n')
         .map_or(value.len(), |index| line_start + index);
-    value[line_start..line_end]
-        .char_indices()
-        .nth(column)
-        .map_or(line_end, |(index, _)| line_start + index)
+    let line = &value[line_start..line_end];
+    let mut width = 0usize;
+    for (index, character) in line.char_indices() {
+        let mut encoded = [0; 4];
+        let character_width = terminal_width(character.encode_utf8(&mut encoded));
+        if width.saturating_add(character_width) > column {
+            return line_start + index;
+        }
+        width = width.saturating_add(character_width);
+    }
+    line_end
 }
 
 pub(crate) fn json_scalar_at(
@@ -226,5 +238,88 @@ pub(crate) fn convert_json_scalar(kind: JsonScalarKind, input: &str) -> Option<S
             .map(|number| number.to_string()),
         JsonScalarKind::Boolean => input.parse::<bool>().ok().map(|value| value.to_string()),
         JsonScalarKind::Null => (input == "null").then(|| "null".to_string()),
+    }
+}
+
+pub(crate) fn merge_json_edit(
+    source_document: &str,
+    rendered_document: &str,
+    edited_document: &str,
+) -> Option<String> {
+    let source = serde_json::from_str(source_document).ok()?;
+    let rendered = serde_json::from_str(rendered_document).ok()?;
+    let edited = serde_json::from_str(edited_document).ok()?;
+    serde_json::to_string_pretty(&merge_json_value(&source, &rendered, &edited)).ok()
+}
+
+fn merge_json_value(
+    source: &serde_json::Value,
+    rendered: &serde_json::Value,
+    edited: &serde_json::Value,
+) -> serde_json::Value {
+    if rendered == edited {
+        return source.clone();
+    }
+
+    match (source, rendered, edited) {
+        (
+            serde_json::Value::Object(source),
+            serde_json::Value::Object(rendered),
+            serde_json::Value::Object(edited),
+        ) => serde_json::Value::Object(
+            edited
+                .iter()
+                .map(|(name, edited_value)| {
+                    let value = match (source.get(name), rendered.get(name)) {
+                        (Some(source_value), Some(rendered_value)) => {
+                            merge_json_value(source_value, rendered_value, edited_value)
+                        }
+                        _ => edited_value.clone(),
+                    };
+                    (name.clone(), value)
+                })
+                .collect(),
+        ),
+        (
+            serde_json::Value::Array(source),
+            serde_json::Value::Array(rendered),
+            serde_json::Value::Array(edited),
+        ) if source.len() == rendered.len() && rendered.len() == edited.len() => {
+            serde_json::Value::Array(
+                source
+                    .iter()
+                    .zip(rendered)
+                    .zip(edited)
+                    .map(|((source, rendered), edited)| merge_json_value(source, rendered, edited))
+                    .collect(),
+            )
+        }
+        _ => edited.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_json_edit, terminal_width, text_position};
+
+    #[test]
+    fn maps_terminal_columns_to_utf8_offsets() {
+        assert_eq!(terminal_width("中a"), 3);
+        assert_eq!(text_position("中a", 0, 0), 0);
+        assert_eq!(text_position("中a", 0, 1), 0);
+        assert_eq!(text_position("中a", 0, 2), "中".len());
+        assert_eq!(text_position("中a", 0, 3), "中a".len());
+    }
+
+    #[test]
+    fn json_edit_preserves_unchanged_template_values() {
+        let source = r#"{"changed":"{{first}}","kept":"{{second}}"}"#;
+        let rendered = r#"{"changed":"one","kept":"two"}"#;
+        let edited = r#"{"changed":"updated","kept":"two"}"#;
+
+        let merged = merge_json_edit(source, rendered, edited).expect("JSON 应当可以合并");
+
+        assert!(merged.contains(r#""changed": "updated""#));
+        assert!(merged.contains(r#""kept": "{{second}}""#));
     }
 }

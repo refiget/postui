@@ -1,6 +1,6 @@
 name: FastAPI mock 全场景
-file_directory: ../files
-download_directory: tmp
+file_directory: ../test_files
+download_directory: ../temp
 timeout_seconds: 1
 
 headers:

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{Result, bail};
 
-use super::{BodyPart, DownloadTarget, FileUpload, ParsedCommand};
+use super::{BodyPart, FileUpload, ParsedCommand};
 
 pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand> {
     if source.trim().is_empty() {
@@ -47,9 +47,6 @@ pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand
     }
     if has_data && has_form {
         bail!("接口 {} 的 curl 命令不能同时使用 data 和 form", request_id)
-    }
-    if parsed.download.is_none() && accepts_binary_response(&parsed.headers) {
-        parsed.download = Some(DownloadTarget::Auto);
     }
     Ok(parsed)
 }
@@ -100,17 +97,7 @@ fn parse_curl_option(
             parsed.get_mode = true;
             parsed.method = Some("GET".to_string());
         }
-        "-O" | "--remote-name" | "--remote-name-all" => {
-            set_remote_name(parsed, request_id)?;
-        }
-        "-J" | "--remote-header-name" => {
-            parsed.remote_header_name = true;
-            enable_content_disposition(&mut parsed.download);
-        }
         _ if is_ignored_curl_flag(token) => {}
-        _ if is_download_flag_cluster(token) => {
-            parse_download_flag_cluster(parsed, token, request_id)?;
-        }
         _ if token.starts_with('-') => {
             bail!("接口 {} 的 curl 参数不支持: {}", request_id, token)
         }
@@ -173,7 +160,7 @@ fn parse_option_value(
         | "--json" => parse_body_argument(parsed, option, value, request_id)?,
         "-F" | "--form" => parse_form(parsed, value, request_id)?,
         "--form-string" => parse_form_string(&mut parsed.form, value, request_id)?,
-        "-o" | "--output" => set_download_path(parsed, value, request_id)?,
+        "-o" | "--output" => {}
         "-b" | "--cookie" => {
             parsed
                 .headers
@@ -260,86 +247,6 @@ fn set_url(url: &mut Option<String>, value: &str, request_id: &str) -> Result<()
         bail!("接口 {} 的 curl 命令包含多个 URL", request_id)
     }
     Ok(())
-}
-
-fn set_download_path(parsed: &mut ParsedCommand, value: &str, request_id: &str) -> Result<()> {
-    let value = value.trim();
-    if value.is_empty() {
-        bail!("接口 {} 的 curl 输出文件路径不能为空", request_id)
-    }
-    if value == "-" {
-        return Ok(());
-    }
-    if parsed.download.is_some() {
-        bail!("接口 {} 的 curl 命令包含多个下载目标", request_id)
-    }
-    parsed.download = Some(DownloadTarget::Path(value.to_string()));
-    Ok(())
-}
-
-fn set_remote_name(parsed: &mut ParsedCommand, request_id: &str) -> Result<()> {
-    if parsed.download.is_some() {
-        bail!("接口 {} 的 curl 命令包含多个下载目标", request_id)
-    }
-    parsed.download = Some(DownloadTarget::RemoteName {
-        use_content_disposition: parsed.remote_header_name,
-    });
-    Ok(())
-}
-
-fn enable_content_disposition(download: &mut Option<DownloadTarget>) {
-    if let Some(DownloadTarget::RemoteName {
-        use_content_disposition,
-    }) = download
-    {
-        *use_content_disposition = true;
-    }
-}
-
-fn is_download_flag_cluster(value: &str) -> bool {
-    value.len() > 2
-        && value.starts_with('-')
-        && value[1..].chars().all(|flag| matches!(flag, 'O' | 'J'))
-}
-
-fn parse_download_flag_cluster(
-    parsed: &mut ParsedCommand,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
-    for flag in value[1..].chars() {
-        match flag {
-            'O' => set_remote_name(parsed, request_id)?,
-            'J' => {
-                parsed.remote_header_name = true;
-                enable_content_disposition(&mut parsed.download);
-            }
-            _ => unreachable!("validated download flag cluster"),
-        }
-    }
-    Ok(())
-}
-
-fn accepts_binary_response(headers: &BTreeMap<String, String>) -> bool {
-    headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("accept")
-            && value.split(',').any(|media_type| {
-                let media_type = media_type.trim().to_ascii_lowercase();
-                is_binary_media_type(&media_type)
-            })
-    })
-}
-
-fn is_binary_media_type(value: &str) -> bool {
-    !value.ends_with("+json")
-        && !value.ends_with("+xml")
-        && (value == "application/octet-stream"
-            || value == "application/pdf"
-            || value == "application/zip"
-            || value.starts_with("application/vnd.")
-            || value.starts_with("image/")
-            || value.starts_with("audio/")
-            || value.starts_with("video/"))
 }
 
 fn parse_header(
@@ -473,5 +380,11 @@ fn is_ignored_curl_flag(value: &str) -> bool {
             | "-v"
             | "-i"
             | "-sS"
+            | "-O"
+            | "--remote-name"
+            | "--remote-name-all"
+            | "-J"
+            | "--remote-header-name"
+            | "-OJ"
     )
 }

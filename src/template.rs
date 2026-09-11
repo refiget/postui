@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(test)]
 use serde_json::Value;
 
-use crate::config::{ApiRequest, BodyPart, DownloadTarget};
+use crate::config::{ApiRequest, BodyPart};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -14,7 +13,6 @@ pub(crate) struct ResolvedRequest {
     pub(crate) raw_body: Option<String>,
     pub(crate) form: BTreeMap<String, String>,
     pub(crate) files: Vec<ResolvedFile>,
-    pub(crate) download: Option<DownloadTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,11 +23,17 @@ pub(crate) struct ResolvedFile {
     pub(crate) content_type: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DisplayTextPart {
+    pub(crate) text: String,
+    pub(crate) variable: Option<String>,
+}
+
 pub(crate) fn resolve_request(
     request: &ApiRequest,
     variables: &BTreeMap<String, String>,
 ) -> ResolvedRequest {
-    let mut url = expand_text(&request.url, variables);
+    let mut url = resolve_text(&request.url, variables);
     let query_parts = request
         .query_parts
         .iter()
@@ -52,27 +56,18 @@ pub(crate) fn resolve_request(
             .files
             .iter()
             .map(|file| ResolvedFile {
-                field: expand_text(&file.field, variables),
-                path: expand_text(&file.path, variables),
+                field: resolve_text(&file.field, variables),
+                path: resolve_text(&file.path, variables),
                 filename: file
                     .filename
                     .as_deref()
-                    .map(|value| expand_text(value, variables)),
+                    .map(|value| resolve_text(value, variables)),
                 content_type: file
                     .content_type
                     .as_deref()
-                    .map(|value| expand_text(value, variables)),
+                    .map(|value| resolve_text(value, variables)),
             })
             .collect(),
-        download: request.download.as_ref().map(|target| match target {
-            DownloadTarget::Path(path) => DownloadTarget::Path(expand_text(path, variables)),
-            DownloadTarget::RemoteName {
-                use_content_disposition,
-            } => DownloadTarget::RemoteName {
-                use_content_disposition: *use_content_disposition,
-            },
-            DownloadTarget::Auto => DownloadTarget::Auto,
-        }),
     }
 }
 
@@ -108,9 +103,6 @@ pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
             names.insert(variable.to_string());
         }
     }
-    if let Some(DownloadTarget::Path(path)) = &request.download {
-        collect_text(path, &mut names);
-    }
     names.into_iter().collect()
 }
 
@@ -120,7 +112,12 @@ pub(crate) fn variable_names_in_text(input: &str) -> Vec<String> {
     names.into_iter().collect()
 }
 
-#[cfg(test)]
+pub(crate) fn url_variable_names(input: &str) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    collect_text(&input[url_path_start(input)..], &mut names);
+    names.into_iter().collect()
+}
+
 pub(crate) fn extract_json_value(body: &str, path: &str) -> Result<String, String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("响应不是有效 JSON，无法提取: {error}"))?;
@@ -163,7 +160,7 @@ pub(crate) fn extract_json_value(body: &str, path: &str) -> Result<String, Strin
     }
 }
 
-fn expand_text(input: &str, variables: &BTreeMap<String, String>) -> String {
+pub(crate) fn resolve_text(input: &str, variables: &BTreeMap<String, String>) -> String {
     let mut output = String::with_capacity(input.len());
     let mut rest = input;
 
@@ -184,6 +181,42 @@ fn expand_text(input: &str, variables: &BTreeMap<String, String>) -> String {
     output
 }
 
+pub(crate) fn display_text_parts(
+    input: &str,
+    variables: &BTreeMap<String, String>,
+) -> Vec<DisplayTextPart> {
+    let mut parts = Vec::new();
+    let mut rest = input;
+
+    while let Some((start, end, name)) = find_placeholder(rest) {
+        if start > 0 {
+            parts.push(DisplayTextPart {
+                text: rest[..start].to_string(),
+                variable: None,
+            });
+        }
+        let token = &rest[start..end];
+        let text = variables
+            .get(name)
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| token.to_string());
+        parts.push(DisplayTextPart {
+            text,
+            variable: (!name.is_empty()).then(|| name.to_string()),
+        });
+        rest = &rest[end..];
+    }
+
+    if !rest.is_empty() {
+        parts.push(DisplayTextPart {
+            text: rest.to_string(),
+            variable: None,
+        });
+    }
+    parts
+}
+
 fn resolve_data_parts(parts: &[BodyPart], variables: &BTreeMap<String, String>) -> String {
     parts
         .iter()
@@ -194,8 +227,8 @@ fn resolve_data_parts(parts: &[BodyPart], variables: &BTreeMap<String, String>) 
 
 fn resolve_data_part(part: &BodyPart, variables: &BTreeMap<String, String>) -> String {
     match part {
-        BodyPart::Raw(value) => expand_text(value, variables),
-        BodyPart::UrlEncoded(value) => urlencode_data(&expand_text(value, variables)),
+        BodyPart::Raw(value) => resolve_text(value, variables),
+        BodyPart::UrlEncoded(value) => urlencode_data(&resolve_text(value, variables)),
     }
 }
 
@@ -295,7 +328,7 @@ fn expand_text_map(
 ) -> BTreeMap<String, String> {
     values
         .iter()
-        .map(|(key, value)| (expand_text(key, variables), expand_text(value, variables)))
+        .map(|(key, value)| (resolve_text(key, variables), resolve_text(value, variables)))
         .collect()
 }
 
@@ -316,6 +349,13 @@ fn collect_text(input: &str, names: &mut BTreeSet<String>) {
     }
 }
 
+fn url_path_start(input: &str) -> usize {
+    let authority_start = input.find("://").map_or(0, |index| index.saturating_add(3));
+    input[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(input.len(), |index| authority_start + index)
+}
+
 fn strip_variable_delimiters(value: &str) -> &str {
     let value = value.trim();
     value
@@ -325,7 +365,6 @@ fn strip_variable_delimiters(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-#[cfg(test)]
 fn path_segments(path: &str) -> Vec<&str> {
     path.split(['.', '[', ']'])
         .map(str::trim)
@@ -350,8 +389,51 @@ mod tests {
     fn expands_known_variables_and_keeps_unknown_tokens() {
         let variables = BTreeMap::from([("host".to_string(), "localhost".to_string())]);
         assert_eq!(
-            expand_text("http://{{ host }}/{{missing}}", &variables),
+            resolve_text("http://{{ host }}/{{missing}}", &variables),
             "http://localhost/{{missing}}"
+        );
+    }
+
+    #[test]
+    fn url_variables_skip_the_base_authority() {
+        assert_eq!(
+            url_variable_names("{{host}}/api/tasks/{{task_id}}?kind={{kind}}"),
+            vec!["kind", "task_id"]
+        );
+        assert_eq!(
+            url_variable_names("https://{{host}}/api/tasks/{{task_id}}"),
+            vec!["task_id"]
+        );
+    }
+
+    #[test]
+    fn display_parts_keep_empty_placeholders_visible() {
+        let variables = BTreeMap::from([
+            ("host".to_string(), "localhost".to_string()),
+            ("task_id".to_string(), String::new()),
+        ]);
+        let parts = display_text_parts("http://{{host}}/tasks/{{task_id}}", &variables);
+
+        assert_eq!(
+            parts,
+            vec![
+                DisplayTextPart {
+                    text: "http://".to_string(),
+                    variable: None,
+                },
+                DisplayTextPart {
+                    text: "localhost".to_string(),
+                    variable: Some("host".to_string()),
+                },
+                DisplayTextPart {
+                    text: "/tasks/".to_string(),
+                    variable: None,
+                },
+                DisplayTextPart {
+                    text: "{{task_id}}".to_string(),
+                    variable: Some("task_id".to_string()),
+                },
+            ]
         );
     }
 
@@ -369,7 +451,6 @@ mod tests {
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
-            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([("version".to_string(), "v1".to_string())]);
@@ -383,7 +464,7 @@ mod tests {
             id: "timeline".to_string(),
             name: "任务时间线".to_string(),
             method: "GET".to_string(),
-            url: "http://172.16.68.42/gmp/tasks/{{task_id}}".to_string(),
+            url: "https://example.test/gmp/tasks/{{task_id}}".to_string(),
             timeout_seconds: 30,
             description: String::new(),
             headers: BTreeMap::new(),
@@ -391,12 +472,11 @@ mod tests {
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
-            download: None,
             extracts: Vec::new(),
         };
         assert_eq!(
             display_url(&request),
-            "http://172.16.68.42/gmp/tasks/{{task_id}}"
+            "https://example.test/gmp/tasks/{{task_id}}"
         );
     }
 
@@ -416,7 +496,6 @@ mod tests {
             query_parts: Vec::new(),
             form: BTreeMap::new(),
             files: Vec::new(),
-            download: None,
             extracts: Vec::new(),
         };
         assert_eq!(variable_names(&request), vec!["name"]);
@@ -441,7 +520,6 @@ mod tests {
                 filename: Some("{{file_name}}".to_string()),
                 content_type: Some("text/plain".to_string()),
             }],
-            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([
@@ -469,7 +547,6 @@ mod tests {
             query_parts: vec![BodyPart::UrlEncoded("q={{query}}".to_string())],
             form: BTreeMap::new(),
             files: Vec::new(),
-            download: None,
             extracts: Vec::new(),
         };
         let variables = BTreeMap::from([(String::from("query"), String::from("a b&c"))]);
@@ -485,33 +562,6 @@ mod tests {
             "name=文档 & edge"
         );
         assert_eq!(decode_urlencoded_data("name=%ZZ"), "name=%ZZ");
-    }
-
-    #[test]
-    fn expands_download_path_variables() {
-        let request = ApiRequest {
-            id: "download".to_string(),
-            name: "Download".to_string(),
-            method: "GET".to_string(),
-            url: "https://example.test/report".to_string(),
-            timeout_seconds: 30,
-            description: String::new(),
-            headers: BTreeMap::new(),
-            body_parts: Vec::new(),
-            query_parts: Vec::new(),
-            form: BTreeMap::new(),
-            files: Vec::new(),
-            download: Some(DownloadTarget::Path("{{file_name}}".to_string())),
-            extracts: Vec::new(),
-        };
-        let variables = BTreeMap::from([(String::from("file_name"), String::from("report.pdf"))]);
-        let resolved = resolve_request(&request, &variables);
-
-        assert_eq!(
-            resolved.download,
-            Some(DownloadTarget::Path("report.pdf".to_string()))
-        );
-        assert_eq!(variable_names(&request), vec!["file_name"]);
     }
 
     #[test]

@@ -1,9 +1,12 @@
 use std::{
     error::Error,
-    fmt, fs,
+    fmt,
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+use std::fs;
 
 use reqwest::{
     Method,
@@ -14,7 +17,7 @@ use reqwest::{
     header::HeaderName,
 };
 
-use crate::{config::DownloadTarget, template::ResolvedRequest};
+use crate::template::ResolvedRequest;
 
 const MAX_LOG_VALUE_BYTES: usize = 64 * 1024;
 
@@ -65,7 +68,7 @@ pub(crate) struct ResponseData {
     pub(crate) reason: String,
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: String,
-    pub(crate) download_path: Option<PathBuf>,
+    pub(crate) body_bytes: Vec<u8>,
     pub(crate) elapsed_ms: u128,
 }
 
@@ -73,7 +76,6 @@ pub(crate) fn send(
     request: &ResolvedRequest,
     timeout_seconds: u64,
     file_directory: &Path,
-    download_directory: &Path,
     operation_id: &str,
 ) -> Result<ResponseData, HttpError> {
     let started = Instant::now();
@@ -92,9 +94,7 @@ pub(crate) fn send(
         form_field_count = request.form.len(),
         file_count = request.files.len(),
         has_body = request.raw_body.is_some(),
-        download = ?request.download,
         file_directory = %file_directory.display(),
-        download_directory = %download_directory.display(),
         "开始准备 HTTP 请求"
     );
 
@@ -153,9 +153,9 @@ pub(crate) fn send(
                 configured_path = %file.path,
                 "读取上传文件"
             );
-            let bytes = fs::read(&path).map_err(|error| {
+            let mut part = Part::file(&path).map_err(|error| {
                 tracing::error!(path = %path.display(), error = %error, "读取上传文件失败");
-                format!("读取上传文件失败 {}: {error}", path.display())
+                HttpError::failed(error.to_string())
             })?;
             let filename = file
                 .filename
@@ -173,10 +173,9 @@ pub(crate) fn send(
                 field = %file.field,
                 filename = %filename,
                 content_type = ?file.content_type,
-                bytes = bytes.len(),
                 "上传文件已读取"
             );
-            let mut part = Part::bytes(bytes).file_name(filename);
+            part = part.file_name(filename);
             if let Some(content_type) = &file.content_type {
                 part = part.mime_str(content_type).map_err(|error| {
                     tracing::error!(
@@ -228,62 +227,22 @@ pub(crate) fn send(
         headers = ?response_headers,
         "收到 HTTP 响应头"
     );
-    let auto_download = status.is_success() && response_looks_like_download(&headers);
-    let download_target = match request.download.clone() {
-        Some(DownloadTarget::Auto) => auto_download.then_some(DownloadTarget::RemoteName {
-            use_content_disposition: true,
-        }),
-        Some(target) => Some(target),
-        None => auto_download.then_some(DownloadTarget::RemoteName {
-            use_content_disposition: true,
-        }),
-    };
-    tracing::debug!(
-        configured_download = ?request.download,
-        auto_download,
-        detected_download = ?download_target,
-        "判断响应处理方式"
-    );
-    let (body, download_path) = if let Some(target) = &download_target {
-        let bytes = response.bytes().map_err(|error| {
-            tracing::error!(
-                status = status.as_u16(),
-                elapsed_ms = started.elapsed().as_millis(),
-                error = %error,
-                error_debug = ?error,
-                "读取下载响应失败"
-            );
-            HttpError::from_reqwest("读取下载响应失败", error)
-        })?;
-        let path = save_download(&bytes, target, download_directory, &headers, &request.url)?;
-        tracing::debug!(
+    let body_bytes = response.bytes().map_err(|error| {
+        tracing::error!(
             status = status.as_u16(),
-            bytes = bytes.len(),
-            path = %path.display(),
-            "下载响应已保存"
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            error_debug = ?error,
+            "读取响应失败"
         );
-        (String::new(), Some(path))
-    } else {
-        let body = response.text().map_err(|error| {
-            tracing::error!(
-                status = status.as_u16(),
-                elapsed_ms = started.elapsed().as_millis(),
-                error = %error,
-                error_debug = ?error,
-                "读取响应失败"
-            );
-            HttpError::from_reqwest("读取响应失败", error)
-        })?;
-        (body, None)
-    };
+        HttpError::from_reqwest("读取响应失败", error)
+    })?;
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
     let elapsed_ms = started.elapsed().as_millis();
     tracing::debug!(
         status = status.as_u16(),
         elapsed_ms,
-        body_bytes = body.len(),
-        download_path = download_path
-            .as_deref()
-            .map(|path| path.display().to_string()),
+        body_bytes = body_bytes.len(),
         body = %log_body(&body),
         "HTTP 响应读取完成"
     );
@@ -293,109 +252,9 @@ pub(crate) fn send(
         reason: status.canonical_reason().unwrap_or_default().to_string(),
         headers,
         body,
-        download_path,
+        body_bytes: body_bytes.to_vec(),
         elapsed_ms,
     })
-}
-
-fn save_download(
-    bytes: &[u8],
-    target: &DownloadTarget,
-    download_directory: &Path,
-    headers: &[(String, String)],
-    url: &str,
-) -> Result<PathBuf, String> {
-    let configured_path = match target {
-        DownloadTarget::Path(path) => path.trim().to_string(),
-        DownloadTarget::RemoteName {
-            use_content_disposition,
-        } => {
-            if *use_content_disposition {
-                content_disposition_filename(headers)
-                    .or_else(|| url_filename(url))
-                    .unwrap_or_else(|| "download.bin".to_string())
-            } else {
-                url_filename(url).unwrap_or_else(|| "download.bin".to_string())
-            }
-        }
-        DownloadTarget::Auto => unreachable!("automatic download target must be resolved first"),
-    };
-    if configured_path.is_empty() {
-        return Err("下载文件路径不能为空".to_string());
-    }
-
-    let configured_path = Path::new(&configured_path);
-    let destination = download_path(download_directory, configured_path)?;
-    let parent = destination
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(download_directory);
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("创建下载目录失败 {}: {error}", parent.display()))?;
-    fs::write(&destination, bytes)
-        .map_err(|error| format!("保存下载文件失败 {}: {error}", destination.display()))?;
-    Ok(destination)
-}
-
-fn content_disposition_filename(headers: &[(String, String)]) -> Option<String> {
-    let value = headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-disposition"))
-        .map(|(_, value)| value)?;
-    value.split(';').skip(1).find_map(|part| {
-        let (name, value) = part.split_once('=')?;
-        if !name.trim().eq_ignore_ascii_case("filename")
-            && !name.trim().eq_ignore_ascii_case("filename*")
-        {
-            return None;
-        }
-        safe_filename(value.trim().trim_matches('"'))
-    })
-}
-
-fn url_filename(url: &str) -> Option<String> {
-    let parsed = url.parse::<reqwest::Url>().ok()?;
-    let name = parsed
-        .path_segments()?
-        .rev()
-        .find(|segment| !segment.is_empty())?;
-    safe_filename(name)
-}
-
-fn safe_filename(value: &str) -> Option<String> {
-    let value = value.trim().rsplit(['/', '\\']).next()?.trim();
-    (!value.is_empty() && !matches!(value, "." | "..")).then(|| value.to_string())
-}
-
-fn response_looks_like_download(headers: &[(String, String)]) -> bool {
-    if headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("content-disposition")
-            && value
-                .split(';')
-                .any(|part| part.trim().eq_ignore_ascii_case("attachment"))
-    }) {
-        return true;
-    }
-
-    headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-        .and_then(|(_, value)| value.split(';').next())
-        .map(str::trim)
-        .is_some_and(is_binary_media_type)
-}
-
-fn is_binary_media_type(value: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    !value.ends_with("+json")
-        && !value.ends_with("+xml")
-        && (value == "application/octet-stream"
-            || value == "application/pdf"
-            || value == "application/zip"
-            || value.starts_with("application/vnd.")
-            || value.starts_with("image/")
-            || value.starts_with("audio/")
-            || value.starts_with("video/"))
 }
 
 fn upload_path(file_directory: &Path, configured_path: &str) -> Result<PathBuf, String> {
@@ -404,16 +263,6 @@ fn upload_path(file_directory: &Path, configured_path: &str) -> Result<PathBuf, 
         configured_path,
         "上传文件相对路径不能包含 ..",
     )
-}
-
-fn download_path(download_directory: &Path, configured_path: &Path) -> Result<PathBuf, String> {
-    if configured_path.is_absolute() {
-        return Ok(configured_path.to_path_buf());
-    }
-    if has_parent_component(configured_path) {
-        return Err("下载文件相对路径不能包含 ..".to_string());
-    }
-    Ok(download_directory.join(configured_path))
 }
 
 fn resolve_child_path(
@@ -457,13 +306,13 @@ fn log_field_value(name: &str, value: &str) -> String {
 
 fn is_sensitive_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
+    let compact = name.replace(['-', '_', ' '], "");
     name.contains("authorization")
         || name.contains("cookie")
         || name.contains("token")
         || name.contains("secret")
         || name.contains("password")
-        || name == "api-key"
-        || name == "x-api-key"
+        || compact.contains("apikey")
 }
 
 fn log_json_value(value: &serde_json::Value) -> String {
@@ -513,7 +362,31 @@ fn log_text(value: &str) -> String {
 fn log_body(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .map(|value| log_json_value(&value))
-        .unwrap_or_else(|_| log_text(body))
+        .unwrap_or_else(|_| log_form_body(body).unwrap_or_else(|| log_text(body)))
+}
+
+fn log_form_body(body: &str) -> Option<String> {
+    let mut has_field = false;
+    let mut fields = Vec::new();
+    for part in body.split('&') {
+        let Some((name, value)) = part.split_once('=') else {
+            fields.push(log_text(part));
+            continue;
+        };
+        if name.is_empty() {
+            return None;
+        }
+        has_field = true;
+        if is_sensitive_name(name) {
+            fields.push(format!("{name}=<已隐藏>"));
+        } else {
+            fields.push(format!("{name}={}", log_text(value)));
+        }
+    }
+    if !has_field {
+        return None;
+    }
+    Some(log_text(&fields.join("&")))
 }
 
 fn log_url(url: &str) -> String {
@@ -551,7 +424,17 @@ mod tests {
     use crate::{config, logging, template};
 
     #[test]
-    #[ignore = "需要先启动 mock/run_e2e.py 提供 FastAPI 服务"]
+    fn debug_logging_redacts_form_and_api_key_values() {
+        let body = log_body("password=secret-value&flag&note=visible&api_key=key-value");
+        assert_eq!(body, "password=<已隐藏>&flag&note=visible&api_key=<已隐藏>");
+        assert_eq!(
+            log_url("https://example.test/path?api_key=key-value&note=visible"),
+            "https://example.test/path?api_key=<已隐藏>&note=visible"
+        );
+    }
+
+    #[test]
+    #[ignore = "需要先启动 mock/main.py 提供 FastAPI 服务"]
     fn fastapi_mock_covers_configured_requests() {
         if !cfg!(debug_assertions) {
             eprintln!("FastAPI mock 测试需要 debug 构建，以便写入 debug 日志");
@@ -584,7 +467,6 @@ mod tests {
             variables.insert("host".to_string(), host.to_string_lossy().into_owned());
         }
         let file_directory = app_config.file_directory.clone();
-        let download_directory = app_config.download_directory.clone();
 
         for request in &app_config.requests {
             let resolved = template::resolve_request(request, &variables);
@@ -598,7 +480,6 @@ mod tests {
                 &resolved,
                 request.timeout_seconds,
                 &file_directory,
-                &download_directory,
                 &format!("e2e-{}", request.id),
             );
 
@@ -750,31 +631,6 @@ mod tests {
     }
 
     #[test]
-    fn saves_download_bytes_and_prefers_content_disposition_when_requested() {
-        let directory =
-            env::temp_dir().join(format!("postui-download-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        let headers = vec![(
-            "Content-Disposition".to_string(),
-            "attachment; filename=report.pdf".to_string(),
-        )];
-        let path = save_download(
-            b"not text",
-            &DownloadTarget::RemoteName {
-                use_content_disposition: true,
-            },
-            &directory,
-            &headers,
-            "https://example.test/reports/fallback.bin",
-        )
-        .expect("下载文件应当可以保存");
-
-        assert_eq!(path, directory.join("report.pdf"));
-        assert_eq!(fs::read(&path).expect("应当可以读取下载文件"), b"not text");
-        fs::remove_dir_all(&directory).expect("应清理测试下载目录");
-    }
-
-    #[test]
     fn resolves_relative_upload_paths_against_the_configured_directory() {
         let directory = Path::new("/workspace/files");
         assert_eq!(
@@ -786,6 +642,32 @@ mod tests {
             PathBuf::from("/tmp/report.pdf")
         );
         assert!(upload_path(directory, "../report.pdf").is_err());
+    }
+
+    #[test]
+    fn missing_upload_file_preserves_the_standard_io_error() {
+        let directory =
+            env::temp_dir().join(format!("postui-missing-upload-test-{}", std::process::id()));
+        let path = directory.join("does-not-exist.txt");
+        let expected = fs::File::open(&path).unwrap_err().to_string();
+        let request = ResolvedRequest {
+            method: "POST".to_string(),
+            url: "http://127.0.0.1:1/upload".to_string(),
+            query_parts: Vec::new(),
+            headers: BTreeMap::new(),
+            raw_body: None,
+            form: BTreeMap::new(),
+            files: vec![crate::template::ResolvedFile {
+                field: "file".to_string(),
+                path: "does-not-exist.txt".to_string(),
+                filename: None,
+                content_type: None,
+            }],
+        };
+
+        let error = send(&request, 1, &directory, "missing-upload-test").unwrap_err();
+
+        assert_eq!(error, HttpError::Failed(expected));
     }
 
     #[test]
@@ -852,16 +734,9 @@ mod tests {
                 filename: Some("configured.txt".to_string()),
                 content_type: Some("text/plain".to_string()),
             }],
-            download: None,
         };
-        let response = send(
-            &request,
-            2,
-            &directory,
-            &env::temp_dir().join("postui-upload-downloads"),
-            "upload-directory-test",
-        )
-        .expect("上传请求应当成功");
+        let response =
+            send(&request, 2, &directory, "upload-directory-test").expect("上传请求应当成功");
 
         server.join().expect("测试 HTTP 服务线程应正常结束");
         assert_eq!(response.status, 200);
@@ -869,26 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_attachment_and_binary_response_types() {
-        assert!(response_looks_like_download(&[
-            (
-                "content-disposition".to_string(),
-                "attachment; filename=report.pdf".to_string(),
-            ),
-            ("content-type".to_string(), "application/json".to_string()),
-        ]));
-        assert!(response_looks_like_download(&[(
-            "content-type".to_string(),
-            "application/octet-stream".to_string(),
-        )]));
-        assert!(!response_looks_like_download(&[(
-            "content-type".to_string(),
-            "application/json; charset=utf-8".to_string(),
-        )]));
-    }
-
-    #[test]
-    fn sends_binary_response_to_the_download_directory() {
+    fn keeps_binary_response_bytes_without_saving_automatically() {
         use std::{
             io::{Read, Write},
             net::TcpListener,
@@ -911,8 +767,10 @@ mod tests {
             stream.write_all(body).expect("应写入测试响应体");
         });
 
-        let directory =
-            env::temp_dir().join(format!("postui-auto-download-test-{}", std::process::id()));
+        let directory = env::temp_dir().join(format!(
+            "postui-no-auto-download-test-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&directory);
         let request = ResolvedRequest {
             method: "GET".to_string(),
@@ -922,25 +780,13 @@ mod tests {
             raw_body: None,
             form: BTreeMap::new(),
             files: Vec::new(),
-            download: None,
         };
-        let response = send(
-            &request,
-            2,
-            Path::new("."),
-            &directory,
-            "auto-download-test",
-        )
-        .expect("二进制响应应当可以保存");
+        let response = send(&request, 2, Path::new("."), "auto-download-test")
+            .expect("二进制响应应当可以读取");
 
         server.join().expect("测试 HTTP 服务线程应正常结束");
-        assert_eq!(response.body, "");
-        assert_eq!(response.download_path, Some(directory.join("report.bin")));
-        assert_eq!(
-            fs::read(response.download_path.expect("应记录下载路径"))
-                .expect("应读取保存的下载文件"),
-            b"binary-data"
-        );
-        fs::remove_dir_all(&directory).expect("应清理自动下载目录");
+        assert_eq!(response.body, "binary-data");
+        assert_eq!(response.body_bytes, b"binary-data");
+        assert!(!directory.exists());
     }
 }
