@@ -1,90 +1,141 @@
 # PostUI
 
-PostUI 是一个配置驱动的终端接口测试工具。它读取 `.http`、`.rest` 或 `.curl` 请求文件，在同一个终端工作区中编辑请求、发送请求并查看响应。
+这个软件是我在某企畸形的开发环境使用的个人工具, 因为只能用到 `GET` 和 `POST`, 所以我只有这两个功能. Linux 个 windows 都支持(虽然我是Mac)
 
-界面以鼠标操作为主，同时保留 Vim 风格快捷键作为辅助。请求文件、项目配置和本地上传文件彼此分离，个人项目配置不会随源码提交。
+界面以鼠标操作为主
 
-## 快速开始
+## 界面预览
 
-### 从源码运行
+![PostUI 终端界面预览](assets/screenshot.png)
 
-先准备一个项目配置。`config.example.yaml` 只包含公共示例，可复制为本机使用的 `config.yaml`：
+## 构建
 
-```bash
-cp config.example.yaml config.yaml
-```
+### 本地构建
 
-如果只是运行仓库中的 mock 请求，可以直接覆盖请求集合路径：
+环境：
 
-```bash
-cargo run -- --requests mock/.postui
-```
-
-程序启动时无需显式传入 `--config`。它会自动寻找当前项目的 `.postui/config.yaml`；找不到时再查找程序目录和用户级配置。完整规则见[配置说明](docs/configuration.md)。
-
-### 从发布目录运行
-
-Linux 发布目录通常包含：
-
-```text
-postui                 # 启动脚本
-postui.bin             # Linux amd64 二进制
-config.yaml            # 发布目录配置
-.postui/config.yaml    # 项目入口配置
-.postui/collections/   # 请求集合
-docs/                  # 使用和开发说明
-test_files/            # 默认上传目录
-temp/                  # 默认下载目录，按需创建
-```
-
-运行：
+- Rust 1.85 或更高版本
+- Rust 2024 edition
+- Linux amd64：`x86_64-unknown-linux-musl`
+- Windows amd64：`x86_64-pc-windows-msvc`
 
 ```bash
-./postui
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-Windows amd64 发布目录使用 `postui.exe`，在 PowerShell 中运行：
-
-```powershell
-.\postui.exe
-```
-
-安装后可直接执行 `postui`。`postui init` 只修改当前用户的 PATH 或 shell 配置，不写入系统级配置。
-
-## 功能概览
-
-- 请求列表、Collection 切换和会话变量管理。
-- Request 与 Response 并排显示，内容在面板内直接编辑。
-- Params 和 Headers 使用原生两列表格；最后一行下方的 `+` 方框用于新增，内容过长自动截断。
-- `Send` 发送当前请求；当前支持发送 `GET` 和 `POST`，其他方法可以查看但不会发送。
-- Response 的 `Actions` 始终可点击并使用焦点高亮；有缓存响应时可以 Download 或 Copy。
-- JSON 响应语法高亮，`@extract` 可把成功响应中的字段写入当前集合的会话变量。
-- Debug 日志会脱敏 Authorization、Cookie、Token、Secret、Password 和 API key 等字段。
-
-详细内容：
-
-- [配置、请求文件与变量](docs/configuration.md)
-- [开发、测试与发布](docs/development.md)
-- [仓库结构与提交边界](docs/repository.md)
-
-## 常用检查
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-```
-
-Linux amd64 发布包：
+Linux 发布包：
 
 ```bash
 ./package-linux.sh
 ```
 
-Windows amd64 发布包：
+Windows amd64 构建：
+
+```powershell
+rustup target add x86_64-pc-windows-msvc
+cargo build --release --target x86_64-pc-windows-msvc
+```
+
+Windows 发布包：
 
 ```powershell
 .\package-windows.ps1
 ```
 
-打包脚本读取本机的 `config.yaml` 和 `.postui/`，输出目录被 Git 忽略；发布前请确认没有把个人项目配置复制到公共仓库。
+## 配置
+
+### 全局配置
+
+复制配置模板：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+全局配置示例：
+
+```yaml
+request_config: .postui/collections/example
+language: en
+theme: gruvbox-dark
+
+highlight:
+  enabled: true
+  syntax: base16-mocha.dark
+  variable: "#d3869b"
+```
+
+字段：
+
+| 字段 | 值 |
+| --- | --- |
+| `request_config` | 请求集合目录 |
+| `language` | `en` 或 `zh` |
+| `theme` | `gruvbox-dark`、`ocean`、`nord`、`mono` |
+| `theme_file` | 自定义主题文件路径 |
+| `highlight.enabled` | 是否启用语法高亮 |
+| `highlight.syntax` | 语法主题名称 |
+| `highlight.variable` | 变量颜色 |
+
+未指定 `--config` 时，配置查找顺序如下：
+
+1. 当前项目及父目录中的 `.postui/config.yaml`。
+2. 程序目录中的 `config.yaml`。
+3. 用户级配置文件。
+
+命令行参数：
+
+```bash
+postui --config ./config.yaml --requests ./.postui/collections/example
+```
+
+### 请求集合
+
+请求集合包含 `config.yaml` 和 `requests/`：
+
+```text
+.postui/
+├── config.yaml
+└── collections/
+    └── example/
+        ├── config.yaml
+        └── requests/
+            ├── 01-list.http
+            └── 02-detail.http
+```
+
+集合配置示例：
+
+```yaml
+name: 示例接口
+timeout_seconds: 30
+
+headers:
+  Accept: application/json
+
+variables:
+  host: https://api.example.test
+  token:
+  item_id:
+```
+
+集合字段：`name`、`timeout_seconds`、`headers`、`variables`、`file_directory`、`download_directory`。
+
+### 请求文件
+
+支持 `.http`、`.rest` 和 `.curl` 文件。请求文件使用 curl 格式：
+
+```text
+# @name 查询用户
+# @description 查询指定用户
+# @timeout 10
+# @extract user_id = data.id
+curl --request GET "{{host}}/users/{{item_id}}"
+```
+
+变量格式：`{{variable_name}}`。
+
+支持的 HTTP 方法：`GET`、`POST`。
+
+完整配置字段见[配置与请求文件](docs/configuration.md)。
