@@ -221,23 +221,26 @@ pub(super) fn draw_headers_dialog(
             .take(visible)
             .map(|(index, row)| {
                 let editing = dialog.editor.is_some() && dialog.selected == index;
-                let edited_value = dialog
-                    .editor
-                    .as_ref()
-                    .filter(|_| editing)
-                    .map(|editor| editor.value.clone());
                 let name = if editing && dialog.field == HeaderField::Name {
-                    edited_value.clone().unwrap_or_else(|| row.name.clone())
+                    editor_view(dialog.editor.as_ref().unwrap(), usize::from(name_width))
                 } else {
                     crate::template::resolve_text(&row.name, &app.collection_state.variables)
                 };
                 let value = if editing && dialog.field == HeaderField::Value {
-                    edited_value.unwrap_or_else(|| row.value.clone())
+                    editor_view(dialog.editor.as_ref().unwrap(), usize::from(value_width))
                 } else {
                     crate::template::resolve_text(&row.value, &app.collection_state.variables)
                 };
-                let name = truncate(&name, usize::from(name_width));
-                let value = truncate(&value, usize::from(value_width));
+                let name = if editing && dialog.field == HeaderField::Name {
+                    name
+                } else {
+                    truncate(&name, usize::from(name_width))
+                };
+                let value = if editing && dialog.field == HeaderField::Value {
+                    value
+                } else {
+                    truncate(&value, usize::from(value_width))
+                };
                 let row_style = if row.source == HeaderSource::Collection || !row.enabled {
                     Style::default().fg(theme.muted)
                 } else {
@@ -330,13 +333,21 @@ pub(super) fn draw_params_dialog(
                 if is_selected {
                     if let Some(editor) = dialog.editor.as_ref() {
                         match dialog.field {
-                            crate::app::HeaderField::Name => key = editor.value.clone(),
-                            crate::app::HeaderField::Value => value = editor.value.clone(),
+                            crate::app::HeaderField::Name => {
+                                key = editor_view(editor, usize::from(key_width));
+                            }
+                            crate::app::HeaderField::Value => {
+                                value = editor_view(editor, usize::from(value_width));
+                            }
                         }
                     }
                 }
-                key = truncate(&key, usize::from(key_width));
-                value = truncate(&value, usize::from(value_width));
+                if dialog.editor.is_none() || !is_selected || dialog.field != HeaderField::Name {
+                    key = truncate(&key, usize::from(key_width));
+                }
+                if dialog.editor.is_none() || !is_selected || dialog.field != HeaderField::Value {
+                    value = truncate(&value, usize::from(value_width));
+                }
                 let key_style = Style::default().fg(theme.text);
                 let value_style = Style::default().fg(theme.accent);
                 let mut key_cell = Cell::from(highlight::template_line(&key, key_style, theme));

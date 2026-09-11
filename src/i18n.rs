@@ -202,6 +202,13 @@ impl UiText {
         self.pick("Params saved", "参数已保存")
     }
 
+    pub(crate) fn invalid_body_value(self) -> &'static str {
+        self.pick(
+            "Invalid value for the selected JSON type",
+            "输入值不符合当前 JSON 类型",
+        )
+    }
+
     pub(crate) fn empty_description(self) -> &'static str {
         self.pick("—", "—")
     }

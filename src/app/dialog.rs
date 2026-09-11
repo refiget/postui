@@ -47,8 +47,10 @@ pub(crate) enum HeaderSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParamSource {
+    Url,
     Query,
     Form,
+    Body,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,11 +432,30 @@ impl ParamsDialog {
     }
 
     pub(super) fn add_row(&mut self) {
+        let source = if self.rows.iter().any(|row| row.source == ParamSource::Form)
+            && !self.rows.iter().any(|row| {
+                matches!(
+                    row.source,
+                    ParamSource::Url | ParamSource::Query | ParamSource::Body
+                )
+            }) {
+            ParamSource::Form
+        } else if self.rows.iter().any(|row| row.source == ParamSource::Body)
+            && !self
+                .rows
+                .iter()
+                .any(|row| matches!(row.source, ParamSource::Url | ParamSource::Query))
+        {
+            ParamSource::Body
+        } else {
+            ParamSource::Query
+        };
         self.rows.push(ParamsDialogRow {
-            source: ParamSource::Query,
+            source,
             key: String::new(),
             value: String::new(),
-            part_type: Some(BodyPartSource::UrlEncoded),
+            part_type: matches!(source, ParamSource::Query | ParamSource::Body)
+                .then_some(BodyPartSource::UrlEncoded),
             has_equals: true,
         });
         self.selected = self.rows.len().saturating_sub(1);

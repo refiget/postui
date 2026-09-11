@@ -653,7 +653,6 @@ mod tests {
         let request = ResolvedRequest {
             method: "POST".to_string(),
             url: "http://127.0.0.1:1/upload".to_string(),
-            query_parts: Vec::new(),
             headers: BTreeMap::new(),
             raw_body: None,
             form: BTreeMap::new(),
@@ -724,7 +723,6 @@ mod tests {
         let request = ResolvedRequest {
             method: "POST".to_string(),
             url: format!("http://{address}/upload"),
-            query_parts: Vec::new(),
             headers: BTreeMap::new(),
             raw_body: None,
             form: BTreeMap::new(),
@@ -775,7 +773,6 @@ mod tests {
         let request = ResolvedRequest {
             method: "GET".to_string(),
             url: format!("http://{address}/reports/latest"),
-            query_parts: Vec::new(),
             headers: BTreeMap::new(),
             raw_body: None,
             form: BTreeMap::new(),

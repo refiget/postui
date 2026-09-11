@@ -8,7 +8,6 @@ use crate::config::{ApiRequest, BodyPart};
 pub(crate) struct ResolvedRequest {
     pub(crate) method: String,
     pub(crate) url: String,
-    pub(crate) query_parts: Vec<String>,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) raw_body: Option<String>,
     pub(crate) form: BTreeMap<String, String>,
@@ -47,7 +46,6 @@ pub(crate) fn resolve_request(
     ResolvedRequest {
         method: request.method.clone(),
         url,
-        query_parts,
         headers: expand_text_map(&request.headers, variables),
         raw_body: (!request.body_parts.is_empty())
             .then(|| resolve_data_parts(&request.body_parts, variables)),

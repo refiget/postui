@@ -163,13 +163,17 @@ pub(super) fn response_menu_area(panel: Rect, trigger: Rect) -> Rect {
         return Rect::default();
     }
     let width = 20.min(panel.width.saturating_sub(2));
-    let height = 4.min(panel.bottom().saturating_sub(trigger.bottom()));
+    let height = 4.min(panel.height);
     if width < 3 || height < 3 {
         return Rect::default();
     }
+    let y = trigger
+        .bottom()
+        .min(panel.bottom().saturating_sub(height))
+        .max(panel.y);
     Rect::new(
         panel.right().saturating_sub(width).saturating_sub(1),
-        trigger.bottom(),
+        y,
         width,
         height,
     )

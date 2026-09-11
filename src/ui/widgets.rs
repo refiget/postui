@@ -295,3 +295,42 @@ pub(super) fn truncate(value: &str, width: usize) -> String {
     result.push('…');
     result
 }
+
+pub(super) fn editor_view(editor: &crate::editor::TextEditor, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let cursor = editor.cursor.min(editor.value.len());
+    let before = &editor.value[..cursor];
+    let after = &editor.value[cursor..];
+    let marker = "▏";
+    let marker_width = Line::from(marker).width();
+    let available = width.saturating_sub(marker_width);
+    let after_width = Line::from(after).width().min(available / 2);
+    let before_width = available.saturating_sub(after_width);
+
+    let mut before_chars = Vec::new();
+    let mut used = 0_usize;
+    for character in before.chars().rev() {
+        let character_width = Line::from(character.to_string()).width();
+        if used.saturating_add(character_width) > before_width {
+            break;
+        }
+        before_chars.push(character);
+        used = used.saturating_add(character_width);
+    }
+    before_chars.reverse();
+
+    let mut result = before_chars.into_iter().collect::<String>();
+    result.push_str(marker);
+    used = 0;
+    for character in after.chars() {
+        let character_width = Line::from(character.to_string()).width();
+        if used.saturating_add(character_width) > after_width {
+            break;
+        }
+        result.push(character);
+        used = used.saturating_add(character_width);
+    }
+    result
+}

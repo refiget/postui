@@ -140,7 +140,12 @@ fn update_collection_hover(app: &mut App, column: u16, row: u16, areas: UiLayout
         return;
     }
 
-    let index = usize::from(row.saturating_sub(content.y));
+    let offset = request_list_offset(
+        app.selected_collection,
+        app.collections.len(),
+        usize::from(content.height),
+    );
+    let index = offset.saturating_add(usize::from(row.saturating_sub(content.y)));
     if index < app.collections.len() {
         app.selected_collection = index;
     }
@@ -166,7 +171,14 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
         let menu = collection_menu_area(areas, app);
         let content = menu.inner(Margin::new(1, 1));
         if contains(content, column, row) {
-            app.choose_collection(usize::from(row.saturating_sub(content.y)));
+            let offset = request_list_offset(
+                app.selected_collection,
+                app.collections.len(),
+                usize::from(content.height),
+            );
+            app.choose_collection(
+                offset.saturating_add(usize::from(row.saturating_sub(content.y))),
+            );
             return;
         }
         app.close_collection_menu();
@@ -326,7 +338,10 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
-    if contains(areas.request_list, column, row) {
+    let response_menu = response_menu_area(areas.response, areas.response_menu_button);
+    if app.response_state.menu_open && contains(response_menu, column, row) {
+        app.move_response_menu_selection(direction);
+    } else if contains(areas.request_list, column, row) {
         app.focus = Focus::Requests;
         tracing::debug!(column, row, direction, "滚动左侧接口列表");
         app.move_request(direction);

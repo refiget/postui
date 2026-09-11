@@ -575,6 +575,40 @@ fn collection_menu_highlight_follows_the_mouse_cursor() {
 }
 
 #[test]
+fn collection_menu_mouse_hit_testing_uses_the_scrolled_offset() {
+    let mut app = test_app();
+    for index in 0..12 {
+        app.collections.push(crate::app::CollectionChoice {
+            name: format!("Collection {index}"),
+            path: PathBuf::from(format!("mock/.postui/collections/{index}")),
+        });
+    }
+    app.open_collection_menu();
+    app.selected_collection = app.collections.len() - 1;
+    let area = Rect::new(0, 0, 80, 16);
+    let layout = screen_layout(area);
+    let content = collection_menu_area(layout, &app).inner(Margin::new(1, 1));
+    let expected = request_list_offset(
+        app.selected_collection,
+        app.collections.len(),
+        usize::from(content.height),
+    );
+
+    handle_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: content.x,
+            row: content.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+        area,
+    );
+
+    assert_eq!(app.selected_collection, expected);
+}
+
+#[test]
 fn clicking_a_variable_value_starts_inline_editing() {
     let mut app = test_app();
     app.open_variables();
@@ -1348,4 +1382,14 @@ fn preview_action_button_state_encodes_focus_and_disabled() {
 fn truncates_using_terminal_cell_width() {
     assert_eq!(truncate("接口", 3), "接…");
     assert_eq!(truncate("接口", 2), "…");
+}
+
+#[test]
+fn editor_view_keeps_the_cursor_and_long_value_tail_visible() {
+    let editor = crate::editor::TextEditor::new("prefix-that-does-not-fit-tail".to_string());
+    let visible = editor_view(&editor, 12);
+
+    assert!(visible.contains('▏'));
+    assert!(visible.contains("tail"));
+    assert!(Line::from(visible).width() <= 12);
 }

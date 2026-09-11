@@ -211,6 +211,7 @@ pub(crate) struct RequestRuntimeState {
     pub(crate) status: RequestStatus,
     pub(crate) response: Option<ResponseData>,
     pub(crate) error: Option<String>,
+    message: Option<String>,
     operation_id: Option<String>,
 }
 
@@ -271,6 +272,7 @@ pub(crate) struct RequestCollectionState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RequestEdits {
+    pub(crate) url: Option<String>,
     pub(crate) headers: Vec<HeaderRow>,
     pub(crate) query_parts: Vec<BodyPart>,
     pub(crate) form: BTreeMap<String, String>,
@@ -281,6 +283,7 @@ pub(crate) struct RequestEdits {
 impl From<&ApiRequest> for RequestEdits {
     fn from(request: &ApiRequest) -> Self {
         Self {
+            url: None,
             headers: request
                 .headers
                 .iter()
@@ -504,6 +507,12 @@ impl App {
             self.preview_state.active_tab = PreviewTab::Body;
             self.preview_state.scroll.reset();
             self.response_state.scroll.reset();
+            self.status = self
+                .collection_state
+                .request_states
+                .get(&self.current_request().id)
+                .and_then(|state| state.message.clone())
+                .unwrap_or_else(|| self.text().ready().to_string());
             tracing::debug!(
                 previous_index = previous,
                 selected_index = index,
@@ -527,6 +536,9 @@ impl App {
     fn effective_request(&self, request: &ApiRequest) -> ApiRequest {
         let edits = self.request_edits(&request.id);
         let mut effective = request.clone();
+        if let Some(url) = &edits.url {
+            effective.url = url.clone();
+        }
         effective.headers = self.effective_request_headers(&request.id);
         effective.query_parts = edits.query_parts.clone();
         effective.form = edits.form.clone();
@@ -813,6 +825,7 @@ impl App {
             return;
         };
         let Some(replacement) = convert_json_scalar(editor.kind, &editor.input.value) else {
+            self.status = self.text().invalid_body_value().to_string();
             return;
         };
         let rendered_document = editor.document;
@@ -841,8 +854,15 @@ impl App {
     }
 
     pub(crate) fn current_param_count(&self) -> usize {
-        let request = self.current_resolved_request();
-        request.query_parts.len() + request.form.len()
+        let request = self.current_effective_request();
+        let url_count = split_query_parts(split_url_query(&request.url).1).count();
+        let body_count = self
+            .request_edits(&self.current_request().id)
+            .body_parts
+            .iter()
+            .filter(|part| matches!(part, BodyPart::UrlEncoded(_)))
+            .count();
+        url_count + request.query_parts.len() + request.form.len() + body_count
     }
 
     pub(crate) fn open_variables(&mut self) {
@@ -937,8 +957,21 @@ impl App {
             }
             PreviewTab::Params => {
                 let request_id = self.current_request().id.clone();
+                let edits = self.request_edits(&request_id);
                 let query_parts = self.request_edits(&request_id).query_parts.clone();
                 let mut rows = Vec::new();
+                let effective_url = edits.url.as_deref().unwrap_or(&self.current_request().url);
+                let (_, url_query, _) = split_url_query(effective_url);
+                for part in split_query_parts(url_query) {
+                    let (key, value, has_equals) = split_key_value(part);
+                    rows.push(ParamsDialogRow {
+                        source: ParamSource::Url,
+                        key,
+                        value,
+                        part_type: None,
+                        has_equals,
+                    });
+                }
                 for part in query_parts {
                     let (part_type, part) = match part {
                         BodyPart::Raw(part) => (BodyPartSource::Raw, part),
@@ -961,6 +994,25 @@ impl App {
                         part_type: None,
                         has_equals: true,
                     });
+                }
+                if edits
+                    .body_parts
+                    .iter()
+                    .all(|part| matches!(part, BodyPart::UrlEncoded(_)))
+                {
+                    for part in &edits.body_parts {
+                        let BodyPart::UrlEncoded(part) = part else {
+                            unreachable!();
+                        };
+                        let (key, value, has_equals) = split_key_value(part);
+                        rows.push(ParamsDialogRow {
+                            source: ParamSource::Body,
+                            key,
+                            value,
+                            part_type: Some(BodyPartSource::UrlEncoded),
+                            has_equals,
+                        });
+                    }
                 }
 
                 Some(Dialog::Params(ParamsDialog {
@@ -1120,32 +1172,59 @@ impl App {
                     .headers = rows;
             }
             Dialog::Params(dialog) => {
+                let edits = request_edits
+                    .get_mut(&dialog.request_id)
+                    .expect("every configured request has session edits");
+                let configured_url = self
+                    .config
+                    .requests
+                    .iter()
+                    .find(|request| request.id == dialog.request_id)
+                    .map(|request| request.url.as_str())
+                    .unwrap_or_default();
+                let effective_url = edits.url.as_deref().unwrap_or(configured_url);
+                let (url_base, _, url_fragment) = split_url_query(effective_url);
+                let mut url_parts = Vec::new();
                 let mut query_parts = Vec::new();
                 let mut form = BTreeMap::new();
+                let mut body_parts = Vec::new();
                 for row in &dialog.rows {
                     let key = row.key.trim();
                     let value = row.value.trim();
                     match row.source {
+                        ParamSource::Url if !key.is_empty() || !value.is_empty() => {
+                            url_parts.push(join_param_row(key, value, row.has_equals));
+                        }
                         ParamSource::Query if !key.is_empty() || !value.is_empty() => {
-                            let part = if row.has_equals || !value.is_empty() {
-                                format!("{key}={value}")
-                            } else {
-                                key.to_string()
-                            };
+                            let part = join_param_row(key, value, row.has_equals);
                             query_parts
                                 .push(row.part_type.unwrap_or(BodyPartSource::Raw).to_part(part));
                         }
                         ParamSource::Form if !key.is_empty() => {
                             form.insert(key.to_string(), row.value.clone());
                         }
+                        ParamSource::Body if !key.is_empty() || !value.is_empty() => {
+                            let part = join_param_row(key, value, row.has_equals);
+                            body_parts.push(
+                                row.part_type
+                                    .unwrap_or(BodyPartSource::UrlEncoded)
+                                    .to_part(part),
+                            );
+                        }
                         _ => {}
                     }
                 }
-                let edits = request_edits
-                    .get_mut(&dialog.request_id)
-                    .expect("every configured request has session edits");
+                edits.url = Some(rebuild_url(url_base, &url_parts, url_fragment));
                 edits.query_parts = query_parts;
                 edits.form = form;
+                if !body_parts.is_empty()
+                    || edits
+                        .body_parts
+                        .iter()
+                        .all(|part| matches!(part, BodyPart::UrlEncoded(_)))
+                {
+                    edits.body_parts = body_parts;
+                }
             }
             Dialog::Variables(_) => {}
         }
@@ -1336,17 +1415,17 @@ impl App {
                             state.status = request_status;
                             state.response = Some(response);
                             state.error = None;
-                            is_current.then(|| {
-                                let complete = text.request_complete(status, elapsed);
-                                if extract_failures == 0 {
-                                    complete
-                                } else {
-                                    format!(
-                                        "{complete} · {}",
-                                        text.response_extract_failures(extract_failures)
-                                    )
-                                }
-                            })
+                            let complete = text.request_complete(status, elapsed);
+                            let message = if extract_failures == 0 {
+                                complete
+                            } else {
+                                format!(
+                                    "{complete} · {}",
+                                    text.response_extract_failures(extract_failures)
+                                )
+                            };
+                            state.message = Some(message.clone());
+                            is_current.then_some(message)
                         }
                         Err(error) => {
                             let request_status = RequestStatus::from_error(&error);
@@ -1367,10 +1446,17 @@ impl App {
                             state.status = request_status;
                             state.response = None;
                             state.error = Some(error_message.clone());
-                            is_current.then(|| request_status.error_message(text, &error_message))
+                            let message = request_status.error_message(text, &error_message);
+                            state.message = Some(message.clone());
+                            is_current.then_some(message)
                         }
                     };
                     if let Some(status) = status_message {
+                        if let Some(state) =
+                            self.collection_state.request_states.get_mut(&request_id)
+                        {
+                            state.message = Some(status.clone());
+                        }
                         self.response_state.scroll.reset();
                         self.status = status;
                     }
@@ -1736,7 +1822,7 @@ impl App {
             NEXT_REQUEST_OPERATION.fetch_add(1, Ordering::Relaxed)
         );
         let resolved = self.current_resolved_request();
-        let display_url = template::display_url(self.current_request());
+        let display_url = resolved.url.clone();
         let timeout = self.current_request().timeout_seconds;
         let file_directory = self.config.file_directory.clone();
         let sender = self.sender.clone();
@@ -1748,6 +1834,7 @@ impl App {
             file_directory = %file_directory.display(),
             "开始异步发送请求"
         );
+        let message = self.text().request_started(&resolved.method, &display_url);
         let state = self
             .collection_state
             .request_states
@@ -1757,7 +1844,8 @@ impl App {
         state.response = None;
         state.error = None;
         state.operation_id = Some(operation_id.clone());
-        self.status = self.text().request_started(&resolved.method, &display_url);
+        state.message = Some(message.clone());
+        self.status = message;
 
         thread::spawn(move || {
             tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
@@ -1793,6 +1881,41 @@ impl App {
 pub(crate) fn supports_method(method: &str) -> bool {
     let method = method.trim();
     method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST")
+}
+
+fn split_url_query(url: &str) -> (&str, &str, &str) {
+    let (without_fragment, fragment) = url
+        .split_once('#')
+        .map_or((url, ""), |(base, fragment)| (base, fragment));
+    let (base, query) = without_fragment
+        .split_once('?')
+        .map_or((without_fragment, ""), |(base, query)| (base, query));
+    (base, query, fragment)
+}
+
+fn split_query_parts(query: &str) -> impl Iterator<Item = &str> {
+    query.split('&').filter(|part| !part.is_empty())
+}
+
+fn join_param_row(key: &str, value: &str, has_equals: bool) -> String {
+    if has_equals || !value.is_empty() {
+        format!("{key}={value}")
+    } else {
+        key.to_string()
+    }
+}
+
+fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
+    let mut url = base.to_string();
+    if !query_parts.is_empty() {
+        url.push('?');
+        url.push_str(&query_parts.join("&"));
+    }
+    if !fragment.is_empty() {
+        url.push('#');
+        url.push_str(fragment);
+    }
+    url
 }
 
 pub(crate) fn key_kind(code: KeyCode) -> &'static str {
@@ -2567,6 +2690,133 @@ mod tests {
 
         assert!(app.body_editor().is_none());
         assert_eq!(app.body_json(), before);
+        assert_eq!(app.status, "Invalid value for the selected JSON type");
+    }
+
+    #[test]
+    fn request_status_message_follows_the_selected_request() {
+        let mut app = App::new(
+            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
+            PathBuf::from("mock/.postui"),
+            GlobalConfig::default(),
+        );
+        let first_id = app.current_request().id.clone();
+        let state = app
+            .collection_state
+            .request_states
+            .get_mut(&first_id)
+            .expect("请求状态应存在");
+        state.status = RequestStatus::Sending;
+        state.operation_id = Some("status-test".to_string());
+        state.message = Some("Sending first request".to_string());
+        app.status = "Sending first request".to_string();
+
+        app.select_request(1);
+        assert_eq!(app.status, "Ready");
+        app.sender
+            .send(AppMessage::RequestFinished {
+                request_id: first_id.clone(),
+                operation_id: "status-test".to_string(),
+                result: Ok(ResponseData {
+                    status: 200,
+                    reason: "OK".to_string(),
+                    headers: Vec::new(),
+                    body: "{}".to_string(),
+                    body_bytes: b"{}".to_vec(),
+                    elapsed_ms: 5,
+                }),
+            })
+            .expect("测试消息应可发送");
+        app.poll_messages();
+        assert_eq!(app.status, "Ready");
+
+        app.select_request(0);
+        assert!(app.status.contains("200"));
+    }
+
+    #[test]
+    fn params_include_and_update_query_embedded_in_the_url() {
+        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
+        config.requests[0].url = "https://example.test/items?first=one&flag#result".to_string();
+        let mut app = App::new(
+            config,
+            PathBuf::from("mock/.postui"),
+            GlobalConfig::default(),
+        );
+
+        app.open_params();
+        let Dialog::Params(dialog) = app.dialog.as_mut().expect("参数编辑器应打开") else {
+            panic!("应打开参数编辑器");
+        };
+        assert_eq!(dialog.rows.len(), 2);
+        assert!(dialog.rows.iter().all(|row| row.source == ParamSource::Url));
+        dialog.rows[0].value = "updated".to_string();
+        app.persist_request_edits();
+
+        assert_eq!(
+            app.current_effective_request().url,
+            "https://example.test/items?first=updated&flag#result"
+        );
+    }
+
+    #[test]
+    fn params_add_row_uses_the_existing_payload_source() {
+        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
+        config.requests[0].query_parts.clear();
+        config.requests[0].body_parts.clear();
+        config.requests[0]
+            .form
+            .insert("field".to_string(), "value".to_string());
+        let mut app = App::new(
+            config,
+            PathBuf::from("mock/.postui"),
+            GlobalConfig::default(),
+        );
+        app.open_params();
+        app.add_preview_row(PreviewTab::Params);
+
+        let Dialog::Params(dialog) = app.dialog.as_ref().expect("参数编辑器应打开") else {
+            panic!("应打开参数编辑器");
+        };
+        assert_eq!(
+            dialog.rows.last().map(|row| row.source),
+            Some(ParamSource::Form)
+        );
+    }
+
+    #[test]
+    fn urlencoded_body_is_editable_from_params() {
+        let mut app = App::new(
+            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
+            PathBuf::from("mock/.postui"),
+            GlobalConfig::default(),
+        );
+        let index = app
+            .config
+            .requests
+            .iter()
+            .position(|request| request.id.ends_with("08-form.http"))
+            .expect("应包含 URL 编码表单请求");
+        app.select_request(index);
+        app.open_params();
+        let Dialog::Params(dialog) = app.dialog.as_mut().expect("参数编辑器应打开") else {
+            panic!("应打开参数编辑器");
+        };
+        assert!(
+            dialog
+                .rows
+                .iter()
+                .all(|row| row.source == ParamSource::Body)
+        );
+        dialog.rows[0].value = "changed value".to_string();
+        app.persist_request_edits();
+
+        assert!(
+            app.current_resolved_request()
+                .raw_body
+                .expect("应有请求体")
+                .contains("changed%20value")
+        );
     }
 
     #[test]
