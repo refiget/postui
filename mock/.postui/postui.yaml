@@ -6,8 +6,10 @@ directories:
   downloads: temp
 
 headers:
-  Accept: application/json
-  X-PostUI-Collection: "{{collection_name}}"
+  - name: Accept
+    value: application/json
+  - name: X-PostUI-Collection
+    value: "{{collection_name}}"
 
 variables:
   collection_name: fastapi-mock

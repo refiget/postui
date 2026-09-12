@@ -300,9 +300,9 @@ pub(super) fn editor_view(editor: &crate::editor::TextEditor, width: usize) -> S
     if width == 0 {
         return String::new();
     }
-    let cursor = editor.cursor.min(editor.value.len());
-    let before = &editor.value[..cursor];
-    let after = &editor.value[cursor..];
+    let cursor = editor.cursor_byte();
+    let before = &editor.value()[..cursor];
+    let after = &editor.value()[cursor..];
     let marker = "▏";
     let marker_width = Line::from(marker).width();
     let available = width.saturating_sub(marker_width);

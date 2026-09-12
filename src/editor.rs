@@ -2,17 +2,34 @@ use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
+use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct TextEditor {
-    pub(crate) value: String,
-    pub(crate) cursor: usize,
+    value: String,
+    cursor: usize,
 }
 
 impl TextEditor {
     pub(crate) fn new(value: String) -> Self {
         let cursor = value.len();
         Self { value, cursor }
+    }
+
+    pub(crate) fn value(&self) -> &str {
+        &self.value
+    }
+
+    pub(crate) fn cursor_byte(&self) -> usize {
+        self.cursor
+    }
+
+    pub(crate) fn cursor_width(&self) -> usize {
+        terminal_width(&self.value[..self.cursor])
+    }
+
+    pub(crate) fn into_value(self) -> String {
+        self.value
     }
 
     fn insert(&mut self, character: char) {
@@ -24,48 +41,58 @@ impl TextEditor {
     }
 
     fn backspace(&mut self) {
-        if self.cursor == 0 {
+        let Some(previous) = previous_grapheme(&self.value, self.cursor) else {
             return;
-        }
-        let previous = self.value[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
+        };
         self.value.drain(previous..self.cursor);
         self.cursor = previous;
     }
 
     fn delete(&mut self) {
-        if self.cursor >= self.value.len() {
+        let Some(next) = next_grapheme(&self.value, self.cursor) else {
             return;
-        }
-        let next = self.value[self.cursor..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| self.cursor + index)
-            .unwrap_or(self.value.len());
+        };
         self.value.drain(self.cursor..next);
     }
 
     fn move_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor = self.value[..self.cursor]
-                .char_indices()
-                .next_back()
-                .map(|(index, _)| index)
-                .unwrap_or(0);
+        if let Some(previous) = previous_grapheme(&self.value, self.cursor) {
+            self.cursor = previous;
         }
     }
 
     fn move_right(&mut self) {
-        if self.cursor < self.value.len() {
-            self.cursor += self.value[self.cursor..]
-                .chars()
-                .next()
-                .map(char::len_utf8)
-                .unwrap_or(0);
+        if let Some(next) = next_grapheme(&self.value, self.cursor) {
+            self.cursor = next;
         }
+    }
+
+    fn move_word_left(&mut self) {
+        self.cursor = previous_word(&self.value, self.cursor);
+    }
+
+    fn move_word_right(&mut self) {
+        self.cursor = next_word(&self.value, self.cursor);
+    }
+
+    fn delete_word_left(&mut self) {
+        let previous = previous_word(&self.value, self.cursor);
+        self.value.drain(previous..self.cursor);
+        self.cursor = previous;
+    }
+
+    fn delete_word_right(&mut self) {
+        let next = next_word(&self.value, self.cursor);
+        self.value.drain(self.cursor..next);
+    }
+
+    fn delete_line(&mut self) {
+        self.value.clear();
+        self.cursor = 0;
+    }
+
+    fn delete_to_end(&mut self) {
+        self.value.truncate(self.cursor);
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> EditorAction {
@@ -73,10 +100,11 @@ impl TextEditor {
             match key.code {
                 KeyCode::Char('a') => self.cursor = 0,
                 KeyCode::Char('e') => self.cursor = self.value.len(),
-                KeyCode::Char('u') => {
-                    self.value.clear();
-                    self.cursor = 0;
-                }
+                KeyCode::Char('u') => self.delete_line(),
+                KeyCode::Left => self.move_word_left(),
+                KeyCode::Right => self.move_word_right(),
+                KeyCode::Delete => self.delete_word_right(),
+                KeyCode::Char('k') => self.delete_to_end(),
                 _ => {}
             }
             return EditorAction::Continue;
@@ -84,6 +112,13 @@ impl TextEditor {
 
         match key.code {
             KeyCode::Char(character) => self.insert(character),
+            KeyCode::Backspace
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::META) =>
+            {
+                self.delete_word_left();
+            }
             KeyCode::Backspace => self.backspace(),
             KeyCode::Delete => self.delete(),
             KeyCode::Left => self.move_left(),
@@ -96,6 +131,45 @@ impl TextEditor {
         }
         EditorAction::Continue
     }
+}
+
+fn previous_grapheme(value: &str, cursor: usize) -> Option<usize> {
+    value[..cursor]
+        .grapheme_indices(true)
+        .next_back()
+        .map(|(index, _)| index)
+}
+
+fn next_grapheme(value: &str, cursor: usize) -> Option<usize> {
+    value[cursor..]
+        .grapheme_indices(true)
+        .nth(1)
+        .map(|(index, _)| cursor + index)
+}
+
+fn is_word(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| !character.is_whitespace() && !character.is_ascii_punctuation())
+}
+
+fn previous_word(value: &str, cursor: usize) -> usize {
+    value
+        .split_word_bound_indices()
+        .filter(|(index, _)| *index < cursor)
+        .rev()
+        .find(|(_, word)| is_word(word))
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn next_word(value: &str, cursor: usize) -> usize {
+    value
+        .split_word_bound_indices()
+        .filter(|(index, _)| *index > cursor)
+        .find(|(_, word)| is_word(word))
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +198,7 @@ pub(crate) struct BodyValueEditor {
 impl BodyValueEditor {
     pub(crate) fn display_document(&self) -> String {
         let mut value = self.document.clone();
-        value.replace_range(self.span.clone(), &self.input.value);
+        value.replace_range(self.span.clone(), self.input.value());
         value
     }
 

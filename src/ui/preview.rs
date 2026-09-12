@@ -81,10 +81,10 @@ pub(super) fn draw_preview_summary(
     ));
     if let Some(editor) = &app.preview_state.url_editor {
         url_line.push(Span::styled(
-            if editor.value.is_empty() {
+            if editor.value().is_empty() {
                 " ".to_string()
             } else {
-                editor.value.clone()
+                editor.value().to_string()
             },
             Style::default()
                 .fg(theme.text)
@@ -132,7 +132,7 @@ pub(super) fn draw_preview_summary(
     frame.render_widget(Paragraph::new(lines), area);
     if let Some(editor) = &app.preview_state.url_editor {
         let prefix = Line::from(format!("[ {} ]  {}  ", request.method, text.address())).width();
-        let position = prefix + crate::editor::terminal_width(&editor.value[..editor.cursor]);
+        let position = prefix + editor.cursor_width();
         let width = usize::from(area.width.max(1));
         let row = (position / width).min(usize::from(area.height.saturating_sub(1)));
         let column = position % width;
@@ -243,12 +243,12 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
             let input_area = Rect::new(
                 area.x.saturating_add(editor_column as u16),
                 area.y.saturating_add((editor_line - scroll) as u16),
-                u16::try_from(crate::editor::terminal_width(&editor.input.value).max(1))
+                u16::try_from(crate::editor::terminal_width(editor.input.value()).max(1))
                     .unwrap_or(u16::MAX),
                 1,
             );
             frame.render_widget(
-                Paragraph::new(editor.input.value.clone()).style(
+                Paragraph::new(editor.input.value()).style(
                     Style::default()
                         .fg(theme.text)
                         .bg(theme.selection)
@@ -257,12 +257,9 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 input_area,
             );
             frame.set_cursor_position((
-                input_area.x.saturating_add(
-                    u16::try_from(crate::editor::terminal_width(
-                        &editor.input.value[..editor.input.cursor],
-                    ))
-                    .unwrap_or(u16::MAX),
-                ),
+                input_area
+                    .x
+                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
                 input_area.y,
             ));
         }
@@ -277,7 +274,7 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 1,
             );
             frame.render_widget(
-                Paragraph::new(editor.input.value.clone()).style(
+                Paragraph::new(editor.input.value()).style(
                     Style::default()
                         .fg(theme.text)
                         .bg(theme.selection)
@@ -286,12 +283,9 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 input_area,
             );
             frame.set_cursor_position((
-                input_area.x.saturating_add(
-                    u16::try_from(crate::editor::terminal_width(
-                        &editor.input.value[..editor.input.cursor],
-                    ))
-                    .unwrap_or(u16::MAX),
-                ),
+                input_area
+                    .x
+                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
                 input_area.y,
             ));
         }
@@ -305,10 +299,10 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 area.width.saturating_sub(editor.column as u16).max(1),
                 1,
             );
-            let input = if editor.input.value.is_empty() {
+            let input = if editor.input.value().is_empty() {
                 " "
             } else {
-                editor.input.value.as_str()
+                editor.input.value()
             };
             frame.render_widget(
                 Paragraph::new(input).style(
@@ -320,10 +314,9 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 input_area,
             );
             frame.set_cursor_position((
-                input_area.x.saturating_add(
-                    Line::from(editor.input.value[..editor.input.cursor].to_string()).width()
-                        as u16,
-                ),
+                input_area
+                    .x
+                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
                 input_area.y,
             ));
         }
@@ -391,7 +384,7 @@ pub(super) fn request_variable_line(
     let editing_value = app
         .variable_editor()
         .filter(|editor| editor.variable == variable)
-        .map(|editor| editor.input.value.clone());
+        .map(|editor| editor.input.value().to_string());
     let value = editing_value.unwrap_or_else(|| app.request_variable_value(variable));
     let display = if value.is_empty() {
         "__".to_string()

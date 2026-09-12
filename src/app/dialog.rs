@@ -191,7 +191,7 @@ impl VariablesDialog {
             return;
         };
         if let Some(row) = self.rows.get_mut(self.selected) {
-            row.value = editor.value;
+            row.value = editor.into_value();
         }
     }
 
@@ -283,13 +283,14 @@ impl HeadersDialog {
         let Some(row) = self.rows.get_mut(self.selected) else {
             return;
         };
+        let value = editor.into_value();
         let changed = match self.field {
-            HeaderField::Name if row.name != editor.value => {
-                row.name = editor.value;
+            HeaderField::Name if row.name != value => {
+                row.name = value;
                 true
             }
-            HeaderField::Value if row.value != editor.value => {
-                row.value = editor.value;
+            HeaderField::Value if row.value != value => {
+                row.value = value;
                 true
             }
             _ => false,
@@ -417,10 +418,11 @@ impl ParamsDialog {
         let Some(row) = self.rows.get_mut(self.selected) else {
             return;
         };
+        let value = editor.into_value();
         match self.field {
-            HeaderField::Name if row.key != editor.value => row.key = editor.value,
-            HeaderField::Value if row.value != editor.value => {
-                row.value = editor.value;
+            HeaderField::Name if row.key != value => row.key = value,
+            HeaderField::Value if row.value != value => {
+                row.value = value;
                 if row.source == ParamSource::Query {
                     row.has_equals = true;
                 }

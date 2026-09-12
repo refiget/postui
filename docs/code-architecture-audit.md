@@ -10,7 +10,7 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段五已经完成依赖整理、请求状态收敛、第一轮职责拆分和请求字段模型整理，后续重点是输入组件评估：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段六已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理和输入基础设施收敛：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
@@ -18,7 +18,7 @@ cargo clippy --all-targets -- -D warnings
 4. [已完成] 合并请求配置、编辑态和运行态，消除平行状态容器。
 5. [阶段 4 已完成第一轮] 按职责拆分 1980 行的 `App`。
 6. [阶段 5 已完成] 将 Header/Form 统一为有序、可重复的 `NameValue` 条目。
-7. 最后评估剪贴板和文本编辑器库。
+7. [阶段 6 已完成] 收敛单行编辑器的 Unicode 边界，并使用正式剪贴板库。
 
 ## 值得使用现成库替换的实现
 
@@ -66,43 +66,29 @@ serde_yaml = "0.9"
 
 ### 文本编辑器
 
-`src/editor.rs` 中的 `TextEditor` 是轻量单行编辑器，目前能够维护 UTF-8 字节边界，但不处理完整 grapheme，并缺少：
+`src/editor.rs` 中的 `TextEditor` 仍是轻量单行编辑器，但编辑边界已经交给 `unicode-segmentation`：
 
-- 组合字符和 emoji 序列级别的移动、删除。
-- 选区。
-- 撤销和重做。
-- 单词跳转。
-- 原生粘贴处理。
-- 独立横向滚动状态。
+- 方向移动和删除按 grapheme 处理，不会把组合字符或 emoji 序列拆开。
+- Ctrl/Alt 单词移动和删除使用 Unicode word boundary。
+- 光标仍以 UTF-8 字节偏移保存，渲染时单独计算终端显示列。
 
-可考虑：
+`tui-input` 已完成评估但没有接入：0.15.x 要求 `unicode-width >= 0.2.2`，而项目当前的 `ratatui 0.29` 固定使用 `unicode-width = 0.2.0`；0.14.x 又不提供完整 grapheme 编辑。为此不升级整套 Ratatui 依赖，而是在本地编辑器适配层直接使用 `unicode-segmentation`。当前仍未实现选区、撤销/重做和多行编辑，这些不属于配置表单的必要能力。
 
-- 表格内单行字段使用 `tui-input`。
-- 将来出现完整 body 编辑器时使用 `tui-textarea`。
-- 当前 JSON 标量点击编辑暂时保留现有实现。
+当前 JSON 标量、URL、Header、Params 和文件路径继续共用这一单行编辑器；将来出现完整 body 编辑器时再单独评估 `tui-textarea`。
 
-不建议现在直接使用多行编辑组件替换所有单行输入。
-
-优先级：中低。
+阶段六已完成。优先级：中低。
 
 ### 剪贴板
 
-`src/clipboard.rs` 通过外部命令访问剪贴板：
+`src/clipboard.rs` 现在通过 `arboard 3.6.1` 访问系统剪贴板，并关闭图像 feature、启用 Linux Wayland data-control feature：
 
-- Windows：PowerShell 或 `clip`。
-- Wayland：`wl-copy`。
-- X11：`xclip` 或 `xsel`。
-- macOS：`pbcopy`。
+- Windows 使用原生剪贴板 API。
+- Linux 使用 X11，并在可用时使用 Wayland data-control。
+- 正常桌面环境不依赖命令搜索路径；无图形剪贴板环境时保留 `wl-copy`、`xclip`、`xsel` 或 Windows `clip` 作为兼容 fallback，适配 SSH/终端转发场景。
 
-这意味着 Linux 二进制不是严格的零外部运行依赖。可以使用 `arboard` 统一接口，但会增加平台相关构建依赖。
+`ClipboardService` 在首次复制时初始化，并由 `App` 持有到退出。这样符合 Linux 剪贴板由写入进程托管的生命周期要求；没有图形剪贴板环境时，复制会返回明确错误，不影响请求和 TUI 启动。
 
-建议根据交付目标选择：
-
-- 追求较小依赖面和简单构建：保留当前实现。
-- 追求下载后剪贴板必然可用：评估 `arboard`。
-- 即使保留当前实现，也应考虑启动时探测一次后端，而不是每次复制都依次尝试。
-
-优先级：低。
+代价是增加 X11/Wayland 和 Windows 平台构建依赖，但换来了统一 API；`arboard` 失败时的 fallback 保留了无图形环境下的终端剪贴板能力。阶段六已完成。优先级：低。
 
 ## 已使用库但用法需要优化
 
@@ -384,7 +370,7 @@ struct CellSelection {
 1. [已完成] Header 改为有序、可重复结构。
 2. [已完成] Form 参数改为有序、可重复结构。
 3. 统一 URL query、curl data 和 form 的数据语义。
-4. 再评估 `tui-input` 和剪贴板库。
+4. [已完成] 评估 `tui-input`，并接入 `unicode-segmentation` 和 `arboard`。
 
 不建议一次性进行框架化重写。先解决 HTTP Client 生命周期和请求状态模型，项目复杂度会自然下降，再进行模块拆分。
 
@@ -396,5 +382,8 @@ struct CellSelection {
 - [serde_yaml 维护状态](https://docs.rs/serde_yaml/latest/serde_yaml/)
 - [serde-saphyr 1.1.0](https://docs.rs/serde-saphyr/1.1.0/serde_saphyr/)
 - [serde_yml 迁移说明](https://docs.rs/serde_yml/latest/serde_yml/)
+- [unicode-segmentation](https://docs.rs/unicode-segmentation/latest/unicode_segmentation/)
+- [arboard](https://docs.rs/arboard/latest/arboard/)
+- [tui-input](https://docs.rs/tui-input/latest/tui_input/)
 - [tui-textarea](https://docs.rs/tui-textarea/latest/tui_textarea/)
 - [Ratatui user input 示例](https://ratatui.rs/examples/apps/user_input/)

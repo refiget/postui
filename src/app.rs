@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    clipboard::ClipboardService,
     config::{
         ApiRequest, BodyPart, FileUpload, NameValue, RequestConfig, WorkspaceConfig,
         value_to_string,
@@ -390,6 +391,7 @@ pub(crate) struct App {
     pub(crate) should_quit: bool,
     request_files: RequestFileStore,
     request_executor: RequestExecutor,
+    clipboard: ClipboardService,
 }
 
 impl App {
@@ -439,6 +441,7 @@ impl App {
             should_quit: false,
             request_files,
             request_executor,
+            clipboard: ClipboardService::new(),
         }
     }
 
@@ -512,7 +515,7 @@ impl App {
         };
         let request_id = request.id.clone();
         let configured = request.url.clone();
-        let value = editor.value.trim().to_string();
+        let value = editor.value().trim().to_string();
         if let Some(session) = self.workspace_state.request_mut(&request_id) {
             session.draft.url = (value != configured).then_some(value);
         }
@@ -924,7 +927,7 @@ impl App {
             .and_then(|request| request.files.get(editor.file_index))
             .map(|file| file.path.clone())
             .unwrap_or_default();
-        let value = editor.input.value.trim();
+        let value = editor.input.value().trim();
         let path = if value.is_empty() {
             default
         } else {
@@ -959,14 +962,14 @@ impl App {
         };
         self.workspace_state
             .variables
-            .insert(editor.variable, editor.input.value);
+            .insert(editor.variable, editor.input.into_value());
     }
 
     fn commit_body_value(&mut self) {
         let Some(editor) = self.preview_state.editor.take() else {
             return;
         };
-        let Some(replacement) = convert_json_scalar(editor.kind, &editor.input.value) else {
+        let Some(replacement) = convert_json_scalar(editor.kind, editor.input.value()) else {
             self.status = self.text().invalid_body_value().to_string();
             return;
         };
@@ -1874,7 +1877,7 @@ impl App {
             self.status = self.text().response_action_no_response().to_string();
             return;
         };
-        match crate::clipboard::copy_text(&body) {
+        match self.clipboard.copy_text(&body) {
             Ok(()) => self.status = self.text().response_copied().to_string(),
             Err(error) => self.status = self.text().response_copy_failed(&error),
         }

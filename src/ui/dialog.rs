@@ -133,7 +133,7 @@ pub(super) fn draw_variables_dialog(
                     .editor
                     .as_ref()
                     .filter(|_| editing)
-                    .map(|editor| editor.value.clone())
+                    .map(|editor| editor.value().to_string())
                     .unwrap_or_else(|| row.value.clone());
                 let mut value_cell = Cell::from(highlight::template_line(
                     &value,

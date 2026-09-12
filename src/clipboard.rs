@@ -29,20 +29,44 @@ const CLIPBOARD_COMMANDS: &[ClipboardCommand] = &[ClipboardCommand {
     arguments: &[],
 }];
 
-pub(crate) fn copy_text(text: &str) -> Result<(), String> {
-    let mut errors = Vec::new();
-    for command in CLIPBOARD_COMMANDS {
-        match run_clipboard_command(command, text) {
-            Ok(()) => return Ok(()),
-            Err(error) => errors.push(format!("{}: {error}", command.program)),
-        }
+pub(crate) struct ClipboardService {
+    clipboard: Option<arboard::Clipboard>,
+}
+
+impl ClipboardService {
+    pub(crate) fn new() -> Self {
+        Self { clipboard: None }
     }
 
-    Err(if errors.is_empty() {
-        "当前平台没有可用的剪贴板命令".to_string()
-    } else {
-        format!("系统剪贴板不可用（{}）", errors.join("；"))
-    })
+    pub(crate) fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        let mut errors = Vec::new();
+        if self.clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(clipboard) => self.clipboard = Some(clipboard),
+                Err(error) => errors.push(format!("arboard: 初始化失败: {error}")),
+            }
+        }
+
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            match clipboard.set_text(text) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("arboard: 写入失败: {error}")),
+            }
+        }
+
+        for command in CLIPBOARD_COMMANDS {
+            match run_clipboard_command(command, text) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("{}: {error}", command.program)),
+            }
+        }
+
+        Err(if errors.is_empty() {
+            "当前平台没有可用的剪贴板后端".to_string()
+        } else {
+            format!("系统剪贴板不可用（{}）", errors.join("；"))
+        })
+    }
 }
 
 fn run_clipboard_command(command: &ClipboardCommand, text: &str) -> Result<(), String> {
