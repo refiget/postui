@@ -10,28 +10,27 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。建议按以下顺序优化：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一和阶段二已经完成低风险依赖整理，后续重点是请求状态模型和职责拆分：
 
-1. 复用 `reqwest::blocking::Client`。
-2. 合并请求配置、编辑态和运行态，消除平行状态容器。
-3. 使用 `url` 处理 query 和 percent-encoding。
-4. 替换已经停止维护的 `serde_yaml`。
-5. 删除 `cacache` 不需要的 Tokio feature。
-6. 按职责拆分 2077 行的 `App`。
-7. 最后评估剪贴板和文本编辑器库。
+1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
+2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
+3. [已完成] 用 `serde-saphyr` 替换已经停止维护的 `serde_yaml`。
+4. 合并请求配置、编辑态和运行态，消除平行状态容器。
+5. 按职责拆分 2077 行的 `App`。
+6. 最后评估剪贴板和文本编辑器库。
 
 ## 值得使用现成库替换的实现
 
 ### URL 和 query 处理
 
-当前以下标准协议逻辑由项目自行实现：
+阶段二已将以下标准协议逻辑交给现成库处理：
 
-- `src/template.rs` 中的 query/fragment 拼接和 percent encode/decode。
-- `src/app.rs` 中的 URL/query 分割与重组。
+- `src/template.rs` 中的 URL query/fragment 拼接和 `application/x-www-form-urlencoded` 编解码。
+- `src/app.rs` 中的 URL/query 分割与重组现在通过 `template` 的 URL 工具完成。
 
-手写实现容易在已有 fragment、重复参数、空值、`+` 与 `%20`、非 ASCII 字符、二次编码以及参数包含 `&`、`=`、`#` 时产生错误。
+URL 能够正常解析时使用 `url::Url`，包含 `{{variable}}` 的原始模板保留文本回退路径，变量展开后再由 `Url` 处理。表单参数使用 `form_urlencoded`，因此空格、加号、非 ASCII 字符和保留字符遵循标准表单编码规则。
 
-建议直接依赖 `url = "2"`，使用：
+直接依赖 `url = "2.5"` 和 `form_urlencoded = "1.2"`，使用：
 
 - `Url`
 - `query_pairs()` / `query_pairs_mut()`
@@ -45,11 +44,11 @@ cargo clippy --all-targets -- -D warnings
 - 变量解析完成后再构造 `Url`。
 - UI 展示原始模板时不强制解析。
 
-优先级：高。
+阶段二已完成。后续请求模型改造仍需保持原始模板 URL 与已解析 URL 的边界。
 
 ### YAML 解析
 
-项目当前直接依赖：
+项目此前直接依赖：
 
 ```toml
 serde_yaml = "0.9"
@@ -60,9 +59,9 @@ serde_yaml = "0.9"
 - `src/config.rs`
 - `src/settings.rs`
 
-项目只需要将 YAML 反序列化到明确的数据结构，可优先评估 `serde-saphyr`。不建议迁移到 `serde_yml`，因为它也已经弃用。
+项目只需要将 YAML 反序列化到明确的数据结构，现已使用固定版本 `serde-saphyr = 1.1.0`，并关闭序列化 feature。固定 1.1.0 是因为项目仍声明支持 Rust 1.85，而 1.2.0 将最低 Rust 版本提高到 1.89。不迁移到 `serde_yml`，因为它也已经弃用。
 
-优先级：高。
+阶段二已完成。
 
 ### 文本编辑器
 
@@ -362,11 +361,11 @@ struct CellSelection {
 
 ### 第一批：低风险、高收益
 
-1. 复用普通和 no-proxy 两个 `reqwest::Client`。
-2. 删除 `cacache` 的 `tokio-runtime` feature。
-3. fingerprint 改为流式 BLAKE3。
-4. 迁移 `serde_yaml`。
-5. 引入 `url`，替换 URL/query 编解码。
+1. [已完成] 复用普通和 no-proxy 两个 `reqwest::Client`。
+2. [已完成] 删除 `cacache` 的 `tokio-runtime` feature。
+3. [已完成] fingerprint 改为流式 BLAKE3。
+4. [已完成] 迁移 `serde_yaml`。
+5. [已完成] 引入 `url`，替换 URL/query 编解码。
 
 ### 第二批：核心结构调整
 
@@ -388,8 +387,10 @@ struct CellSelection {
 ## 参考资料
 
 - [url crate](https://docs.rs/url/latest/url/)
+- [form_urlencoded crate](https://docs.rs/form_urlencoded/latest/form_urlencoded/)
 - [reqwest blocking Client](https://docs.rs/reqwest/latest/reqwest/blocking/struct.Client.html)
 - [serde_yaml 维护状态](https://docs.rs/serde_yaml/latest/serde_yaml/)
+- [serde-saphyr 1.1.0](https://docs.rs/serde-saphyr/1.1.0/serde_saphyr/)
 - [serde_yml 迁移说明](https://docs.rs/serde_yml/latest/serde_yml/)
 - [tui-textarea](https://docs.rs/tui-textarea/latest/tui_textarea/)
 - [Ratatui user input 示例](https://ratatui.rs/examples/apps/user_input/)

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use form_urlencoded::parse;
 use serde_json::Value;
+use url::Url;
 
 use crate::config::{ApiRequest, BodyPart};
 
@@ -26,6 +28,13 @@ pub(crate) struct ResolvedFile {
 pub(crate) struct DisplayTextPart {
     pub(crate) text: String,
     pub(crate) variable: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UrlParts {
+    pub(crate) base: String,
+    pub(crate) query: String,
+    pub(crate) fragment: String,
 }
 
 pub(crate) fn resolve_request(
@@ -237,78 +246,53 @@ pub(crate) fn body_part_value(part: &BodyPart) -> &str {
 }
 
 fn urlencode_data(value: &str) -> String {
-    let (name, content) = value.split_once('=').unwrap_or(("", value));
-    if name.is_empty() {
-        encode_component(content)
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    if let Some((name, content)) = value.split_once('=') {
+        serializer.append_pair(name, content);
     } else {
-        format!("{}={}", encode_component(name), encode_component(content))
+        serializer.append_key_only(value);
     }
+    serializer.finish()
 }
 
 pub(crate) fn decode_urlencoded_data(value: &str) -> String {
-    let (name, content) = value.split_once('=').unwrap_or(("", value));
-    if name.is_empty() {
-        decode_component(content)
-    } else {
-        format!("{}={}", decode_component(name), decode_component(content))
-    }
+    let Some(_) = value.split_once('=') else {
+        return decode_component(value);
+    };
+    parse(value.as_bytes())
+        .next()
+        .map(|(name, content)| format!("{name}={content}"))
+        .unwrap_or_default()
 }
 
 fn decode_component(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let (Some(high), Some(low)) =
-                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-        {
-            decoded.push((high << 4) | low);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn encode_component(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
+    let mut encoded = String::with_capacity(value.len() + 1);
+    encoded.push('=');
+    encoded.push_str(value);
+    parse(encoded.as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default()
 }
 
 fn append_query(url: &str, query: &str) -> String {
     if query.is_empty() {
         return url.to_string();
     }
-    let separator = if url.contains('?') {
-        if url.ends_with('?') || url.ends_with('&') {
-            ""
+    if find_placeholder(url).is_none()
+        && let Ok(mut parsed) = Url::parse(url)
+    {
+        let existing_query = parsed.query().unwrap_or_default();
+        let combined_query = if existing_query.is_empty() {
+            query.to_string()
         } else {
-            "&"
-        }
-    } else {
-        "?"
-    };
-    format!("{url}{separator}{query}")
+            format!("{existing_query}&{query}")
+        };
+        parsed.set_query(Some(&combined_query));
+        return parsed.into();
+    }
+
+    append_query_fallback(url, query)
 }
 
 fn append_display_query(url: &str, parts: &[BodyPart]) -> String {
@@ -318,6 +302,73 @@ fn append_display_query(url: &str, parts: &[BodyPart]) -> String {
         .collect::<Vec<_>>()
         .join("&");
     append_query(url, &query)
+}
+
+pub(crate) fn split_url_query(input: &str) -> UrlParts {
+    let (without_fragment, raw_fragment) = input
+        .split_once('#')
+        .map_or((input, ""), |(base, fragment)| (base, fragment));
+    let (raw_base, raw_query) = without_fragment
+        .split_once('?')
+        .map_or((without_fragment, ""), |(base, query)| (base, query));
+
+    if find_placeholder(input).is_none()
+        && let Ok(parsed) = Url::parse(input)
+    {
+        return UrlParts {
+            base: raw_base.to_string(),
+            query: parsed.query().unwrap_or_default().to_string(),
+            fragment: parsed.fragment().unwrap_or_default().to_string(),
+        };
+    }
+
+    UrlParts {
+        base: raw_base.to_string(),
+        query: raw_query.to_string(),
+        fragment: raw_fragment.to_string(),
+    }
+}
+
+pub(crate) fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
+    let query = query_parts.join("&");
+    if find_placeholder(base).is_none()
+        && let Ok(mut parsed) = Url::parse(base)
+    {
+        parsed.set_query((!query.is_empty()).then_some(query.as_str()));
+        parsed.set_fragment((!fragment.is_empty()).then_some(fragment));
+        return parsed.into();
+    }
+
+    let mut rebuilt = append_query_fallback(base, &query);
+    if !fragment.is_empty() {
+        rebuilt.push('#');
+        rebuilt.push_str(fragment);
+    }
+    rebuilt
+}
+
+fn append_query_fallback(url: &str, query: &str) -> String {
+    if query.is_empty() {
+        return url.to_string();
+    }
+    let (without_fragment, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(base, fragment)| (base, Some(fragment)));
+    let separator = if without_fragment.contains('?') {
+        if without_fragment.ends_with('?') || without_fragment.ends_with('&') {
+            ""
+        } else {
+            "&"
+        }
+    } else {
+        "?"
+    };
+    let mut rebuilt = format!("{without_fragment}{separator}{query}");
+    if let Some(fragment) = fragment {
+        rebuilt.push('#');
+        rebuilt.push_str(fragment);
+    }
+    rebuilt
 }
 
 fn expand_text_map(

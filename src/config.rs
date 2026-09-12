@@ -216,7 +216,7 @@ fn parse_workspace_config(
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let raw = match text {
-        Some(text) => serde_yaml::from_str(text)
+        Some(text) => serde_saphyr::from_str(text)
             .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?,
         None => RawWorkspaceConfig::default(),
     };

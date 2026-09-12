@@ -988,7 +988,8 @@ impl App {
 
     pub(crate) fn current_param_count(&self) -> usize {
         let request = self.current_effective_request();
-        let url_count = split_query_parts(split_url_query(&request.url).1).count();
+        let url_parts = template::split_url_query(&request.url);
+        let url_count = split_query_parts(&url_parts.query).count();
         let body_count = self
             .request_edits(&self.current_request().id)
             .body_parts
@@ -1100,8 +1101,8 @@ impl App {
                 let query_parts = self.request_edits(&request_id).query_parts.clone();
                 let mut rows = Vec::new();
                 let effective_url = edits.url.as_deref().unwrap_or(&self.current_request().url);
-                let (_, url_query, _) = split_url_query(effective_url);
-                for part in split_query_parts(url_query) {
+                let url_parts = template::split_url_query(effective_url);
+                for part in split_query_parts(&url_parts.query) {
                     let (key, value, has_equals) = split_key_value(part);
                     rows.push(ParamsDialogRow {
                         source: ParamSource::Url,
@@ -1329,7 +1330,7 @@ impl App {
                     .map(|request| request.url.as_str())
                     .unwrap_or_default();
                 let effective_url = edits.url.as_deref().unwrap_or(configured_url);
-                let (url_base, _, url_fragment) = split_url_query(effective_url);
+                let url_location = template::split_url_query(effective_url);
                 let mut url_parts = Vec::new();
                 let mut query_parts = Vec::new();
                 let mut form = BTreeMap::new();
@@ -1360,7 +1361,11 @@ impl App {
                         _ => {}
                     }
                 }
-                edits.url = Some(rebuild_url(url_base, &url_parts, url_fragment));
+                edits.url = Some(template::rebuild_url(
+                    &url_location.base,
+                    &url_parts,
+                    &url_location.fragment,
+                ));
                 edits.query_parts = query_parts;
                 edits.form = form;
                 if !body_parts.is_empty()
@@ -1975,16 +1980,6 @@ pub(crate) fn supports_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST")
 }
 
-fn split_url_query(url: &str) -> (&str, &str, &str) {
-    let (without_fragment, fragment) = url
-        .split_once('#')
-        .map_or((url, ""), |(base, fragment)| (base, fragment));
-    let (base, query) = without_fragment
-        .split_once('?')
-        .map_or((without_fragment, ""), |(base, query)| (base, query));
-    (base, query, fragment)
-}
-
 fn split_query_parts(query: &str) -> impl Iterator<Item = &str> {
     query.split('&').filter(|part| !part.is_empty())
 }
@@ -1995,19 +1990,6 @@ fn join_param_row(key: &str, value: &str, has_equals: bool) -> String {
     } else {
         key.to_string()
     }
-}
-
-fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
-    let mut url = base.to_string();
-    if !query_parts.is_empty() {
-        url.push('?');
-        url.push_str(&query_parts.join("&"));
-    }
-    if !fragment.is_empty() {
-        url.push('#');
-        url.push_str(fragment);
-    }
-    url
 }
 
 fn shell_quote(value: &str) -> String {

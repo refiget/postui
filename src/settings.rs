@@ -201,7 +201,8 @@ where
     if extension == "json" {
         serde_json::from_str(text).with_context(|| format!("JSON 配置格式无效: {}", path.display()))
     } else {
-        serde_yaml::from_str(text).with_context(|| format!("YAML 配置格式无效: {}", path.display()))
+        serde_saphyr::from_str(text)
+            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))
     }
 }
 
