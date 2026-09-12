@@ -10,15 +10,16 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段六已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理和输入基础设施收敛：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段七已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理、输入基础设施收敛和参数语义统一：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
 3. [已完成] 用 `serde-saphyr` 替换已经停止维护的 `serde_yaml`。
 4. [已完成] 合并请求配置、编辑态和运行态，消除平行状态容器。
 5. [阶段 4 已完成第一轮] 按职责拆分 1980 行的 `App`。
-6. [阶段 5 已完成] 将 Header/Form 统一为有序、可重复的 `NameValue` 条目。
+6. [阶段 5 已完成] 将 Header/Form 字段统一为有序、可重复的条目模型。
 7. [阶段 6 已完成] 收敛单行编辑器的 Unicode 边界，并使用正式剪贴板库。
+8. [阶段 7 已完成] 统一 URL query、curl data 和 form 的参数表示与编码路径。
 
 ## 值得使用现成库替换的实现
 
@@ -34,8 +35,10 @@ URL 能够正常解析时使用 `url::Url`，包含 `{{variable}}` 的原始模�
 直接依赖 `url = "2.5"` 和 `form_urlencoded = "1.2"`，使用：
 
 - `Url`
-- `query_pairs()` / `query_pairs_mut()`
-- `form_urlencoded`
+- `Url` 的 URL 结构解析和 query 写回。
+- `form_urlencoded` 的参数组件编码与解码。
+
+阶段七将 URL 中的 query、`--get` 携带的 data 和 URL 编码 data 统一为 `RequestParam`；原始 data 仍由 `DataPart::Raw` 保留。参数编辑器现在使用同一套 name/value/等号语义，保存时集中编码，发送时集中展开变量并编码。
 
 `reqwest` 已间接依赖 `url`，增加直接依赖不会引入另一套 URL 实现。
 
@@ -45,7 +48,7 @@ URL 能够正常解析时使用 `url::Url`，包含 `{{variable}}` 的原始模�
 - 变量解析完成后再构造 `Url`。
 - UI 展示原始模板时不强制解析。
 
-阶段二已完成。后续请求模型改造仍需保持原始模板 URL 与已解析 URL 的边界。
+阶段二和阶段七已完成。请求模型仍保持原始模板 URL 与已解析 URL 的边界，但不会再在 App、curl 解析器和编辑器之间重复拆分参数。
 
 ### YAML 解析
 
@@ -279,7 +282,7 @@ RequestFileStore::delete(...)
 
 `App` 只准备已解析请求、更新 `RequestSession.runtime`，并在主循环中消费 `RequestResult`。过期结果校验、response extract 和状态消息仍属于界面业务流程，因此保留在 `App`。
 
-### Header 和 Form 模型（阶段 5 已完成）
+### Header 和参数模型（阶段 5/7 已完成）
 
 此前请求头、form 字段和解析后的请求大量使用 `BTreeMap<String, String>`，无法完整表达：
 
@@ -299,7 +302,9 @@ struct NameValue {
 }
 ```
 
-`ApiRequest`、工作区配置、模板展开结果和 Form 编辑态都使用 `Vec<NameValue>`。请求头发送阶段逐条交给 reqwest，Form 逐条加入 multipart；因此重复字段和原始顺序不会在中间层丢失。工作区配置的 `headers` 现在是条目数组，请求级同名 Header 覆盖工作区默认项，缓存格式同步升版。
+Header 继续使用 `NameValue`，而 URL query、URL 编码 data 和 Form 使用有序的 `RequestParam`；`DataPart` 只表示原始文本或 URL 编码参数。请求头发送阶段逐条交给 reqwest，Form 逐条加入 multipart，URL query 和 data 由同一套参数编码器生成；因此重复字段和原始顺序不会在中间层丢失。工作区配置的 `headers` 现在是条目数组，请求级同名 Header 覆盖工作区默认项，缓存格式同步升版。
+
+阶段七已完成。优先级：高。
 
 ## 可能的过度抽象或过度设计
 
@@ -369,7 +374,7 @@ struct CellSelection {
 
 1. [已完成] Header 改为有序、可重复结构。
 2. [已完成] Form 参数改为有序、可重复结构。
-3. 统一 URL query、curl data 和 form 的数据语义。
+3. [已完成] 统一 URL query、curl data 和 form 的数据语义。
 4. [已完成] 评估 `tui-input`，并接入 `unicode-segmentation` 和 `arboard`。
 
 不建议一次性进行框架化重写。先解决 HTTP Client 生命周期和请求状态模型，项目复杂度会自然下降，再进行模块拆分。

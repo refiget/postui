@@ -6,7 +6,7 @@ use std::{
 use crate::{
     clipboard::ClipboardService,
     config::{
-        ApiRequest, BodyPart, FileUpload, NameValue, RequestConfig, WorkspaceConfig,
+        ApiRequest, DataPart, FileUpload, NameValue, RequestConfig, RequestParam, WorkspaceConfig,
         value_to_string,
     },
     editor::{
@@ -24,11 +24,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 mod dialog;
 
+use dialog::DialogAction;
 pub(crate) use dialog::{
-    BodyPartSource, Dialog, DialogFocus, HeaderField, HeaderRow, HeaderSource, HeadersDialog,
+    DataPartSource, Dialog, DialogFocus, HeaderField, HeaderRow, HeaderSource, HeadersDialog,
     ParamSource, ParamsDialog, ParamsDialogRow, VariableRow, VariablesDialog,
 };
-use dialog::{DialogAction, split_key_value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -349,10 +349,10 @@ impl WorkspaceSession {
 pub(crate) struct RequestDraft {
     pub(crate) url: Option<String>,
     pub(crate) headers: Vec<HeaderRow>,
-    pub(crate) query_parts: Vec<BodyPart>,
-    pub(crate) form: Vec<NameValue>,
+    pub(crate) query_parts: Vec<DataPart>,
+    pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<FileUpload>,
-    pub(crate) body_parts: Vec<BodyPart>,
+    pub(crate) body_parts: Vec<DataPart>,
 }
 
 impl From<&ApiRequest> for RequestDraft {
@@ -726,7 +726,7 @@ impl App {
             && request
                 .body_parts
                 .iter()
-                .all(|part| matches!(part, BodyPart::UrlEncoded(_)))
+                .all(|part| matches!(part, DataPart::UrlEncoded(_)))
         {
             return self
                 .current_resolved_request()
@@ -985,7 +985,7 @@ impl App {
                 draft
                     .body_parts
                     .iter()
-                    .map(template::body_part_value)
+                    .map(template::data_part_text)
                     .collect::<Vec<_>>()
                     .join("&")
             })
@@ -993,7 +993,7 @@ impl App {
         let document =
             merge_json_edit(&source_document, &rendered_document, &document).unwrap_or(document);
         if let Some(draft) = self.request_draft_mut(&request_id) {
-            draft.body_parts = vec![BodyPart::Raw(document)];
+            draft.body_parts = vec![DataPart::Raw(document)];
         }
         self.mark_current_dirty();
     }
@@ -1013,7 +1013,7 @@ impl App {
             return 0;
         };
         let url_parts = template::split_url_query(&request.url);
-        let url_count = split_query_parts(&url_parts.query).count();
+        let url_count = template::parse_query_params(&url_parts.query).len();
         let body_count = self
             .current_request()
             .map(|request| request.id.clone())
@@ -1022,7 +1022,7 @@ impl App {
                 draft
                     .body_parts
                     .iter()
-                    .filter(|part| matches!(part, BodyPart::UrlEncoded(_)))
+                    .filter(|part| matches!(part, DataPart::UrlEncoded(_)))
                     .count()
             })
             .unwrap_or_default();
@@ -1128,28 +1128,28 @@ impl App {
                 let mut rows = Vec::new();
                 let effective_url = draft.url.as_deref().unwrap_or(request.url.as_str());
                 let url_parts = template::split_url_query(effective_url);
-                for part in split_query_parts(&url_parts.query) {
-                    let (key, value, has_equals) = split_key_value(part);
+                for parameter in template::parse_query_params(&url_parts.query) {
                     rows.push(ParamsDialogRow {
                         source: ParamSource::Url,
-                        key,
-                        value,
+                        key: parameter.name,
+                        value: parameter.value,
                         part_type: None,
-                        has_equals,
+                        has_equals: parameter.has_equals,
                     });
                 }
                 for part in draft.query_parts {
-                    let (part_type, part) = match part {
-                        BodyPart::Raw(part) => (BodyPartSource::Raw, part),
-                        BodyPart::UrlEncoded(part) => (BodyPartSource::UrlEncoded, part),
+                    let (part_type, parameter) = match part {
+                        DataPart::Raw(part) => {
+                            (DataPartSource::Raw, RequestParam::from_text(&part))
+                        }
+                        DataPart::UrlEncoded(parameter) => (DataPartSource::UrlEncoded, parameter),
                     };
-                    let (key, value, has_equals) = split_key_value(&part);
                     rows.push(ParamsDialogRow {
                         source: ParamSource::Query,
-                        key,
-                        value,
+                        key: parameter.name,
+                        value: parameter.value,
                         part_type: Some(part_type),
-                        has_equals,
+                        has_equals: parameter.has_equals,
                     });
                 }
                 for field in &draft.form {
@@ -1164,19 +1164,18 @@ impl App {
                 if draft
                     .body_parts
                     .iter()
-                    .all(|part| matches!(part, BodyPart::UrlEncoded(_)))
+                    .all(|part| matches!(part, DataPart::UrlEncoded(_)))
                 {
                     for part in &draft.body_parts {
-                        let BodyPart::UrlEncoded(part) = part else {
+                        let DataPart::UrlEncoded(parameter) = part else {
                             unreachable!();
                         };
-                        let (key, value, has_equals) = split_key_value(part);
                         rows.push(ParamsDialogRow {
                             source: ParamSource::Body,
-                            key,
-                            value,
-                            part_type: Some(BodyPartSource::UrlEncoded),
-                            has_equals,
+                            key: parameter.name.clone(),
+                            value: parameter.value.clone(),
+                            part_type: Some(DataPartSource::UrlEncoded),
+                            has_equals: parameter.has_equals,
                         });
                     }
                 }
@@ -1364,26 +1363,39 @@ impl App {
                         let value = row.value.trim();
                         match row.source {
                             ParamSource::Url if !key.is_empty() || !value.is_empty() => {
-                                url_parts.push(join_param_row(key, value, row.has_equals));
+                                url_parts.push(RequestParam::new(
+                                    key.to_string(),
+                                    value.to_string(),
+                                    row.has_equals,
+                                ));
                             }
                             ParamSource::Query if !key.is_empty() || !value.is_empty() => {
-                                let part = join_param_row(key, value, row.has_equals);
                                 query_parts.push(
-                                    row.part_type.unwrap_or(BodyPartSource::Raw).to_part(part),
+                                    row.part_type.unwrap_or(DataPartSource::Raw).to_part(
+                                        RequestParam::new(
+                                            key.to_string(),
+                                            row.value.clone(),
+                                            row.has_equals,
+                                        ),
+                                    ),
                                 );
                             }
                             ParamSource::Form if !key.is_empty() => {
-                                form.push(NameValue {
-                                    name: key.to_string(),
-                                    value: row.value.clone(),
-                                });
+                                form.push(RequestParam::new(
+                                    key.to_string(),
+                                    row.value.clone(),
+                                    true,
+                                ));
                             }
                             ParamSource::Body if !key.is_empty() || !value.is_empty() => {
-                                let part = join_param_row(key, value, row.has_equals);
                                 body_parts.push(
-                                    row.part_type
-                                        .unwrap_or(BodyPartSource::UrlEncoded)
-                                        .to_part(part),
+                                    row.part_type.unwrap_or(DataPartSource::UrlEncoded).to_part(
+                                        RequestParam::new(
+                                            key.to_string(),
+                                            row.value.clone(),
+                                            row.has_equals,
+                                        ),
+                                    ),
                                 );
                             }
                             _ => {}
@@ -1398,7 +1410,7 @@ impl App {
                     let replace_body = !body_parts.is_empty()
                         || existing_body_parts
                             .iter()
-                            .all(|part| matches!(part, BodyPart::UrlEncoded(_)));
+                            .all(|part| matches!(part, DataPart::UrlEncoded(_)));
                     if let Some(session) = self.workspace_state.request_mut(&dialog.request_id) {
                         session.draft.url = Some(url);
                         session.draft.query_parts = query_parts;
@@ -1971,18 +1983,6 @@ impl App {
 pub(crate) fn supports_method(method: &str) -> bool {
     let method = method.trim();
     method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST")
-}
-
-fn split_query_parts(query: &str) -> impl Iterator<Item = &str> {
-    query.split('&').filter(|part| !part.is_empty())
-}
-
-fn join_param_row(key: &str, value: &str, has_equals: bool) -> String {
-    if has_equals || !value.is_empty() {
-        format!("{key}={value}")
-    } else {
-        key.to_string()
-    }
 }
 
 pub(crate) fn key_kind(code: KeyCode) -> &'static str {

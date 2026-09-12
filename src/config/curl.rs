@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::{BodyPart, FileUpload, NameValue, ParsedCommand};
+use super::{DataPart, FileUpload, NameValue, ParsedCommand, RequestParam};
 
 pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand> {
     if source.trim().is_empty() {
@@ -29,7 +29,10 @@ pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand
         bail!("接口 {} 的 curl 命令缺少 URL", request_id)
     }
     if parsed.get_mode {
-        parsed.query_data = std::mem::take(&mut parsed.data);
+        parsed.query_data = std::mem::take(&mut parsed.data)
+            .into_iter()
+            .flat_map(split_query_data_part)
+            .collect();
     }
     let has_data = !parsed.data.is_empty();
     let has_form = !parsed.form.is_empty() || !parsed.files.is_empty();
@@ -49,6 +52,17 @@ pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand
         bail!("接口 {} 的 curl 命令不能同时使用 data 和 form", request_id)
     }
     Ok(parsed)
+}
+
+fn split_query_data_part(part: DataPart) -> Vec<DataPart> {
+    match part {
+        DataPart::Raw(value) => value
+            .split('&')
+            .filter(|part| !part.is_empty())
+            .map(|part| DataPart::Raw(part.to_string()))
+            .collect(),
+        part => vec![part],
+    }
 }
 
 fn parse_curl_tokens(
@@ -294,20 +308,22 @@ fn parse_form(parsed: &mut ParsedCommand, value: &str, request_id: &str) -> Resu
             content_type,
         });
     } else {
-        parsed.form.push(NameValue {
-            name: field.to_string(),
-            value: content.to_string(),
-        });
+        parsed.form.push(RequestParam::new(
+            field.to_string(),
+            content.to_string(),
+            true,
+        ));
     }
     Ok(())
 }
 
-fn parse_form_string(form: &mut Vec<NameValue>, value: &str, request_id: &str) -> Result<()> {
+fn parse_form_string(form: &mut Vec<RequestParam>, value: &str, request_id: &str) -> Result<()> {
     let (field, content) = split_form_field(value, request_id)?;
-    form.push(NameValue {
-        name: field.to_string(),
-        value: content.to_string(),
-    });
+    form.push(RequestParam::new(
+        field.to_string(),
+        content.to_string(),
+        true,
+    ));
     Ok(())
 }
 
@@ -329,17 +345,19 @@ fn parse_body_argument(
     request_id: &str,
 ) -> Result<()> {
     match option {
-        "--data-urlencode" => parsed.data.push(BodyPart::UrlEncoded(value.to_string())),
+        "--data-urlencode" => parsed
+            .data
+            .push(DataPart::UrlEncoded(RequestParam::from_text(value))),
         "--json" => {
             reject_body_file(value, option, request_id)?;
-            parsed.data.push(BodyPart::Raw(value.to_string()));
+            parsed.data.push(DataPart::Raw(value.to_string()));
             insert_header_if_missing(&mut parsed.headers, "Content-Type", "application/json");
             insert_header_if_missing(&mut parsed.headers, "Accept", "application/json");
         }
-        "--data-raw" => parsed.data.push(BodyPart::Raw(value.to_string())),
+        "--data-raw" => parsed.data.push(DataPart::Raw(value.to_string())),
         _ => {
             reject_body_file(value, option, request_id)?;
-            parsed.data.push(BodyPart::Raw(value.to_string()));
+            parsed.data.push(DataPart::Raw(value.to_string()));
         }
     }
     Ok(())

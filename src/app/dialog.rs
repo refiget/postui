@@ -1,5 +1,5 @@
 use crate::{
-    config::BodyPart,
+    config::{DataPart, RequestParam},
     editor::{EditorAction, TextEditor},
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -52,16 +52,16 @@ pub(crate) enum ParamSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BodyPartSource {
+pub(crate) enum DataPartSource {
     Raw,
     UrlEncoded,
 }
 
-impl BodyPartSource {
-    pub(super) fn to_part(self, value: String) -> BodyPart {
+impl DataPartSource {
+    pub(super) fn to_part(self, value: RequestParam) -> DataPart {
         match self {
-            Self::Raw => BodyPart::Raw(value),
-            Self::UrlEncoded => BodyPart::UrlEncoded(value),
+            Self::Raw => DataPart::Raw(value.to_text()),
+            Self::UrlEncoded => DataPart::UrlEncoded(value),
         }
     }
 }
@@ -85,7 +85,7 @@ pub(crate) struct ParamsDialogRow {
     pub(crate) source: ParamSource,
     pub(crate) key: String,
     pub(crate) value: String,
-    pub(crate) part_type: Option<BodyPartSource>,
+    pub(crate) part_type: Option<DataPartSource>,
     pub(crate) has_equals: bool,
 }
 
@@ -455,7 +455,7 @@ impl ParamsDialog {
             key: String::new(),
             value: String::new(),
             part_type: matches!(source, ParamSource::Query | ParamSource::Body)
-                .then_some(BodyPartSource::UrlEncoded),
+                .then_some(DataPartSource::UrlEncoded),
             has_equals: true,
         });
         self.selected = self.rows.len().saturating_sub(1);
@@ -553,13 +553,5 @@ fn move_index(current: usize, direction: isize, length: usize) -> usize {
         value => current
             .saturating_add(value as usize)
             .min(length.saturating_sub(1)),
-    }
-}
-
-pub(super) fn split_key_value(value: &str) -> (String, String, bool) {
-    if let Some((key, value)) = value.split_once('=') {
-        (key.to_string(), value.to_string(), true)
-    } else {
-        (value.to_string(), String::new(), false)
     }
 }

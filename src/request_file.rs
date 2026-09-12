@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{ApiRequest, BodyPart};
+use crate::config::{ApiRequest, DataPart};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RequestFileStore {
@@ -109,12 +109,12 @@ fn serialize_request(request: &ApiRequest) -> String {
     }
     for part in &request.query_parts {
         let option = match part {
-            BodyPart::Raw(_) => "--data-raw",
-            BodyPart::UrlEncoded(_) => "--data-urlencode",
+            DataPart::Raw(_) => "--data-raw",
+            DataPart::UrlEncoded(_) => "--data-urlencode",
         };
         command.push(format!(
             "  {option} {}",
-            shell_quote(crate::template::body_part_value(part))
+            shell_quote(&crate::template::data_part_text(part))
         ));
     }
     if !request.query_parts.is_empty() {
@@ -122,19 +122,16 @@ fn serialize_request(request: &ApiRequest) -> String {
     }
     for part in &request.body_parts {
         let option = match part {
-            BodyPart::Raw(_) => "--data-raw",
-            BodyPart::UrlEncoded(_) => "--data-urlencode",
+            DataPart::Raw(_) => "--data-raw",
+            DataPart::UrlEncoded(_) => "--data-urlencode",
         };
         command.push(format!(
             "  {option} {}",
-            shell_quote(crate::template::body_part_value(part))
+            shell_quote(&crate::template::data_part_text(part))
         ));
     }
     for field in &request.form {
-        command.push(format!(
-            "  --form-string {}",
-            shell_quote(&format!("{}={}", field.name, field.value))
-        ));
+        command.push(format!("  --form-string {}", shell_quote(&field.to_text())));
     }
     for file in &request.files {
         let mut value = format!("{}=@{}", file.field, file.path);

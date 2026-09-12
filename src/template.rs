@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use form_urlencoded::parse;
+use form_urlencoded::{Serializer, parse};
 use serde_json::Value;
 use url::Url;
 
-use crate::config::{ApiRequest, BodyPart, NameValue};
+use crate::config::{ApiRequest, DataPart, NameValue, RequestParam};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -12,7 +12,7 @@ pub(crate) struct ResolvedRequest {
     pub(crate) url: String,
     pub(crate) headers: Vec<NameValue>,
     pub(crate) raw_body: Option<String>,
-    pub(crate) form: Vec<NameValue>,
+    pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<ResolvedFile>,
 }
 
@@ -41,24 +41,15 @@ pub(crate) fn resolve_request(
     request: &ApiRequest,
     variables: &BTreeMap<String, String>,
 ) -> ResolvedRequest {
-    let mut url = resolve_text(&request.url, variables);
-    let query_parts = request
-        .query_parts
-        .iter()
-        .map(|part| resolve_data_part(part, variables))
-        .collect::<Vec<_>>();
-    let query = query_parts.join("&");
-    if !query.is_empty() {
-        url = append_query(&url, &query);
-    }
+    let url = resolve_url(request, variables);
 
     ResolvedRequest {
         method: request.method.clone(),
         url,
-        headers: expand_text_values(&request.headers, variables),
+        headers: expand_headers(&request.headers, variables),
         raw_body: (!request.body_parts.is_empty())
             .then(|| resolve_data_parts(&request.body_parts, variables)),
-        form: expand_text_values(&request.form, variables),
+        form: expand_params(&request.form, variables),
         files: request
             .files
             .iter()
@@ -87,7 +78,7 @@ pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text(&request.url, &mut names);
     collect_text_values(&request.headers, &mut names);
-    collect_text_values(&request.form, &mut names);
+    collect_text_params(&request.form, &mut names);
     for file in &request.files {
         collect_text(&file.field, &mut names);
         collect_text(&file.path, &mut names);
@@ -99,10 +90,10 @@ pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
         }
     }
     for part in &request.body_parts {
-        collect_text(body_part_value(part), &mut names);
+        collect_text_data_part(part, &mut names);
     }
     for part in &request.query_parts {
-        collect_text(body_part_value(part), &mut names);
+        collect_text_data_part(part, &mut names);
     }
     for extract in &request.extracts {
         let variable = strip_variable_delimiters(&extract.variable);
@@ -224,7 +215,30 @@ pub(crate) fn display_text_parts(
     parts
 }
 
-fn resolve_data_parts(parts: &[BodyPart], variables: &BTreeMap<String, String>) -> String {
+fn resolve_url(request: &ApiRequest, variables: &BTreeMap<String, String>) -> String {
+    let url_parts = split_url_query(&request.url);
+    let base = resolve_text(&url_parts.base, variables);
+    let mut query = parse_query_params(&url_parts.query)
+        .iter()
+        .map(|parameter| encode_parameter(&resolve_parameter(parameter, variables)))
+        .collect::<Vec<_>>();
+    query.extend(
+        request
+            .query_parts
+            .iter()
+            .map(|part| resolve_data_part(part, variables))
+            .filter(|part| !part.is_empty()),
+    );
+    let mut url = append_query(&base, &query.join("&"));
+    let fragment = resolve_text(&url_parts.fragment, variables);
+    if !fragment.is_empty() {
+        url.push('#');
+        url.push_str(&fragment);
+    }
+    url
+}
+
+fn resolve_data_parts(parts: &[DataPart], variables: &BTreeMap<String, String>) -> String {
     parts
         .iter()
         .map(|part| resolve_data_part(part, variables))
@@ -232,36 +246,48 @@ fn resolve_data_parts(parts: &[BodyPart], variables: &BTreeMap<String, String>) 
         .join("&")
 }
 
-fn resolve_data_part(part: &BodyPart, variables: &BTreeMap<String, String>) -> String {
+fn resolve_data_part(part: &DataPart, variables: &BTreeMap<String, String>) -> String {
     match part {
-        BodyPart::Raw(value) => resolve_text(value, variables),
-        BodyPart::UrlEncoded(value) => urlencode_data(&resolve_text(value, variables)),
+        DataPart::Raw(value) => resolve_text(value, variables),
+        DataPart::UrlEncoded(parameter) => {
+            encode_parameter(&resolve_parameter(parameter, variables))
+        }
     }
 }
 
-pub(crate) fn body_part_value(part: &BodyPart) -> &str {
+pub(crate) fn data_part_text(part: &DataPart) -> String {
     match part {
-        BodyPart::Raw(value) | BodyPart::UrlEncoded(value) => value,
+        DataPart::Raw(value) => value.clone(),
+        DataPart::UrlEncoded(parameter) => parameter.to_text(),
     }
 }
 
-fn urlencode_data(value: &str) -> String {
-    let mut serializer = form_urlencoded::Serializer::new(String::new());
-    if let Some((name, content)) = value.split_once('=') {
-        serializer.append_pair(name, content);
+fn resolve_parameter(
+    parameter: &RequestParam,
+    variables: &BTreeMap<String, String>,
+) -> RequestParam {
+    RequestParam::new(
+        resolve_text(&parameter.name, variables),
+        resolve_text(&parameter.value, variables),
+        parameter.has_equals,
+    )
+}
+
+fn encode_parameter(parameter: &RequestParam) -> String {
+    let mut serializer = Serializer::new(String::new());
+    if parameter.has_equals || !parameter.value.is_empty() {
+        serializer.append_pair(&parameter.name, &parameter.value);
     } else {
-        serializer.append_key_only(value);
+        serializer.append_key_only(&parameter.name);
     }
     serializer.finish()
 }
 
 pub(crate) fn decode_urlencoded_data(value: &str) -> String {
-    let Some(_) = value.split_once('=') else {
-        return decode_component(value);
-    };
-    parse(value.as_bytes())
+    parse_query_params(value)
+        .into_iter()
         .next()
-        .map(|(name, content)| format!("{name}={content}"))
+        .map(|parameter| parameter.to_text())
         .unwrap_or_default()
 }
 
@@ -295,10 +321,25 @@ fn append_query(url: &str, query: &str) -> String {
     append_query_fallback(url, query)
 }
 
-fn append_display_query(url: &str, parts: &[BodyPart]) -> String {
+pub(crate) fn parse_query_params(query: &str) -> Vec<RequestParam> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let parameter = RequestParam::from_text(part);
+            RequestParam::new(
+                decode_component(&parameter.name),
+                decode_component(&parameter.value),
+                parameter.has_equals,
+            )
+        })
+        .collect()
+}
+
+fn append_display_query(url: &str, parts: &[DataPart]) -> String {
     let query = parts
         .iter()
-        .map(body_part_value)
+        .map(data_part_text)
         .collect::<Vec<_>>()
         .join("&");
     append_query(url, &query)
@@ -329,8 +370,12 @@ pub(crate) fn split_url_query(input: &str) -> UrlParts {
     }
 }
 
-pub(crate) fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
-    let query = query_parts.join("&");
+pub(crate) fn rebuild_url(base: &str, query_parts: &[RequestParam], fragment: &str) -> String {
+    let query = query_parts
+        .iter()
+        .map(encode_parameter)
+        .collect::<Vec<_>>()
+        .join("&");
     if find_placeholder(base).is_none()
         && let Ok(mut parsed) = Url::parse(base)
     {
@@ -371,10 +416,7 @@ fn append_query_fallback(url: &str, query: &str) -> String {
     rebuilt
 }
 
-fn expand_text_values(
-    values: &[NameValue],
-    variables: &BTreeMap<String, String>,
-) -> Vec<NameValue> {
+fn expand_headers(values: &[NameValue], variables: &BTreeMap<String, String>) -> Vec<NameValue> {
     values
         .iter()
         .map(|value| NameValue {
@@ -384,10 +426,37 @@ fn expand_text_values(
         .collect()
 }
 
+fn expand_params(
+    values: &[RequestParam],
+    variables: &BTreeMap<String, String>,
+) -> Vec<RequestParam> {
+    values
+        .iter()
+        .map(|value| resolve_parameter(value, variables))
+        .collect()
+}
+
 fn collect_text_values(values: &[NameValue], names: &mut BTreeSet<String>) {
     for value in values {
         collect_text(&value.name, names);
         collect_text(&value.value, names);
+    }
+}
+
+fn collect_text_params(values: &[RequestParam], names: &mut BTreeSet<String>) {
+    for value in values {
+        collect_text(&value.name, names);
+        collect_text(&value.value, names);
+    }
+}
+
+fn collect_text_data_part(part: &DataPart, names: &mut BTreeSet<String>) {
+    match part {
+        DataPart::Raw(value) => collect_text(value, names),
+        DataPart::UrlEncoded(parameter) => {
+            collect_text(&parameter.name, names);
+            collect_text(&parameter.value, names);
+        }
     }
 }
 

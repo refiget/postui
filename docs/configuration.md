@@ -97,6 +97,10 @@ curl --request POST "{{host}}/files" \
 
 `@extract` 只在 HTTP 状态码小于 400 时从 JSON 响应提取字段。支持点路径、数组下标和 JSON Pointer。
 
+URL query、`--get` 携带的 data 和 URL 编码请求体都按有序参数处理：保留重复名称和书写顺序，变量展开后统一进行 `application/x-www-form-urlencoded` 编码。URL 中的 `+`、百分号编码和空值会在参数编辑器中显示为可编辑的 name/value，保存或发送时重新编码；不带 `=` 的参数仍会保留为 key-only。
+
+`--data`、`--data-raw` 和 `--json` 的原始文本仍按请求体保存，不会被强行拆成参数。`--data-urlencode` 才会作为 URL 编码参数处理。使用 `--get` 时，原始 data 会按 `&` 拆成 query 条目；使用 multipart `--form` 或 `--form-string` 时，字段使用同一套参数结构，文件字段仍单独保留。
+
 Header 使用 `name`/`value` 条目数组，而不是 YAML 映射，因此可以保留重复名称和书写顺序：
 
 ```yaml

@@ -75,6 +75,45 @@ pub(crate) struct NameValue {
     pub(crate) value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 一个有序的请求参数。`has_equals` 用于区分 `flag` 和 `flag=`。
+pub(crate) struct RequestParam {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    #[serde(default = "default_has_equals")]
+    pub(crate) has_equals: bool,
+}
+
+impl RequestParam {
+    pub(crate) fn new(name: String, value: String, has_equals: bool) -> Self {
+        Self {
+            name,
+            value,
+            has_equals,
+        }
+    }
+
+    pub(crate) fn from_text(value: &str) -> Self {
+        if let Some((name, value)) = value.split_once('=') {
+            Self::new(name.to_string(), value.to_string(), true)
+        } else {
+            Self::new(value.to_string(), String::new(), false)
+        }
+    }
+
+    pub(crate) fn to_text(&self) -> String {
+        if self.has_equals || !self.value.is_empty() {
+            format!("{}={}", self.name, self.value)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+fn default_has_equals() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ApiRequest {
     pub(crate) id: String,
@@ -84,17 +123,18 @@ pub(crate) struct ApiRequest {
     pub(crate) timeout_seconds: u64,
     pub(crate) description: String,
     pub(crate) headers: Vec<NameValue>,
-    pub(crate) body_parts: Vec<BodyPart>,
-    pub(crate) query_parts: Vec<BodyPart>,
-    pub(crate) form: Vec<NameValue>,
+    pub(crate) body_parts: Vec<DataPart>,
+    pub(crate) query_parts: Vec<DataPart>,
+    pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum BodyPart {
+/// curl data 的一个片段；URL 编码片段保存逻辑参数，发送时再编码。
+pub(crate) enum DataPart {
     Raw(String),
-    UrlEncoded(String),
+    UrlEncoded(RequestParam),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,9 +217,9 @@ struct ParsedCommand {
     method: Option<String>,
     url: Option<String>,
     headers: Vec<NameValue>,
-    data: Vec<BodyPart>,
-    query_data: Vec<BodyPart>,
-    form: Vec<NameValue>,
+    data: Vec<DataPart>,
+    query_data: Vec<DataPart>,
+    form: Vec<RequestParam>,
     files: Vec<FileUpload>,
     get_mode: bool,
 }
