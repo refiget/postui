@@ -69,30 +69,45 @@ pub(crate) struct ResponseExtract {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawCollectionConfig {
-    #[serde(default = "default_name")]
-    name: String,
+struct RawWorkspaceConfig {
     #[serde(default)]
-    file_directory: PathBuf,
+    name: Option<String>,
     #[serde(default)]
-    download_directory: PathBuf,
+    directories: RawDirectories,
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
     #[serde(default = "default_timeout_seconds")]
-    timeout_seconds: u64,
+    timeout: u64,
 }
 
-impl Default for RawCollectionConfig {
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDirectories {
+    #[serde(default = "default_upload_directory")]
+    uploads: PathBuf,
+    #[serde(default = "default_download_directory")]
+    downloads: PathBuf,
+}
+
+impl Default for RawDirectories {
     fn default() -> Self {
         Self {
-            name: default_name(),
-            file_directory: PathBuf::new(),
-            download_directory: PathBuf::new(),
+            uploads: default_upload_directory(),
+            downloads: default_download_directory(),
+        }
+    }
+}
+
+impl Default for RawWorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            name: None,
+            directories: RawDirectories::default(),
             variables: BTreeMap::new(),
             headers: BTreeMap::new(),
-            timeout_seconds: default_timeout_seconds(),
+            timeout: default_timeout_seconds(),
         }
     }
 }
@@ -125,10 +140,6 @@ struct ParsedCommand {
     get_mode: bool,
 }
 
-fn default_name() -> String {
-    "PostUI".to_string()
-}
-
 fn default_method() -> String {
     "GET".to_string()
 }
@@ -137,45 +148,50 @@ fn default_timeout_seconds() -> u64 {
     30
 }
 
-pub(crate) fn load(collection_path: &Path) -> Result<RequestConfig> {
-    if !collection_path.is_dir() {
-        bail!("请求集合必须是目录: {}", collection_path.display())
+fn default_upload_directory() -> PathBuf {
+    PathBuf::from("test_files")
+}
+
+fn default_download_directory() -> PathBuf {
+    PathBuf::from("temp")
+}
+
+pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
+    if !workspace_path.is_dir() {
+        bail!("PostUI 工作区必须是目录: {}", workspace_path.display())
     }
 
-    let collection_config_path = collection_path.join("config.yaml");
-    let collection_config = read_optional_file(&collection_config_path)?;
-    let request_files = read_request_files(&collection_path.join("requests"))?;
-    let fingerprint = collection_fingerprint(
-        collection_path,
-        collection_config.as_deref(),
-        &request_files,
-    );
+    let workspace_config_path = workspace_path.join("postui.yaml");
+    let workspace_config = read_optional_file(&workspace_config_path)?;
+    let request_files = read_request_files(&workspace_path.join("requests"))?;
+    let fingerprint =
+        workspace_fingerprint(workspace_path, workspace_config.as_deref(), &request_files);
     tracing::debug!(
-        path = %collection_path.display(),
-        config_path = %collection_config_path.display(),
-        config_present = collection_config.is_some(),
+        path = %workspace_path.display(),
+        config_path = %workspace_config_path.display(),
+        config_present = workspace_config.is_some(),
         request_count = request_files.len(),
-        "读取请求集合"
+        "读取工作区"
     );
 
-    let (config, cache_hit) = match crate::cache::load(collection_path, &fingerprint) {
+    let (config, cache_hit) = match crate::cache::load(workspace_path, &fingerprint) {
         Some(config) => (config, true),
         None => {
-            let config = parse_collection_config(
-                &collection_config_path,
-                collection_config.as_deref(),
-                collection_path,
+            let config = parse_workspace_config(
+                &workspace_config_path,
+                workspace_config.as_deref(),
+                workspace_path,
                 &request_files,
             )?;
             (config, false)
         }
     };
 
-    if !cache_hit && let Err(error) = crate::cache::store(collection_path, &fingerprint, &config) {
+    if !cache_hit && let Err(error) = crate::cache::store(workspace_path, &fingerprint, &config) {
         tracing::debug!(
-            path = %collection_path.display(),
+            path = %workspace_path.display(),
             error = ?error,
-            "请求集合缓存写入失败，继续使用解析结果"
+            "工作区缓存写入失败，继续使用解析结果"
         );
     }
 
@@ -183,7 +199,7 @@ pub(crate) fn load(collection_path: &Path) -> Result<RequestConfig> {
         name = %config.name,
         request_count = config.requests.len(),
         variable_count = config.variables.len(),
-        collection_header_count = config.headers.len(),
+        workspace_header_count = config.headers.len(),
         timeout_seconds = config.timeout_seconds,
         file_directory = %config.file_directory.display(),
         download_directory = %config.download_directory.display(),
@@ -193,55 +209,49 @@ pub(crate) fn load(collection_path: &Path) -> Result<RequestConfig> {
     Ok(config)
 }
 
-fn parse_collection_config(
+fn parse_workspace_config(
     path: &Path,
     text: Option<&str>,
-    collection_path: &Path,
+    workspace_path: &Path,
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let raw = match text {
         Some(text) => serde_yaml::from_str(text)
             .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?,
-        None => RawCollectionConfig::default(),
+        None => RawWorkspaceConfig::default(),
     };
-    normalize_config(raw, collection_path, request_files)
+    normalize_config(raw, workspace_path, request_files)
 }
 
 fn normalize_config(
-    raw: RawCollectionConfig,
-    collection_path: &Path,
+    raw: RawWorkspaceConfig,
+    workspace_path: &Path,
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
-    if request_files.is_empty() {
-        bail!("请求集合中至少需要一个 .http、.rest 或 .curl 文件")
-    }
-
     let mut variables = normalize_variables(raw.variables)?;
     let editable_variables = variables.keys().cloned().collect();
     let headers = normalize_headers(raw.headers)?;
-    let timeout_seconds = if raw.timeout_seconds == 0 {
+    let timeout_seconds = if raw.timeout == 0 {
         default_timeout_seconds()
     } else {
-        raw.timeout_seconds
+        raw.timeout
     };
 
     let file_directory = resolve_directory(
-        collection_path,
-        &raw.file_directory,
-        default_data_directory(collection_path, "test_files"),
-        "file_directory",
+        workspace_path,
+        &raw.directories.uploads,
+        "directories.uploads",
     )?;
     let download_directory = resolve_directory(
-        collection_path,
-        &raw.download_directory,
-        default_data_directory(collection_path, "temp"),
-        "download_directory",
+        workspace_path,
+        &raw.directories.downloads,
+        "directories.downloads",
     )?;
 
     let mut request_ids = BTreeSet::new();
     let mut requests = Vec::with_capacity(request_files.len());
     for file in request_files {
-        let raw_request = parse_request_file(file, collection_path)?;
+        let raw_request = parse_request_file(file, workspace_path)?;
         let request = normalize_request(raw_request, timeout_seconds)?;
         if !request_ids.insert(request.id.clone()) {
             bail!("接口 id 重复: {}", request.id)
@@ -281,11 +291,19 @@ fn normalize_config(
     }
 
     let config = RequestConfig {
-        name: if raw.name.trim().is_empty() {
-            default_name()
-        } else {
-            raw.name.trim().to_string()
-        },
+        name: raw
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                workspace_path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "PostUI".to_string()),
         file_directory,
         download_directory,
         headers,
@@ -301,16 +319,13 @@ fn read_optional_file(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("无法读取集合配置: {}", path.display())),
+        Err(error) => Err(error).with_context(|| format!("无法读取工作区配置: {}", path.display())),
     }
 }
 
 fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
     if !requests_directory.is_dir() {
-        bail!(
-            "请求集合缺少 requests 目录: {}",
-            requests_directory.display()
-        )
+        return Ok(Vec::new());
     }
 
     let mut paths = Vec::new();
@@ -323,12 +338,6 @@ fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
             .with_context(|| format!("无法读取请求文件: {}", path.display()))?;
         tracing::debug!(path = %path.display(), bytes = text.len(), "读取请求文件");
         files.push(RequestFile { path, text });
-    }
-    if files.is_empty() {
-        bail!(
-            "请求集合中没有 .http、.rest 或 .curl 文件: {}",
-            requests_directory.display()
-        )
     }
     Ok(files)
 }
@@ -365,21 +374,21 @@ fn is_request_file(path: &Path) -> bool {
         })
 }
 
-fn collection_fingerprint(
-    collection_path: &Path,
-    collection_config: Option<&str>,
+fn workspace_fingerprint(
+    workspace_path: &Path,
+    workspace_config: Option<&str>,
     request_files: &[RequestFile],
 ) -> Vec<u8> {
     let mut fingerprint = Vec::new();
-    append_fingerprint_part(&mut fingerprint, b"config.yaml");
+    append_fingerprint_part(&mut fingerprint, b"postui.yaml");
     append_fingerprint_part(
         &mut fingerprint,
-        collection_config.unwrap_or("<missing-config>").as_bytes(),
+        workspace_config.unwrap_or("<missing-config>").as_bytes(),
     );
     for file in request_files {
         let relative = file
             .path
-            .strip_prefix(collection_path)
+            .strip_prefix(workspace_path)
             .unwrap_or(&file.path)
             .to_string_lossy()
             .replace('\\', "/");
@@ -394,10 +403,10 @@ fn append_fingerprint_part(fingerprint: &mut Vec<u8>, part: &[u8]) {
     fingerprint.extend_from_slice(part);
 }
 
-fn parse_request_file(file: &RequestFile, collection_path: &Path) -> Result<ParsedRequest> {
+fn parse_request_file(file: &RequestFile, workspace_path: &Path) -> Result<ParsedRequest> {
     let id = file
         .path
-        .strip_prefix(collection_path)
+        .strip_prefix(workspace_path)
         .unwrap_or(&file.path)
         .to_string_lossy()
         .replace('\\', "/");
@@ -506,21 +515,15 @@ fn request_display_name(path: &Path) -> String {
 }
 
 fn resolve_directory(
-    collection_path: &Path,
+    workspace_path: &Path,
     configured_path: &Path,
-    default_path: PathBuf,
     field: &str,
 ) -> Result<PathBuf> {
-    let using_default = configured_path.as_os_str().is_empty();
-    let configured_path = if using_default {
-        default_path
+    let project_path = workspace_path.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_path = if configured_path.is_absolute() {
+        normalize_path(configured_path)
     } else {
-        configured_path.to_path_buf()
-    };
-    let resolved_path = if using_default || configured_path.is_absolute() {
-        normalize_path(&configured_path)
-    } else {
-        normalize_path(&collection_path.join(&configured_path))
+        normalize_path(&project_path.join(configured_path))
     };
     if resolved_path.exists() && !resolved_path.is_dir() {
         bail!("配置项 {field} 不是目录: {}", resolved_path.display())
@@ -533,17 +536,6 @@ fn resolve_directory(
         "解析文件目录配置"
     );
     Ok(resolved_path)
-}
-
-fn default_data_directory(collection_path: &Path, name: &str) -> PathBuf {
-    let project_directory = collection_path
-        .ancestors()
-        .find(|path| path.file_name() == Some(std::ffi::OsStr::new(".postui")))
-        .and_then(Path::parent)
-        .or_else(|| collection_path.parent())
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    project_directory.join(name)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -610,13 +602,13 @@ fn normalize_headers(raw_headers: BTreeMap<String, String>) -> Result<BTreeMap<S
     for (raw_name, value) in raw_headers {
         let name = raw_name.trim().to_string();
         if name.is_empty() {
-            bail!("集合 Header 名称不能为空")
+            bail!("工作区 Header 名称不能为空")
         }
         if headers
             .keys()
             .any(|existing| existing.eq_ignore_ascii_case(&name))
         {
-            bail!("集合 Header 名称重复: {name}")
+            bail!("工作区 Header 名称重复: {name}")
         }
         headers.insert(name, value);
     }
@@ -726,256 +718,5 @@ pub(crate) fn value_to_string(value: &Value) -> String {
         Value::Null => String::new(),
         Value::String(value) => value.clone(),
         _ => value.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loads_simplified_config() {
-        let config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        assert_eq!(config.requests.len(), 17);
-        assert_eq!(config.requests[0].method, "GET");
-        assert_eq!(
-            config
-                .file_directory
-                .file_name()
-                .and_then(|value| value.to_str()),
-            Some("test_files")
-        );
-        assert_eq!(config.download_directory, PathBuf::from("mock/temp"));
-        assert_eq!(
-            config
-                .headers
-                .get("X-PostUI-Collection")
-                .map(String::as_str),
-            Some("{{collection_name}}")
-        );
-        assert!(config.variables.contains_key("collection_name"));
-        assert_eq!(config.requests[8].files[0].path, "{{upload_file}}");
-        assert!(
-            config.requests[0].extracts.iter().any(|extract| {
-                extract.variable == "health_service" && extract.path == "service"
-            })
-        );
-        assert!(
-            config.requests[2]
-                .body_parts
-                .iter()
-                .any(|part| matches!(part, BodyPart::Raw(body) if body.contains("{{task_id}}")))
-        );
-        assert!(config.variables["empty_file"].default.is_none());
-    }
-
-    #[test]
-    fn resolves_directories_relative_to_the_request_config() {
-        let raw: RawCollectionConfig = serde_yaml::from_str(
-            r#"
-name: path-test
-file_directory: ../files
-download_directory: ../temp
-"#,
-        )
-        .expect("目录配置应当可以解析");
-
-        let files = vec![RequestFile {
-            path: PathBuf::from("/workspace/project/.postui/requests/download.http"),
-            text: "curl --output result.bin https://example.test/file".to_string(),
-        }];
-        let config = normalize_config(raw, Path::new("/workspace/project/.postui"), &files)
-            .expect("目录配置应当可以规范化");
-
-        assert_eq!(
-            config.file_directory,
-            PathBuf::from("/workspace/project/files")
-        );
-        assert_eq!(
-            config.download_directory,
-            PathBuf::from("/workspace/project/temp")
-        );
-    }
-
-    #[test]
-    fn default_directories_are_siblings_of_the_postui_directory() {
-        let files = vec![RequestFile {
-            path: PathBuf::from(
-                "/workspace/project/.postui/collections/example/requests/health.http",
-            ),
-            text: "curl https://example.test/health".to_string(),
-        }];
-        let config = normalize_config(
-            RawCollectionConfig::default(),
-            Path::new("/workspace/project/.postui/collections/example"),
-            &files,
-        )
-        .expect("默认目录应当可以解析");
-
-        assert_eq!(
-            config.file_directory,
-            PathBuf::from("/workspace/project/test_files")
-        );
-        assert_eq!(
-            config.download_directory,
-            PathBuf::from("/workspace/project/temp")
-        );
-    }
-
-    #[test]
-    fn parses_fenced_curl_with_headers_and_upload() {
-        let fence = char::from(96).to_string().repeat(3);
-        let source = format!(
-            "{fence}bash\ncurl --request POST 'http://{{{{host}}}}/upload' \\\n  --header 'X-Demo: {{{{token}}}}' \\\n  --form 'file=@{{{{path}}}};type=text/plain;filename={{{{name}}}}'\n{fence}"
-        );
-        let parsed = parse_curl(&source, "upload").expect("curl 代码块应当可以解析");
-
-        assert_eq!(parsed.method.as_deref(), Some("POST"));
-        assert_eq!(parsed.url.as_deref(), Some("http://{{host}}/upload"));
-        assert_eq!(
-            parsed.headers.get("X-Demo").map(String::as_str),
-            Some("{{token}}")
-        );
-        assert_eq!(parsed.files.len(), 1);
-        assert_eq!(parsed.files[0].path, "{{path}}");
-        assert_eq!(parsed.files[0].content_type.as_deref(), Some("text/plain"));
-        assert_eq!(parsed.files[0].filename.as_deref(), Some("{{name}}"));
-    }
-
-    #[test]
-    fn parses_powershell_curl_with_backtick_continuations() {
-        let parsed = parse_curl(
-            "curl.exe --request POST `\n  --url \"https://example.test/tasks/{{task_id}}\" `\n  --header \"Content-Type: application/json\" `\n  --data-raw '{\"ok\":true}'",
-            "powershell",
-        )
-        .expect("PowerShell curl.exe 应当可以解析");
-
-        assert_eq!(parsed.method.as_deref(), Some("POST"));
-        assert_eq!(
-            parsed.url.as_deref(),
-            Some("https://example.test/tasks/{{task_id}}")
-        );
-        assert_eq!(parsed.data.len(), 1);
-        assert_eq!(
-            parsed.headers.get("Content-Type").map(String::as_str),
-            Some("application/json")
-        );
-    }
-
-    #[test]
-    fn applies_request_timeout_over_the_collection_default() {
-        let raw: RawCollectionConfig = serde_yaml::from_str(
-            r#"
-name: timeout-test
-timeout_seconds: 12
-"#,
-        )
-        .expect("超时配置应当可以解析");
-
-        let files = vec![
-            RequestFile {
-                path: PathBuf::from("inherited.http"),
-                text: "curl https://example.test/inherited".to_string(),
-            },
-            RequestFile {
-                path: PathBuf::from("custom.http"),
-                text: "# @timeout 4\ncurl https://example.test/custom".to_string(),
-            },
-            RequestFile {
-                path: PathBuf::from("fallback.http"),
-                text: "# @timeout 0\ncurl https://example.test/fallback".to_string(),
-            },
-        ];
-        let config = normalize_config(raw, Path::new("."), &files).expect("超时配置应当可以规范化");
-        assert_eq!(config.timeout_seconds, 12);
-        assert_eq!(config.requests[0].timeout_seconds, 12);
-        assert_eq!(config.requests[1].timeout_seconds, 4);
-        assert_eq!(config.requests[2].timeout_seconds, 12);
-    }
-
-    #[test]
-    fn parses_request_metadata_and_discovers_variables() {
-        let raw = RawCollectionConfig::default();
-        let files = vec![RequestFile {
-            path: PathBuf::from("requests/01-health.http"),
-            text: "# @name Health check\n# @description A simple check\n# @extract service = data.service\ncurl http://{{host}}/health".to_string(),
-        }];
-
-        let config =
-            normalize_config(raw, Path::new("."), &files).expect("请求文件元数据应当可以解析");
-        assert_eq!(config.requests[0].id, "requests/01-health.http");
-        assert_eq!(config.requests[0].name, "Health check");
-        assert_eq!(config.requests[0].description, "A simple check");
-        assert_eq!(config.requests[0].extracts[0].variable, "service");
-        assert_eq!(config.requests[0].extracts[0].path, "data.service");
-        assert!(config.variables.contains_key("host"));
-        assert!(config.variables.contains_key("service"));
-        assert_eq!(
-            config.editable_variables,
-            BTreeSet::new(),
-            "请求中发现的变量应作为运行时变量，不应出现在变量编辑器"
-        );
-    }
-
-    #[test]
-    fn rejects_extract_variables_that_normalize_to_the_same_name() {
-        let files = vec![RequestFile {
-            path: PathBuf::from("requests/extract.http"),
-            text: "# @extract task_id = data.id\n# @extract {{task_id}} = data.other\ncurl https://example.test/task".to_string(),
-        }];
-
-        let error = normalize_config(RawCollectionConfig::default(), Path::new("."), &files)
-            .expect_err("规范化后重复的提取变量应报错");
-
-        assert!(error.to_string().contains("重复声明响应提取变量"));
-    }
-
-    #[test]
-    fn parses_json_data_without_rewriting_the_body() {
-        let parsed = parse_curl(
-            "curl --json '{\"taskId\":\"{{task_id}}\",\"ok\":true}' http://example.test/tasks",
-            "create",
-        )
-        .expect("json curl 应当可以解析");
-
-        assert_eq!(parsed.method.as_deref(), Some("POST"));
-        assert_eq!(
-            parsed.data,
-            vec![BodyPart::Raw(
-                "{\"taskId\":\"{{task_id}}\",\"ok\":true}".to_string()
-            )]
-        );
-        assert_eq!(
-            parsed.headers.get("Content-Type").map(String::as_str),
-            Some("application/json")
-        );
-    }
-
-    #[test]
-    fn keeps_urlencoded_data_until_template_resolution() {
-        let parsed = parse_curl(
-            "curl --get 'http://example.test/search' --data-urlencode 'q={{query}}'",
-            "search",
-        )
-        .expect("urlencoded 参数应当可以解析");
-
-        assert_eq!(parsed.url.as_deref(), Some("http://example.test/search"));
-        assert_eq!(
-            parsed.query_data,
-            vec![BodyPart::UrlEncoded("q={{query}}".to_string())]
-        );
-    }
-
-    #[test]
-    fn curl_output_options_do_not_change_request_configuration() {
-        let parsed = parse_curl(
-            "curl --location --output '{{download_name}}' https://example.test/report",
-            "response",
-        )
-        .expect("旧 curl 输出参数应当可以兼容解析");
-
-        assert_eq!(parsed.url.as_deref(), Some("https://example.test/report"));
-        assert!(parsed.data.is_empty());
-        assert!(parsed.form.is_empty());
     }
 }

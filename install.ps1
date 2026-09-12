@@ -3,10 +3,8 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir,
-    [string]$DataDir,
     [string]$ArchiveUrl = "https://github.com/refiget/postui/releases/latest/download/postui-windows-amd64.zip",
-    [switch]$SkipInit,
-    [switch]$ForceConfig
+    [switch]$SkipInit
 )
 
 Set-StrictMode -Version Latest
@@ -22,13 +20,6 @@ function Get-DefaultInstallDir {
         Fail "无法确定 LOCALAPPDATA"
     }
     return (Join-Path $env:LOCALAPPDATA "Programs\PostUI")
-}
-
-function Get-DefaultDataDir {
-    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
-        Fail "无法确定 APPDATA"
-    }
-    return (Join-Path $env:APPDATA "postui")
 }
 
 function Find-PackageDirectory([string]$Root) {
@@ -66,53 +57,10 @@ function Download-Package([string]$Url) {
 }
 
 function Require-PackageFiles([string]$PackageDirectory) {
-    $requiredFiles = @(
-        (Join-Path $PackageDirectory "postui.exe"),
-        (Join-Path $PackageDirectory "config.yaml"),
-        (Join-Path $PackageDirectory ".postui\config.yaml")
-    )
+    $requiredFiles = @((Join-Path $PackageDirectory "postui.exe"))
     foreach ($path in $requiredFiles) {
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
             Fail "发布目录缺少文件: $path"
-        }
-    }
-
-    $collectionsDirectory = Join-Path $PackageDirectory ".postui\collections"
-    if (!(Test-Path -LiteralPath $collectionsDirectory -PathType Container)) {
-        Fail "发布目录缺少目录: $collectionsDirectory"
-    }
-}
-
-function Copy-FileIfAllowed([string]$Source, [string]$Destination, [bool]$Overwrite) {
-    if (Test-Path -LiteralPath $Destination) {
-        if (!(Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            Fail "安装目标不是文件: $Destination"
-        }
-        if (!$Overwrite) {
-            return
-        }
-    }
-    Copy-Item -LiteralPath $Source -Destination $Destination -Force
-}
-
-function Copy-DirectoryContents([string]$Source, [string]$Destination, [bool]$Overwrite) {
-    if (!(Test-Path -LiteralPath $Source -PathType Container)) {
-        Fail "发布目录缺少目录: $Source"
-    }
-    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
-        Fail "安装目标不是目录: $Destination"
-    }
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        $destinationPath = Join-Path $Destination $_.Name
-        if ($_.PSIsContainer) {
-            if (Test-Path -LiteralPath $destinationPath -PathType Leaf) {
-                Fail "安装目标不是目录: $destinationPath"
-            }
-            Copy-DirectoryContents $_.FullName $destinationPath $Overwrite
-        } else {
-            Copy-FileIfAllowed $_.FullName $destinationPath $Overwrite
         }
     }
 }
@@ -122,10 +70,6 @@ try {
         $InstallDir = Get-DefaultInstallDir
     }
     $InstallDir = [IO.Path]::GetFullPath($InstallDir)
-    if ([string]::IsNullOrWhiteSpace($DataDir)) {
-        $DataDir = Get-DefaultDataDir
-    }
-    $DataDir = [IO.Path]::GetFullPath($DataDir)
 
     $localPackageDirectory = Find-PackageDirectory (Split-Path -Parent $MyInvocation.MyCommand.Path)
     if ([string]::IsNullOrWhiteSpace($localPackageDirectory)) {
@@ -136,21 +80,8 @@ try {
     Require-PackageFiles $packageDirectory
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $packageDirectory "postui.exe") `
         -Destination (Join-Path $InstallDir "postui.exe") -Force
-    Copy-FileIfAllowed (Join-Path $packageDirectory "config.yaml") `
-        (Join-Path $DataDir "config.yaml") $ForceConfig
-    Copy-DirectoryContents (Join-Path $packageDirectory ".postui") `
-        (Join-Path $DataDir ".postui") $ForceConfig
-
-    foreach ($optionalDirectory in @("test_files", "themes")) {
-        $sourceDirectory = Join-Path $packageDirectory $optionalDirectory
-        if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
-            Copy-DirectoryContents $sourceDirectory (Join-Path $DataDir $optionalDirectory) $false
-        }
-    }
-
     if (!$SkipInit) {
         & (Join-Path $InstallDir "postui.exe") init
         if ($LASTEXITCODE -ne 0) {
@@ -159,7 +90,6 @@ try {
     }
 
     Write-Host "PostUI 已安装到: $InstallDir"
-    Write-Host "用户配置已安装到: $DataDir"
     Write-Host "当前 PowerShell 请重新打开后使用 postui。"
 } finally {
     if ($null -ne $script:TempRoot -and (Test-Path -LiteralPath $script:TempRoot)) {

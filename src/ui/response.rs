@@ -45,6 +45,15 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect
     let theme = &app.global_config.theme;
     let text = app.text();
     frame.render_widget(panel_block(text.response(), area, theme), area);
+    if !app.has_current_request() {
+        frame.render_widget(
+            Paragraph::new(text.request_not_sent())
+                .style(label_style(theme))
+                .alignment(Alignment::Center),
+            area.inner(Margin::new(2, 2)),
+        );
+        return;
+    }
     draw_response_menu_button(frame, menu_button, app);
     let request = app.current_request();
     let request_status = app.request_status(&request.id);

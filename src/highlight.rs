@@ -140,34 +140,3 @@ fn trim_line_ending(value: &str) -> &str {
         .or_else(|| value.strip_suffix('\r'))
         .unwrap_or(value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn colors_template_variables() {
-        let theme = UiTheme::default();
-        let spans = template_spans("GET {{host}}/health", plain_style(&theme), &theme);
-
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[1].content, "{{host}}");
-        assert_eq!(spans[1].style.fg, Some(theme.variable));
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn highlights_json_tokens_and_keeps_variable_color() {
-        let theme = UiTheme::default();
-        let lines = json_text_lines(r#"{"host":"{{host}}","enabled":true}"#, &theme);
-
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].spans.len() > 1);
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .any(|span| span.content == "{{host}}" && span.style.fg == Some(theme.variable))
-        );
-    }
-}

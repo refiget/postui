@@ -1,69 +1,41 @@
 # 配置与请求文件
 
-PostUI 使用两层配置：全局配置决定请求集合入口和界面样式，集合配置决定请求、变量、请求头和文件目录。
+PostUI 把一个包含 `.postui/` 的目录视为一个工作区。项目配置负责请求行为，用户配置只负责个人界面偏好。
 
-## 配置文件
+## 工作区
 
-| 文件 | 用途 | 是否提交 |
-| --- | --- | --- |
-| `config.example.yaml` | 公共配置模板 | 是 |
-| `config.yaml` | 本机全局配置 | 否 |
-| `.postui/config.yaml` | 项目入口配置 | 根目录项目配置不提交；`mock/.postui` 是公共测试夹具 |
-| `.postui/collections/<name>/config.yaml` | 某个请求集合的配置 | 按项目性质决定 |
-
-全局配置示例：
-
-```yaml
-request_config: .postui/collections/example
-language: en
-theme: gruvbox-dark
-
-highlight:
-  enabled: true
-  syntax: base16-mocha.dark
-  variable: "#d3869b"
-```
-
-`request_config` 和 `theme_file` 的相对路径以全局配置文件所在目录为基准。`language` 支持 `en` 和 `zh`；内置主题包括 `gruvbox-dark`、`ocean`、`nord` 和 `mono`。
-
-## 自动发现顺序
-
-未指定 `--config` 时，程序按以下顺序寻找配置：
-
-1. 当前目录及父目录中的 `.postui/config.yaml`。
-2. 当前可执行文件同目录的 `config.yaml`。
-3. Linux 用户目录下的 `postui.yaml` 或 `.postui.yaml`；Windows 用户目录下的同名文件。
-4. Linux 的 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`；Windows 的 `%APPDATA%\postui\config.yaml`。
-
-显式指定的配置文件读取失败会直接报错，不会回退到其他位置。未指定 `--requests` 时使用全局配置中的 `request_config`；`--requests` 可以覆盖它：
-
-```bash
-postui --requests ./.postui/collections/other
-```
-
-## 目录布局
-
-推荐的项目结构如下：
+推荐结构：
 
 ```text
-.postui/
-├── config.yaml
-└── collections/
-    └── example/
-        ├── config.yaml
-        ├── requests.cache.json   # 运行时生成，不提交
-        └── requests/
-            ├── 01-list.http
-            └── 02-detail.http
-test_files/                       # 默认上传目录
-temp/                             # 默认下载目录，首次保存时创建
+project/
+├── .postui/
+│   ├── postui.yaml
+│   ├── cache/                  # 自动生成，不提交
+│   └── requests/
+│       ├── 01-health.http
+│       └── users/
+│           └── 02-detail.http
+├── test_files/                 # 默认上传目录
+└── temp/                       # 默认下载目录
 ```
 
-集合配置只保存集合级设置：
+在项目目录或任意子目录运行 `postui`，程序会向上查找最近的 `.postui/`。也可以直接指定项目目录：
+
+```bash
+postui /path/to/project
+```
+
+`.postui/requests/` 可以不存在或为空。空工作区仍会进入 TUI；选择侧栏底部的 `+` 可创建临时请求，输入 URL 后即可发送。只有按 `Ctrl+S` 保存时才会创建 `requests/` 和对应的 `.http` 文件。
+
+`.postui/postui.yaml` 可以省略。完整字段如下：
 
 ```yaml
 name: 示例接口
-timeout_seconds: 30
+timeout: 30
+
+directories:
+  uploads: test_files
+  downloads: temp
 
 headers:
   Accept: application/json
@@ -74,63 +46,60 @@ variables:
   item_id:
 ```
 
-`file_directory` 和 `download_directory` 省略时，分别默认为 `.postui/` 同级的 `test_files/` 和 `temp/`。显式相对路径则以集合配置文件所在目录为基准。`timeout_seconds: 0` 等同于默认值 30 秒。
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `name` | 项目目录名 | 工作区显示名称 |
+| `timeout` | `30` | 默认请求超时秒数；请求文件中的 `@timeout` 可以覆盖 |
+| `directories.uploads` | `test_files` | 相对上传目录 |
+| `directories.downloads` | `temp` | 响应下载目录 |
+| `headers` | `{}` | 所有请求继承的 Header |
+| `variables` | `{}` | 工作区变量；空值表示启动后填写 |
 
-集合 Header 会被所有请求继承；请求文件中的同名 Header 覆盖集合默认值。变量值省略或写成 `null` 时没有默认值，运行期间仍可在 Variables 窗口中编辑。
+目录相对路径始终以项目根目录为基准，也支持绝对路径。下载目录在保存响应时自动创建；上传目录或文件不存在时，发送操作会显示错误。
+
+## 用户界面配置
+
+用户配置位置：
+
+- Linux：`${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`
+- Windows：`%APPDATA%\postui\config.yaml`
+
+```yaml
+language: zh
+theme: ocean
+```
+
+`language` 支持 `en` 和 `zh`；`theme` 支持 `gruvbox-dark`、`ocean`、`nord` 和 `mono`。用户配置不存在时使用内置默认值。语法和变量高亮默认开启并跟随主题。
 
 ## 请求文件
 
-每个请求文件包含一段静态 curl 文本，可以通过注释指令提供名称、说明、超时和响应字段提取：
+请求文件位于 `.postui/requests/`，支持 `.http`、`.rest` 和 `.curl`，并使用静态 curl 文本：
 
 ~~~text
 # @name 查询用户
-# @description 查询指定用户。
+# @description 查询指定用户
 # @timeout 10
 # @extract user_id = data.id
 curl --request GET "{{host}}/users/{{item_id}}"
 ~~~
 
-没有 `@name` 时使用文件名。文件名前的数字序号和连接符会被去掉，例如 `02-user-detail.http` 显示为 `user-detail`。相对路径作为请求的稳定 id，可以使用子目录组织请求。
+子目录用于组织请求。请求文件相对于 `.postui/requests/` 的路径是稳定 ID。
 
-支持的 curl 参数：
+支持常用的 curl 请求参数，包括 `--request`、`--url`、`--header`、`--data`、`--json`、`--data-urlencode`、`--form`、`--form-string` 和 `--get`。输出参数不会改变 PostUI 的行为，响应保存由 Response 的 Actions 菜单负责。
 
-- `-X`、`--request`、`--url`。
-- `-H`、`--header`。
-- `-d`、`--data`、`--data-raw`、`--data-binary`、`--json`、`--data-urlencode`。
-- `-F`、`--form`、`--form-string`。
-- `-G`、`--get`，把 data 参数放入查询字符串。
-- `-b`、`--cookie`、`-A`、`--user-agent`、`-e`、`--referer`，会转换成请求头。
-
-`--location`、`--compressed`、`--silent` 等不影响请求内容的选项会被忽略。输出选项（`-o`、`--output`、`-O`、`--remote-name`、`-J`、`--remote-header-name`）不会改变 PostUI 的请求行为；响应保存由 Response 的 `Actions` 菜单负责。
-
-PowerShell 请求请使用 `curl.exe`，避免 `curl` 别名被解析为 `Invoke-WebRequest`：
-
-~~~powershell
-curl.exe --request GET "https://example.test/items/{{item_id}}" `
-  --header "Accept: application/json"
-~~~
-
-文件上传使用 `--form` 的 `@` 写法。相对路径以 `file_directory` 为基准，也可以使用绝对路径：
+文件上传使用 `--form` 的 `@` 写法。相对文件名以 `directories.uploads` 为基准：
 
 ~~~text
 curl --request POST "{{host}}/files" \
   --form "file=@{{upload_file}};type=application/pdf"
 ~~~
 
-解析器会合并反斜杠换行和 PowerShell 反引号换行，但不会执行命令替换、管道、重定向或多个命令。
+`@extract` 只在 HTTP 状态码小于 400 时从 JSON 响应提取字段。支持点路径、数组下标和 JSON Pointer。
 
-## 返回字段提取
+## 临时请求、保存与缓存
 
-`@extract` 只在 HTTP 成功响应（状态码小于 400）后执行，从 JSON 响应体读取字段并写入当前集合的会话变量。路径支持：
+侧栏底部的 `+` 始终用于创建内存草稿。新草稿默认使用 `GET`，点击方法可在 `GET` 与 `POST` 间切换，点击地址可继续编辑。草稿和会话修改可以直接发送；未保存请求以 `●` 标记。
 
-- `data.taskId`
-- `data.items[0].id`
-- `/data/taskId`（JSON Pointer）
+按 `Ctrl+S` 保存当前请求。草稿首次保存时输入 `.postui/requests/` 下的相对文件名；省略扩展名会自动补充 `.http`。绝对路径、`..` 路径和覆盖已有草稿文件会被拒绝。保存后的请求可在下次启动时继续加载。请求列表聚焦时按 `Delete` 会在确认后删除请求；已保存请求的源文件也会被删除。存在未保存修改时退出会要求确认，避免误操作丢失内容。
 
-某个字段不存在或响应不是 JSON 时，其他字段仍会更新，已有变量值不会被清空；状态栏会显示失败数量。HTTP 失败响应和传输错误不会执行提取。
-
-## 缓存与编辑
-
-首次成功解析集合后，会在集合目录生成 `requests.cache.json`。缓存指纹覆盖集合 `config.yaml` 和 `requests/` 下的全部请求文件，新增、修改或删除请求后会自动失效。
-
-界面中的 Params、Headers、Body 和 Variables 修改只在本次运行生效，不会回写请求文件。请求切换、集合切换、发送请求或打开 Response 菜单前，当前编辑内容会先提交到会话状态。
+`.postui/cache/` 使用 `cacache` 持久化项目配置和请求文件的解析结果。源内容的 BLAKE3 指纹变化后缓存自动失效；缓存损坏或读写失败时会回退到重新解析，不影响工作区启动。Variables 的修改仍只在当前运行期间生效，不会回写 `postui.yaml`。

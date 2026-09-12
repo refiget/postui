@@ -10,6 +10,22 @@ pub(super) fn draw_preview(
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
+    if !app.has_current_request() {
+        frame.render_widget(panel_block(text.request_editor(), area, theme), area);
+        let empty = area.inner(Margin::new(2, 2));
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled(text.no_requests(), label_style(theme))),
+                Line::from(Span::styled(
+                    text.create_request_hint(),
+                    Style::default().fg(theme.muted),
+                )),
+            ]))
+            .alignment(Alignment::Center),
+            empty,
+        );
+        return;
+    }
     let request = app.current_request();
     let request_status = app.request_status(&request.id);
     let mut title = Line::from(vec![
@@ -55,17 +71,39 @@ pub(super) fn draw_preview_summary(
     let text = app.text();
     let request = app.current_request();
     let mut url_line = vec![
-        Span::styled(request.method.clone(), method_style(&request.method, theme)),
+        Span::styled(
+            format!("[ {} ]", request.method),
+            method_style(&request.method, theme),
+        ),
         Span::raw("  "),
     ];
     url_line.push(Span::styled(
         format!("{}  ", text.address()),
         label_style(theme),
     ));
-    url_line.push(Span::styled(
-        app.resolved_url(request),
-        highlight::plain_style(theme),
-    ));
+    if let Some(editor) = &app.preview_state.url_editor {
+        url_line.push(Span::styled(
+            if editor.value.is_empty() {
+                " ".to_string()
+            } else {
+                editor.value.clone()
+            },
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.selection)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+    } else {
+        let url = app.resolved_url(request);
+        url_line.push(Span::styled(
+            if url.is_empty() {
+                text.enter_url().to_string()
+            } else {
+                url
+            },
+            highlight::plain_style(theme),
+        ));
+    }
     let mut lines = wrap_spans(url_line, area.width);
     if area.height > lines.len() as u16 {
         let description = if request.description.is_empty() {
@@ -94,6 +132,19 @@ pub(super) fn draw_preview_summary(
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    if let Some(editor) = &app.preview_state.url_editor {
+        let prefix = Line::from(format!("[ {} ]  {}  ", request.method, text.address())).width();
+        let position = prefix + crate::editor::terminal_width(&editor.value[..editor.cursor]);
+        let width = usize::from(area.width.max(1));
+        let row = (position / width).min(usize::from(area.height.saturating_sub(1)));
+        let column = position % width;
+        frame.set_cursor_position((
+            area.x
+                .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+            area.y
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+        ));
+    }
 }
 
 fn wrap_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {

@@ -7,6 +7,8 @@ venv/
 __pycache__/
 **/*.py
 **/requirements*.txt
+!/mock/**/*.py
+!/mock/requirements*.txt
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
@@ -17,7 +19,7 @@ __pycache__/
 logs/
 *.pid
 /temp/
-**/requests.cache.json
+**/.postui/cache/
 /mock/temp/
 
 # 本地环境变量；示例文件可以提交

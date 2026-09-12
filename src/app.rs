@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -10,8 +10,8 @@ use std::{
 use crate::{
     config::{ApiRequest, BodyPart, FileUpload, RequestConfig, value_to_string},
     editor::{
-        BodyValueEditor, TextEditor, convert_json_scalar, json_scalar_at, merge_json_edit,
-        terminal_width, text_position,
+        BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
+        merge_json_edit, terminal_width, text_position,
     },
     http::{self, HttpError, ResponseData},
     i18n::UiText,
@@ -19,9 +19,6 @@ use crate::{
     template::{self, ResolvedRequest},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-#[cfg(test)]
-use crate::editor::JsonScalarKind;
 
 mod dialog;
 
@@ -33,7 +30,6 @@ use dialog::{DialogAction, remove_header, remove_header_map, split_key_value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
-    Collection,
     Requests,
     Variables,
     Preview,
@@ -43,18 +39,16 @@ pub(crate) enum Focus {
 impl Focus {
     fn next(self) -> Self {
         match self {
-            Self::Collection => Self::Requests,
             Self::Requests => Self::Variables,
             Self::Variables => Self::Preview,
             Self::Preview => Self::Actions,
-            Self::Actions => Self::Collection,
+            Self::Actions => Self::Requests,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Collection => Self::Actions,
-            Self::Requests => Self::Collection,
+            Self::Requests => Self::Actions,
             Self::Variables => Self::Requests,
             Self::Preview => Self::Variables,
             Self::Actions => Self::Preview,
@@ -132,6 +126,24 @@ enum AppMessage {
 }
 
 static NEXT_REQUEST_OPERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn blank_request(id: String, timeout_seconds: u64) -> ApiRequest {
+    ApiRequest {
+        id,
+        name: "Untitled request".to_string(),
+        method: "GET".to_string(),
+        url: String::new(),
+        timeout_seconds,
+        description: String::new(),
+        headers: BTreeMap::new(),
+        body_parts: Vec::new(),
+        query_parts: Vec::new(),
+        form: BTreeMap::new(),
+        files: Vec::new(),
+        extracts: Vec::new(),
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct ScrollState {
@@ -215,17 +227,6 @@ pub(crate) struct RequestRuntimeState {
     operation_id: Option<String>,
 }
 
-impl RequestRuntimeState {
-    #[cfg(test)]
-    pub(crate) fn from_response(response: ResponseData) -> Self {
-        Self {
-            status: RequestStatus::from_http_status(response.status),
-            response: Some(response),
-            ..Default::default()
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct RequestsContentState {
     pub(crate) selected_request: usize,
@@ -238,6 +239,14 @@ pub(crate) struct PreviewContentState {
     pub(crate) editor: Option<BodyValueEditor>,
     pub(crate) file_editor: Option<FileValueEditor>,
     pub(crate) variable_editor: Option<RequestVariableEditor>,
+    pub(crate) url_editor: Option<TextEditor>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AppPrompt {
+    SaveRequest(TextEditor),
+    ConfirmExit,
+    ConfirmDelete { request_id: String },
 }
 
 #[derive(Debug)]
@@ -264,10 +273,12 @@ pub(crate) struct ResponseContentState {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct RequestCollectionState {
+pub(crate) struct WorkspaceState {
     pub(crate) variables: BTreeMap<String, String>,
     pub(crate) request_edits: HashMap<String, RequestEdits>,
     pub(crate) request_states: HashMap<String, RequestRuntimeState>,
+    pub(crate) draft_requests: HashSet<String>,
+    pub(crate) dirty_requests: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -302,24 +313,7 @@ impl From<&ApiRequest> for RequestEdits {
     }
 }
 
-#[derive(Debug)]
-struct CollectionSession {
-    config: RequestConfig,
-    config_path: PathBuf,
-    requests_state: RequestsContentState,
-    preview_state: PreviewContentState,
-    response_state: ResponseContentState,
-    collection_state: RequestCollectionState,
-    status: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CollectionChoice {
-    pub(crate) name: String,
-    pub(crate) path: PathBuf,
-}
-
-impl RequestCollectionState {
+impl WorkspaceState {
     fn from_config(config: &RequestConfig) -> Self {
         let variables = config
             .variables
@@ -345,55 +339,10 @@ impl RequestCollectionState {
                 .iter()
                 .map(|request| (request.id.clone(), RequestRuntimeState::default()))
                 .collect(),
+            draft_requests: HashSet::new(),
+            dirty_requests: HashSet::new(),
         }
     }
-}
-
-impl CollectionSession {
-    fn new(config: RequestConfig, config_path: PathBuf, text: UiText) -> Self {
-        let collection_state = RequestCollectionState::from_config(&config);
-        Self {
-            config,
-            config_path,
-            requests_state: RequestsContentState::default(),
-            preview_state: PreviewContentState::default(),
-            response_state: ResponseContentState::default(),
-            collection_state,
-            status: text.ready().to_string(),
-        }
-    }
-}
-
-fn discover_collections(current: &PathBuf) -> Vec<CollectionChoice> {
-    let mut paths = current
-        .parent()
-        .and_then(|parent| fs::read_dir(parent).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && path.join("requests").is_dir())
-        .collect::<Vec<_>>();
-    if !paths.iter().any(|path| path == current) {
-        paths.push(current.clone());
-    }
-    paths.sort_by(|left, right| {
-        left.file_name()
-            .unwrap_or_default()
-            .cmp(right.file_name().unwrap_or_default())
-    });
-    paths.dedup();
-    paths
-        .into_iter()
-        .map(|path| CollectionChoice {
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Collection")
-                .to_string(),
-            path,
-        })
-        .collect()
 }
 
 pub(crate) struct App {
@@ -404,15 +353,13 @@ pub(crate) struct App {
     pub(crate) requests_state: RequestsContentState,
     pub(crate) preview_state: PreviewContentState,
     pub(crate) response_state: ResponseContentState,
-    pub(crate) collection_state: RequestCollectionState,
+    pub(crate) workspace_state: WorkspaceState,
     pub(crate) dialog: Option<Dialog>,
+    pub(crate) prompt: Option<AppPrompt>,
     pub(crate) status: String,
     pub(crate) animation_frame: usize,
     pub(crate) should_quit: bool,
-    pub(crate) collections: Vec<CollectionChoice>,
-    pub(crate) collection_menu_open: bool,
-    pub(crate) selected_collection: usize,
-    collection_sessions: HashMap<PathBuf, CollectionSession>,
+    empty_request: ApiRequest,
     sender: Sender<AppMessage>,
     receiver: Receiver<AppMessage>,
 }
@@ -436,12 +383,8 @@ impl App {
             configured_variable_count = config.editable_variables.len(),
             "创建应用状态"
         );
-        let collection_state = RequestCollectionState::from_config(&config);
-        let collections = discover_collections(&config_path);
-        let selected_collection = collections
-            .iter()
-            .position(|choice| choice.path == config_path)
-            .unwrap_or(0);
+        let workspace_state = WorkspaceState::from_config(&config);
+        let empty_request = blank_request("__empty__".to_string(), config.timeout_seconds);
 
         let (sender, receiver) = mpsc::channel();
         Self {
@@ -458,24 +401,34 @@ impl App {
                 editor: None,
                 file_editor: None,
                 variable_editor: None,
+                url_editor: None,
             },
             response_state: ResponseContentState::default(),
-            collection_state,
+            workspace_state,
             dialog: None,
+            prompt: None,
             status: text.ready().to_string(),
             animation_frame: 0,
             should_quit: false,
-            collections,
-            collection_menu_open: false,
-            selected_collection,
-            collection_sessions: HashMap::new(),
+            empty_request,
             sender,
             receiver,
         }
     }
 
     pub(crate) fn current_request(&self) -> &ApiRequest {
-        &self.config.requests[self.requests_state.selected_request]
+        self.config
+            .requests
+            .get(self.requests_state.selected_request)
+            .unwrap_or(&self.empty_request)
+    }
+
+    pub(crate) fn has_current_request(&self) -> bool {
+        self.requests_state.selected_request < self.config.requests.len()
+    }
+
+    pub(crate) fn add_request_selected(&self) -> bool {
+        self.requests_state.selected_request == self.config.requests.len()
     }
 
     pub(crate) fn text(&self) -> UiText {
@@ -484,6 +437,274 @@ impl App {
 
     pub(crate) fn advance_animation(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);
+    }
+
+    pub(crate) fn create_draft_request(&mut self) {
+        self.commit_active_editors();
+        let id = format!("draft:{}", NEXT_DRAFT_ID.fetch_add(1, Ordering::Relaxed));
+        let request = blank_request(id.clone(), self.config.timeout_seconds);
+        self.workspace_state
+            .request_edits
+            .insert(id.clone(), RequestEdits::from(&request));
+        self.workspace_state
+            .request_states
+            .insert(id.clone(), RequestRuntimeState::default());
+        self.workspace_state.draft_requests.insert(id.clone());
+        self.workspace_state.dirty_requests.insert(id);
+        self.config.requests.push(request);
+        self.requests_state.selected_request = self.config.requests.len() - 1;
+        self.preview_state.active_tab = PreviewTab::Body;
+        self.preview_state.scroll.reset();
+        self.response_state = ResponseContentState::default();
+        self.focus = Focus::Preview;
+        self.start_url_edit();
+        self.status = self.text().draft_created().to_string();
+    }
+
+    pub(crate) fn is_request_dirty(&self, request_id: &str) -> bool {
+        self.workspace_state.dirty_requests.contains(request_id)
+    }
+
+    pub(crate) fn is_current_draft(&self) -> bool {
+        self.has_current_request()
+            && self
+                .workspace_state
+                .draft_requests
+                .contains(&self.current_request().id)
+    }
+
+    fn mark_current_dirty(&mut self) {
+        if self.has_current_request() {
+            self.workspace_state
+                .dirty_requests
+                .insert(self.current_request().id.clone());
+        }
+    }
+
+    pub(crate) fn start_url_edit(&mut self) {
+        if !self.has_current_request()
+            || self.request_status(&self.current_request().id) == RequestStatus::Sending
+        {
+            return;
+        }
+        let url = self.current_effective_request().url;
+        self.preview_state.url_editor = Some(TextEditor::new(url));
+        self.focus = Focus::Preview;
+    }
+
+    pub(crate) fn cycle_method(&mut self) {
+        if !self.has_current_request()
+            || self.request_status(&self.current_request().id) == RequestStatus::Sending
+        {
+            return;
+        }
+        const METHODS: [&str; 2] = ["GET", "POST"];
+        let current = self.current_request().method.as_str();
+        let index = METHODS
+            .iter()
+            .position(|method| *method == current)
+            .unwrap_or(0);
+        self.config.requests[self.requests_state.selected_request].method =
+            METHODS[(index + 1) % METHODS.len()].to_string();
+        self.mark_current_dirty();
+    }
+
+    fn commit_url_edit(&mut self) {
+        let Some(editor) = self.preview_state.url_editor.take() else {
+            return;
+        };
+        if !self.has_current_request() {
+            return;
+        }
+        let request_id = self.current_request().id.clone();
+        let configured = self.current_request().url.clone();
+        let value = editor.value.trim().to_string();
+        self.request_edits_mut(&request_id).url = (value != configured).then_some(value);
+        self.mark_current_dirty();
+    }
+
+    fn handle_url_editor_key(&mut self, key: KeyEvent) {
+        let Some(editor) = self.preview_state.url_editor.as_mut() else {
+            return;
+        };
+        match editor.handle_key(key) {
+            EditorAction::Continue => {}
+            EditorAction::Commit => self.commit_url_edit(),
+            EditorAction::Cancel => self.preview_state.url_editor = None,
+        }
+    }
+
+    pub(crate) fn save_current_request(&mut self) {
+        self.commit_active_editors();
+        if !self.has_current_request() {
+            return;
+        }
+        if self.is_current_draft() {
+            self.prompt = Some(AppPrompt::SaveRequest(TextEditor::new(
+                "untitled-request.http".to_string(),
+            )));
+            return;
+        }
+        let id = self.current_request().id.clone();
+        match self.write_request_file(&id) {
+            Ok(path) => {
+                self.workspace_state.dirty_requests.remove(&id);
+                self.status = self.text().request_saved(&path.display().to_string());
+            }
+            Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
+        }
+    }
+
+    fn save_draft_as(&mut self, name: &str) {
+        let Some(relative) = normalized_request_path(name) else {
+            self.status = self.text().invalid_request_path().to_string();
+            return;
+        };
+        let path = self.config_path.join("requests").join(&relative);
+        if path.exists() {
+            self.status = self.text().request_file_exists().to_string();
+            return;
+        }
+        let old_id = self.current_request().id.clone();
+        let new_id = format!("requests/{}", relative.to_string_lossy().replace('\\', "/"));
+        match self.write_request_to_path(&path) {
+            Ok(()) => {
+                let mut request =
+                    self.config.requests[self.requests_state.selected_request].clone();
+                request.id = new_id.clone();
+                request.name = relative
+                    .file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Untitled request".to_string());
+                self.config.requests[self.requests_state.selected_request] = request;
+                if let Some(edits) = self.workspace_state.request_edits.remove(&old_id) {
+                    self.workspace_state
+                        .request_edits
+                        .insert(new_id.clone(), edits);
+                }
+                if let Some(state) = self.workspace_state.request_states.remove(&old_id) {
+                    self.workspace_state
+                        .request_states
+                        .insert(new_id.clone(), state);
+                }
+                self.workspace_state.draft_requests.remove(&old_id);
+                self.workspace_state.dirty_requests.remove(&old_id);
+                self.status = self.text().request_saved(&path.display().to_string());
+                self.prompt = None;
+            }
+            Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
+        }
+    }
+
+    fn write_request_file(&self, request_id: &str) -> anyhow::Result<PathBuf> {
+        let relative = request_id
+            .strip_prefix("requests/")
+            .ok_or_else(|| anyhow::anyhow!("请求没有可写入的源文件"))?;
+        let path = self.config_path.join("requests").join(relative);
+        self.write_request_to_path(&path)?;
+        Ok(path)
+    }
+
+    fn write_request_to_path(&self, path: &Path) -> anyhow::Result<()> {
+        let mut request = self.current_effective_request();
+        request.headers = self
+            .request_edits(&request.id)
+            .headers
+            .iter()
+            .filter(|row| row.enabled && !row.name.trim().is_empty())
+            .map(|row| (row.name.trim().to_string(), row.value.clone()))
+            .collect();
+        let text = serialize_request(&request);
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("请求路径缺少父目录"))?;
+        fs::create_dir_all(parent)?;
+        let temporary = path.with_extension("http.tmp");
+        fs::write(&temporary, text)?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    }
+
+    fn request_quit(&mut self) {
+        self.commit_active_editors();
+        if self.workspace_state.dirty_requests.is_empty() {
+            self.should_quit = true;
+        } else {
+            self.prompt = Some(AppPrompt::ConfirmExit);
+        }
+    }
+
+    fn request_delete(&mut self) {
+        if !self.has_current_request() {
+            return;
+        }
+        let request_id = self.current_request().id.clone();
+        if self.request_status(&request_id) == RequestStatus::Sending {
+            self.status = self.text().request_in_progress().to_string();
+            return;
+        }
+        self.prompt = Some(AppPrompt::ConfirmDelete { request_id });
+    }
+
+    fn delete_request(&mut self, request_id: &str) {
+        let Some(index) = self
+            .config
+            .requests
+            .iter()
+            .position(|request| request.id == request_id)
+        else {
+            self.prompt = None;
+            return;
+        };
+        if !self.workspace_state.draft_requests.contains(request_id) {
+            let Some(relative) = request_id.strip_prefix("requests/") else {
+                self.status = self.text().request_delete_failed("请求源路径无效");
+                return;
+            };
+            let path = self.config_path.join("requests").join(relative);
+            if let Err(error) = fs::remove_file(&path) {
+                self.status = self.text().request_delete_failed(&error.to_string());
+                return;
+            }
+        }
+        self.config.requests.remove(index);
+        self.workspace_state.request_edits.remove(request_id);
+        self.workspace_state.request_states.remove(request_id);
+        self.workspace_state.draft_requests.remove(request_id);
+        self.workspace_state.dirty_requests.remove(request_id);
+        self.requests_state.selected_request = index.min(self.config.requests.len());
+        self.preview_state = PreviewContentState::default();
+        self.response_state = ResponseContentState::default();
+        self.dialog = None;
+        self.prompt = None;
+        self.status = self.text().request_deleted().to_string();
+    }
+
+    fn handle_prompt_key(&mut self, key: KeyEvent) {
+        match self.prompt.as_mut() {
+            Some(AppPrompt::SaveRequest(editor)) => match editor.handle_key(key) {
+                EditorAction::Continue => {}
+                EditorAction::Cancel => self.prompt = None,
+                EditorAction::Commit => {
+                    let name = editor.value.clone();
+                    self.save_draft_as(&name);
+                }
+            },
+            Some(AppPrompt::ConfirmExit) => match key.code {
+                KeyCode::Char('y' | 'Y') => self.should_quit = true,
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.prompt = None,
+                _ => {}
+            },
+            Some(AppPrompt::ConfirmDelete { request_id }) => match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    let request_id = request_id.clone();
+                    self.delete_request(&request_id);
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.prompt = None,
+                _ => {}
+            },
+            None => {}
+        }
     }
 
     pub(crate) fn select_request(&mut self, index: usize) {
@@ -508,7 +729,7 @@ impl App {
             self.preview_state.scroll.reset();
             self.response_state.scroll.reset();
             self.status = self
-                .collection_state
+                .workspace_state
                 .request_states
                 .get(&self.current_request().id)
                 .and_then(|state| state.message.clone())
@@ -525,7 +746,7 @@ impl App {
     pub(crate) fn current_resolved_request(&self) -> ResolvedRequest {
         template::resolve_request(
             &self.current_effective_request(),
-            &self.collection_state.variables,
+            &self.workspace_state.variables,
         )
     }
 
@@ -548,14 +769,14 @@ impl App {
     }
 
     fn request_edits(&self, request_id: &str) -> &RequestEdits {
-        self.collection_state
+        self.workspace_state
             .request_edits
             .get(request_id)
             .expect("every configured request has session edits")
     }
 
     fn request_edits_mut(&mut self, request_id: &str) -> &mut RequestEdits {
-        self.collection_state
+        self.workspace_state
             .request_edits
             .get_mut(request_id)
             .expect("every configured request has session edits")
@@ -567,7 +788,7 @@ impl App {
     }
 
     pub(crate) fn request_variable_value(&self, variable: &str) -> String {
-        self.collection_state
+        self.workspace_state
             .variables
             .get(variable)
             .cloned()
@@ -577,7 +798,7 @@ impl App {
     pub(crate) fn resolved_url(&self, request: &ApiRequest) -> String {
         let request = self.effective_request(request);
         let url = template::display_url(&request);
-        template::display_text_parts(&url, &self.collection_state.variables)
+        template::display_text_parts(&url, &self.workspace_state.variables)
             .into_iter()
             .map(|part| part.text)
             .collect()
@@ -720,6 +941,9 @@ impl App {
     }
 
     pub(crate) fn commit_active_editors(&mut self) {
+        if self.preview_state.url_editor.is_some() {
+            self.commit_url_edit();
+        }
         if self.preview_state.editor.is_some() {
             self.commit_body_value();
         }
@@ -794,6 +1018,7 @@ impl App {
             .get_mut(editor.file_index)
         {
             file.path = path;
+            self.mark_current_dirty();
         }
     }
 
@@ -815,7 +1040,7 @@ impl App {
         let Some(editor) = self.preview_state.variable_editor.take() else {
             return;
         };
-        self.collection_state
+        self.workspace_state
             .variables
             .insert(editor.variable, editor.input.value);
     }
@@ -842,6 +1067,7 @@ impl App {
         let document =
             merge_json_edit(&source_document, &rendered_document, &document).unwrap_or(document);
         self.request_edits_mut(&request_id).body_parts = vec![BodyPart::Raw(document)];
+        self.mark_current_dirty();
     }
 
     pub(crate) fn variable_count(&self) -> usize {
@@ -873,7 +1099,7 @@ impl App {
             .map(|name| VariableRow {
                 name: name.clone(),
                 value: self
-                    .collection_state
+                    .workspace_state
                     .variables
                     .get(name)
                     .cloned()
@@ -887,10 +1113,13 @@ impl App {
             editor: None,
         }));
         self.focus = Focus::Variables;
-        tracing::debug!(variable_count = self.variable_count(), "打开集合变量窗口");
+        tracing::debug!(variable_count = self.variable_count(), "打开工作区变量窗口");
     }
 
     pub(crate) fn open_headers(&mut self) {
+        if !self.has_current_request() {
+            return;
+        }
         if self.request_status(&self.current_request().id) == RequestStatus::Sending {
             tracing::debug!("请求执行中，忽略打开 Header 编辑窗口");
             self.status = self.text().request_in_progress().to_string();
@@ -906,6 +1135,9 @@ impl App {
     }
 
     pub(crate) fn open_params(&mut self) {
+        if !self.has_current_request() {
+            return;
+        }
         if self.request_status(&self.current_request().id) == RequestStatus::Sending {
             tracing::debug!("请求执行中，忽略打开参数编辑窗口");
             self.status = self.text().request_in_progress().to_string();
@@ -1059,7 +1291,9 @@ impl App {
     pub(crate) fn can_execute_preview_action(&self, action: PreviewAction) -> bool {
         match action {
             PreviewAction::Send => {
-                supports_method(&self.current_effective_request().method)
+                self.has_current_request()
+                    && !self.current_effective_request().url.trim().is_empty()
+                    && supports_method(&self.current_effective_request().method)
                     && self.request_status(&self.current_request().id) != RequestStatus::Sending
                     && !matches!(self.dialog, Some(Dialog::Variables(_)))
                     && self.preview_state.editor.is_none()
@@ -1067,8 +1301,10 @@ impl App {
                     && self.preview_state.variable_editor.is_none()
             }
             PreviewAction::Edit(tab) => {
-                self.editing_preview_tab()
-                    .is_none_or(|editing_tab| editing_tab == tab)
+                self.has_current_request()
+                    && self
+                        .editing_preview_tab()
+                        .is_none_or(|editing_tab| editing_tab == tab)
                     && self.request_status(&self.current_request().id) != RequestStatus::Sending
             }
         }
@@ -1099,12 +1335,12 @@ impl App {
         match dialog {
             Dialog::Variables(dialog) => {
                 for row in dialog.rows {
-                    self.collection_state.variables.insert(row.name, row.value);
+                    self.workspace_state.variables.insert(row.name, row.value);
                 }
                 self.status = self.text().variables_applied().to_string();
                 tracing::debug!(
-                    variable_count = self.collection_state.variables.len(),
-                    "应用集合变量修改"
+                    variable_count = self.workspace_state.variables.len(),
+                    "应用工作区变量修改"
                 );
             }
             Dialog::Headers(dialog) => {
@@ -1135,7 +1371,10 @@ impl App {
         let action = dialog.handle_key(key);
         match action {
             DialogAction::None => {}
-            DialogAction::Changed => self.persist_request_edits(),
+            DialogAction::Changed => {
+                self.persist_request_edits();
+                self.mark_current_dirty();
+            }
             DialogAction::Apply => self.apply_dialog(),
             DialogAction::Cancel => {
                 self.persist_request_edits();
@@ -1145,7 +1384,7 @@ impl App {
     }
 
     fn persist_request_edits(&mut self) {
-        let (dialog, request_edits) = (&mut self.dialog, &mut self.collection_state.request_edits);
+        let (dialog, request_edits) = (&mut self.dialog, &mut self.workspace_state.request_edits);
         let Some(dialog) = dialog.as_mut() else {
             return;
         };
@@ -1246,14 +1485,22 @@ impl App {
     }
 
     pub(crate) fn click_param_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+        let changed = self.dialog.as_ref().is_some_and(Dialog::is_editing);
         self.persist_request_edits();
+        if changed {
+            self.mark_current_dirty();
+        }
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.click_param_row(index, field, edit);
         }
     }
 
     pub(crate) fn click_header_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+        let changed = self.dialog.as_ref().is_some_and(Dialog::is_editing);
         self.persist_request_edits();
+        if changed {
+            self.mark_current_dirty();
+        }
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.click_header_row(index, field, edit);
         }
@@ -1266,6 +1513,7 @@ impl App {
             dialog.toggle_selected();
         }
         self.persist_request_edits();
+        self.mark_current_dirty();
     }
 
     pub(crate) fn focus_dialog(&mut self, focus: DialogFocus) {
@@ -1294,13 +1542,13 @@ impl App {
     }
 
     pub(crate) fn current_request_state(&self) -> Option<&RequestRuntimeState> {
-        self.collection_state
+        self.workspace_state
             .request_states
             .get(&self.current_request().id)
     }
 
     pub(crate) fn request_status(&self, request_id: &str) -> RequestStatus {
-        self.collection_state
+        self.workspace_state
             .request_states
             .get(request_id)
             .map(|state| state.status)
@@ -1318,7 +1566,7 @@ impl App {
     }
 
     fn apply_response_extracts(&mut self, request_id: &str, body: &str) -> usize {
-        let (requests, variables) = (&self.config.requests, &mut self.collection_state.variables);
+        let (requests, variables) = (&self.config.requests, &mut self.workspace_state.variables);
         let Some(extracts) = requests
             .iter()
             .find(|request| request.id == request_id)
@@ -1369,7 +1617,7 @@ impl App {
                     );
                     let is_current = self.current_request().id == request_id;
                     let text = self.text();
-                    let Some(state) = self.collection_state.request_states.get(&request_id) else {
+                    let Some(state) = self.workspace_state.request_states.get(&request_id) else {
                         tracing::debug!(
                             request_id = %request_id,
                             operation_id = %operation_id,
@@ -1407,7 +1655,7 @@ impl App {
                                 0
                             };
                             let state = self
-                                .collection_state
+                                .workspace_state
                                 .request_states
                                 .get_mut(&request_id)
                                 .expect("请求状态已在处理消息前确认存在");
@@ -1438,7 +1686,7 @@ impl App {
                                 "后台请求失败"
                             );
                             let state = self
-                                .collection_state
+                                .workspace_state
                                 .request_states
                                 .get_mut(&request_id)
                                 .expect("请求状态已在处理消息前确认存在");
@@ -1453,7 +1701,7 @@ impl App {
                     };
                     if let Some(status) = status_message {
                         if let Some(state) =
-                            self.collection_state.request_states.get_mut(&request_id)
+                            self.workspace_state.request_states.get_mut(&request_id)
                         {
                             state.message = Some(status.clone());
                         }
@@ -1473,9 +1721,19 @@ impl App {
             "处理键盘操作"
         );
 
+        if self.prompt.is_some() {
+            self.handle_prompt_key(key);
+            return;
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
+            self.request_quit();
             tracing::debug!("通过 Ctrl+C 请求退出");
+            return;
+        }
+
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            self.save_current_request();
             return;
         }
 
@@ -1503,8 +1761,13 @@ impl App {
         if self.preview_state.editor.is_some()
             || self.preview_state.file_editor.is_some()
             || self.preview_state.variable_editor.is_some()
+            || self.preview_state.url_editor.is_some()
         {
-            self.handle_body_editor_key(key);
+            if self.preview_state.url_editor.is_some() {
+                self.handle_url_editor_key(key);
+            } else {
+                self.handle_body_editor_key(key);
+            }
             return;
         }
 
@@ -1519,20 +1782,9 @@ impl App {
             return;
         }
 
-        if self.collection_menu_open {
-            match key.code {
-                KeyCode::Esc => self.close_collection_menu(),
-                KeyCode::Up | KeyCode::Char('k') => self.move_collection_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_collection_selection(1),
-                KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_collection(),
-                _ => {}
-            }
-            return;
-        }
-
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                self.should_quit = true;
+                self.request_quit();
                 tracing::debug!("通过快捷键请求退出");
             }
             KeyCode::Tab => {
@@ -1545,8 +1797,8 @@ impl App {
             }
             KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
             KeyCode::Char('v') => self.open_variables(),
-            KeyCode::Char('c') => self.open_collection_menu(),
             KeyCode::Char('o') => self.open_response_menu(),
+            KeyCode::Delete if self.focus == Focus::Requests => self.request_delete(),
             KeyCode::Left if self.focus == Focus::Preview => self.move_preview_tab(-1),
             KeyCode::Right if self.focus == Focus::Preview => self.move_preview_tab(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
@@ -1559,7 +1811,7 @@ impl App {
     fn handle_enter(&mut self) {
         tracing::debug!(focus = ?self.focus, "处理 Enter 操作");
         match self.focus {
-            Focus::Collection => self.open_collection_menu(),
+            Focus::Requests if self.add_request_selected() => self.create_draft_request(),
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
@@ -1572,7 +1824,6 @@ impl App {
 
     fn move_focused(&mut self, direction: isize) {
         match self.focus {
-            Focus::Collection => self.move_collection_selection(direction),
             Focus::Requests => self.move_request(direction),
             Focus::Preview => {
                 self.preview_state.scroll.move_by(direction);
@@ -1581,100 +1832,23 @@ impl App {
         }
     }
 
-    pub(crate) fn open_collection_menu(&mut self) {
-        self.commit_active_editors();
-        self.close_response_menu();
-        self.dialog = None;
-        self.focus = Focus::Collection;
-        self.selected_collection = self
-            .collections
-            .iter()
-            .position(|choice| choice.path == self.config_path)
-            .unwrap_or(0);
-        self.collection_menu_open = true;
-    }
-
-    pub(crate) fn close_collection_menu(&mut self) {
-        self.collection_menu_open = false;
-    }
-
-    pub(crate) fn move_collection_selection(&mut self, direction: isize) {
-        let count = self.collections.len();
-        if count == 0 {
-            return;
-        }
-        self.selected_collection =
-            (self.selected_collection as isize + direction).rem_euclid(count as isize) as usize;
-    }
-
-    pub(crate) fn choose_collection(&mut self, index: usize) {
-        if index >= self.collections.len() {
-            return;
-        }
-        self.selected_collection = index;
-        self.activate_selected_collection();
-    }
-
-    fn activate_selected_collection(&mut self) {
-        self.collection_menu_open = false;
-        let Some(choice) = self.collections.get(self.selected_collection).cloned() else {
-            return;
-        };
-        if choice.path == self.config_path {
-            return;
-        }
-        if self
-            .collection_state
-            .request_states
-            .values()
-            .any(|state| state.status == RequestStatus::Sending)
-        {
-            self.status = self.text().collection_switch_blocked().to_string();
-            return;
-        }
-
-        self.persist_request_edits();
-        let target = if let Some(session) = self.collection_sessions.remove(&choice.path) {
-            session
-        } else {
-            match crate::config::load(&choice.path) {
-                Ok(config) => CollectionSession::new(config, choice.path.clone(), self.text()),
-                Err(error) => {
-                    self.status = self.text().collection_load_failed(&error.to_string());
-                    return;
-                }
-            }
-        };
-        let previous_path = self.config_path.clone();
-        let previous = CollectionSession {
-            config: std::mem::replace(&mut self.config, target.config),
-            config_path: std::mem::replace(&mut self.config_path, target.config_path),
-            requests_state: std::mem::replace(&mut self.requests_state, target.requests_state),
-            preview_state: std::mem::replace(&mut self.preview_state, target.preview_state),
-            response_state: std::mem::replace(&mut self.response_state, target.response_state),
-            collection_state: std::mem::replace(
-                &mut self.collection_state,
-                target.collection_state,
-            ),
-            status: std::mem::replace(&mut self.status, target.status),
-        };
-        self.collection_sessions.insert(previous_path, previous);
-        self.dialog = None;
-        self.focus = Focus::Requests;
-    }
-
     pub(crate) fn move_request(&mut self, delta: isize) {
-        let count = self.config.requests.len();
-        if count == 0 {
-            tracing::debug!("接口列表为空，忽略移动操作");
-            return;
-        }
+        let count = self.config.requests.len().saturating_add(1);
         let current = self.requests_state.selected_request % count;
         let next = (current as isize + delta).rem_euclid(count as isize) as usize;
-        self.select_request(next);
+        if next == self.config.requests.len() {
+            self.commit_active_editors();
+            self.requests_state.selected_request = next;
+            self.focus = Focus::Requests;
+        } else {
+            self.select_request(next);
+        }
     }
 
     pub(crate) fn move_preview_tab(&mut self, direction: isize) {
+        if !self.has_current_request() {
+            return;
+        }
         let tab = match direction {
             value if value < 0 => self.preview_state.active_tab.previous(),
             value if value > 0 => self.preview_state.active_tab.next(),
@@ -1690,6 +1864,9 @@ impl App {
     }
 
     pub(crate) fn activate_preview_tab(&mut self, tab: PreviewTab) {
+        if !self.has_current_request() {
+            return;
+        }
         if self.editing_preview_tab() == Some(tab) {
             return;
         }
@@ -1713,6 +1890,7 @@ impl App {
             Some(Dialog::Params(dialog)) if tab == PreviewTab::Params => dialog.add_row(),
             _ => return,
         }
+        self.mark_current_dirty();
         tracing::debug!(tab = ?tab, "通过请求标签新增字段");
     }
 
@@ -1798,6 +1976,10 @@ impl App {
     }
 
     pub(crate) fn send_current_request(&mut self) {
+        if !self.has_current_request() || self.current_effective_request().url.trim().is_empty() {
+            self.status = self.text().request_url_required().to_string();
+            return;
+        }
         tracing::debug!(request_id = %self.current_request().id, "触发发送当前请求");
         self.commit_active_editors();
         let effective_method = self.current_effective_request().method;
@@ -1836,7 +2018,7 @@ impl App {
         );
         let message = self.text().request_started(&resolved.method, &display_url);
         let state = self
-            .collection_state
+            .workspace_state
             .request_states
             .entry(request_id.clone())
             .or_default();
@@ -1918,6 +2100,89 @@ fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
     url
 }
 
+fn normalized_request_path(value: &str) -> Option<PathBuf> {
+    let mut path = PathBuf::from(value.trim());
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return None;
+    }
+    if path.extension().is_none() {
+        path.set_extension("http");
+    }
+    if path.extension().and_then(|value| value.to_str()) != Some("http")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    Some(path)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn serialize_request(request: &ApiRequest) -> String {
+    let mut metadata = vec![format!("# @name {}", request.name)];
+    if !request.description.is_empty() {
+        metadata.push(format!("# @description {}", request.description));
+    }
+    let mut command = vec![format!(
+        "curl --request {} --url {}",
+        request.method,
+        shell_quote(&request.url)
+    )];
+    for (name, value) in &request.headers {
+        command.push(format!(
+            "  --header {}",
+            shell_quote(&format!("{name}: {value}"))
+        ));
+    }
+    for part in &request.query_parts {
+        let option = match part {
+            BodyPart::Raw(_) => "--data-raw",
+            BodyPart::UrlEncoded(_) => "--data-urlencode",
+        };
+        command.push(format!(
+            "  {option} {}",
+            shell_quote(crate::template::body_part_value(part))
+        ));
+    }
+    if !request.query_parts.is_empty() {
+        command.push("  --get".to_string());
+    }
+    for part in &request.body_parts {
+        let option = match part {
+            BodyPart::Raw(_) => "--data-raw",
+            BodyPart::UrlEncoded(_) => "--data-urlencode",
+        };
+        command.push(format!(
+            "  {option} {}",
+            shell_quote(crate::template::body_part_value(part))
+        ));
+    }
+    for (name, value) in &request.form {
+        command.push(format!(
+            "  --form-string {}",
+            shell_quote(&format!("{name}={value}"))
+        ));
+    }
+    for file in &request.files {
+        let mut value = format!("{}=@{}", file.field, file.path);
+        if let Some(content_type) = &file.content_type {
+            value.push_str(&format!(";type={content_type}"));
+        }
+        if let Some(filename) = &file.filename {
+            value.push_str(&format!(";filename={filename}"));
+        }
+        command.push(format!("  --form {}", shell_quote(&value)));
+    }
+    format!("{}\n{}\n", metadata.join("\n"), command.join(" \\\n"))
+}
+
 pub(crate) fn key_kind(code: KeyCode) -> &'static str {
     match code {
         KeyCode::Char(_) => "字符键",
@@ -1929,938 +2194,5 @@ pub(crate) fn key_kind(code: KeyCode) -> &'static str {
         KeyCode::Backspace => "退格",
         KeyCode::Delete => "删除",
         _ => "其他按键",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::*;
-    use crate::{
-        config::{ResponseExtract, load},
-        http::ResponseData,
-        settings::GlobalConfig,
-    };
-
-    #[test]
-    fn successful_response_extracts_session_variables_without_losing_old_values() {
-        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        let request_id = config.requests[0].id.clone();
-        config.requests[0].extracts = vec![
-            ResponseExtract {
-                variable: "task_id".to_string(),
-                path: "data.taskId".to_string(),
-            },
-            ResponseExtract {
-                variable: "unchanged".to_string(),
-                path: "data.missing".to_string(),
-            },
-        ];
-        let mut app = App::new(
-            config,
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.collection_state
-            .variables
-            .insert("unchanged".to_string(), "old-value".to_string());
-        let state = app
-            .collection_state
-            .request_states
-            .get_mut(&request_id)
-            .expect("请求状态应存在");
-        state.status = RequestStatus::Sending;
-        state.operation_id = Some("extract-test".to_string());
-        app.sender
-            .send(AppMessage::RequestFinished {
-                request_id: request_id.clone(),
-                operation_id: "extract-test".to_string(),
-                result: Ok(ResponseData {
-                    status: 200,
-                    reason: "OK".to_string(),
-                    headers: Vec::new(),
-                    body: r#"{"data":{"taskId":"task-001"}}"#.to_string(),
-                    body_bytes: br#"{"data":{"taskId":"task-001"}}"#.to_vec(),
-                    elapsed_ms: 8,
-                }),
-            })
-            .expect("测试消息应可发送");
-
-        app.poll_messages();
-
-        assert_eq!(app.collection_state.variables["task_id"], "task-001");
-        assert_eq!(app.collection_state.variables["unchanged"], "old-value");
-        assert_eq!(app.request_status(&request_id), RequestStatus::Success);
-        assert!(app.status.contains("1 field not extracted"));
-    }
-
-    #[test]
-    fn failed_http_response_does_not_extract_variables() {
-        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        let request_id = config.requests[0].id.clone();
-        config.requests[0].extracts = vec![ResponseExtract {
-            variable: "task_id".to_string(),
-            path: "data.taskId".to_string(),
-        }];
-        let mut app = App::new(
-            config,
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.collection_state
-            .variables
-            .insert("task_id".to_string(), "old-value".to_string());
-        let state = app
-            .collection_state
-            .request_states
-            .get_mut(&request_id)
-            .expect("请求状态应存在");
-        state.status = RequestStatus::Sending;
-        state.operation_id = Some("failed-extract-test".to_string());
-        app.sender
-            .send(AppMessage::RequestFinished {
-                request_id: request_id.clone(),
-                operation_id: "failed-extract-test".to_string(),
-                result: Ok(ResponseData {
-                    status: 500,
-                    reason: "Internal Server Error".to_string(),
-                    headers: Vec::new(),
-                    body: r#"{"data":{"taskId":"new-value"}}"#.to_string(),
-                    body_bytes: br#"{"data":{"taskId":"new-value"}}"#.to_vec(),
-                    elapsed_ms: 8,
-                }),
-            })
-            .expect("测试消息应可发送");
-
-        app.poll_messages();
-
-        assert_eq!(app.collection_state.variables["task_id"], "old-value");
-        assert_eq!(app.request_status(&request_id), RequestStatus::Failed);
-    }
-
-    #[test]
-    fn keeps_the_latest_response_for_each_request_during_the_session() {
-        let config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        let first_id = config.requests[0].id.clone();
-        let second_id = config.requests[1].id.clone();
-        let mut app = App::new(
-            config,
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-
-        assert_eq!(app.request_status(&first_id), RequestStatus::NotSent);
-        assert_eq!(app.request_status(&second_id), RequestStatus::NotSent);
-
-        let first_state = RequestRuntimeState::from_response(ResponseData {
-            status: 200,
-            reason: "OK".to_string(),
-            headers: Vec::new(),
-            body: "first".to_string(),
-            body_bytes: b"first".to_vec(),
-            elapsed_ms: 1,
-        });
-        app.collection_state
-            .request_states
-            .insert(first_id.clone(), first_state);
-
-        app.select_request(1);
-        assert!(app.current_response().is_none());
-        assert_eq!(app.request_status(&first_id), RequestStatus::Success);
-
-        app.select_request(0);
-        assert_eq!(
-            app.current_response()
-                .map(|response| response.body.as_str()),
-            Some("first")
-        );
-
-        let latest_state = RequestRuntimeState {
-            status: RequestStatus::Failed,
-            error: Some("latest failure".to_string()),
-            ..Default::default()
-        };
-        app.collection_state
-            .request_states
-            .insert(first_id.clone(), latest_state);
-        assert!(app.current_response().is_none());
-        assert_eq!(app.current_error(), Some("latest failure"));
-        assert_eq!(app.request_status(&first_id), RequestStatus::Failed);
-    }
-
-    #[test]
-    fn tab_cycles_through_collection_actions_and_send() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus, Focus::Variables);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus, Focus::Preview);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus, Focus::Actions);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus, Focus::Collection);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus, Focus::Requests);
-    }
-
-    #[test]
-    fn switching_collections_restores_each_session_state() {
-        let path = PathBuf::from("mock/.postui");
-        let config = load(&path).expect("mock 请求配置应当可以加载");
-        let mut app = App::new(config.clone(), path.clone(), GlobalConfig::default());
-        let second_path = PathBuf::from("mock/second-collection");
-        let mut second_config = config;
-        second_config.name = "Second".to_string();
-        app.collections.push(CollectionChoice {
-            name: "second-collection".to_string(),
-            path: second_path.clone(),
-        });
-        app.collection_sessions.insert(
-            second_path.clone(),
-            CollectionSession::new(second_config, second_path, app.text()),
-        );
-        app.collection_state
-            .variables
-            .insert("session_value".to_string(), "first".to_string());
-
-        app.choose_collection(1);
-        assert_eq!(app.config.name, "Second");
-        app.collection_state
-            .variables
-            .insert("session_value".to_string(), "second".to_string());
-        app.choose_collection(0);
-
-        assert_eq!(app.config_path, path);
-        assert_eq!(
-            app.collection_state.variables.get("session_value"),
-            Some(&"first".to_string())
-        );
-    }
-
-    #[test]
-    fn only_get_and_post_requests_can_be_sent() {
-        assert!(supports_method("GET"));
-        assert!(supports_method("post"));
-        assert!(!supports_method("PUT"));
-        assert!(!supports_method("DELETE"));
-
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.select_request(4);
-        app.send_current_request();
-
-        assert_eq!(
-            app.request_status(&app.current_request().id),
-            RequestStatus::NotSent
-        );
-        assert!(app.status.contains("GET") && app.status.contains("POST"));
-    }
-
-    #[test]
-    fn variable_dialog_applies_session_values_without_changing_defaults() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let default = app.config.variables["host"].default.clone();
-
-        app.open_variables();
-        let Dialog::Variables(dialog) = app.dialog.as_mut().expect("变量窗口应当打开")
-        else {
-            panic!("应打开变量窗口")
-        };
-        let row = dialog
-            .rows
-            .iter_mut()
-            .find(|row| row.name == "host")
-            .expect("host 变量应存在");
-        row.value = "override.example.test".to_string();
-        app.apply_dialog();
-
-        assert_eq!(
-            app.collection_state.variables["host"],
-            "override.example.test"
-        );
-        assert_eq!(app.config.variables["host"].default, default);
-    }
-
-    #[test]
-    fn request_editor_changes_resolved_values_without_rewriting_raw_config() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let raw = app.config.headers["X-PostUI-Collection"].clone();
-
-        app.open_headers();
-        let index = match app.dialog.as_ref().expect("Header 编辑器应当打开") {
-            Dialog::Headers(dialog) => {
-                let index = dialog
-                    .rows
-                    .iter()
-                    .position(|row| row.name == "X-PostUI-Collection")
-                    .expect("应显示集合 Header");
-                assert_eq!(dialog.rows[index].value, "{{collection_name}}");
-                assert_eq!(dialog.rows[index].source, HeaderSource::Collection);
-                index
-            }
-            _ => panic!("应打开 Header 编辑器"),
-        };
-        app.click_header_row(index, HeaderField::Value, true);
-        app.handle_dialog_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        for character in "session-value".chars() {
-            app.handle_dialog_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
-        }
-        app.handle_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert_eq!(
-            app.current_resolved_request().headers["X-PostUI-Collection"],
-            "session-value"
-        );
-        assert_eq!(raw, "{{collection_name}}");
-        assert_eq!(app.config.headers["X-PostUI-Collection"], raw);
-        assert!(
-            app.collection_state.request_edits[&app.current_request().id]
-                .headers
-                .iter()
-                .any(|row| row.name == "X-PostUI-Collection"
-                    && row.source == HeaderSource::Request)
-        );
-    }
-
-    #[test]
-    fn body_canvas_edits_the_rendered_json_without_rewriting_raw_config() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.select_request(2);
-        let raw = app.current_request().body_parts.clone();
-
-        let preview = app.body_json();
-        assert!(preview.contains("\"taskId\": \"task-from-config\""));
-        assert!(!preview.contains("{{task_id}}"));
-
-        let value_offset = preview.find("task-from-config").unwrap();
-        let before = &preview[..value_offset];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count();
-        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-        let column = before[line_start..].chars().count();
-        app.start_body_edit(line, column);
-        app.preview_state.editor.as_mut().unwrap().input.value = "edited".to_string();
-        app.commit_body_value();
-
-        assert!(
-            app.current_resolved_request()
-                .raw_body
-                .unwrap()
-                .contains("\"taskId\": \"edited\"")
-        );
-        assert_eq!(app.current_request().body_parts, raw);
-    }
-
-    #[test]
-    fn body_canvas_preserves_unedited_template_values() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.collection_state
-            .variables
-            .insert("first".to_string(), "one".to_string());
-        app.collection_state
-            .variables
-            .insert("second".to_string(), "two".to_string());
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .body_parts = vec![BodyPart::Raw(
-            r#"{"changed":"{{first}}","kept":"{{second}}"}"#.to_string(),
-        )];
-
-        let preview = app.body_json();
-        let offset = preview.find("one").expect("预览应包含已解析变量");
-        let before = &preview[..offset];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count();
-        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-        let column = terminal_width(&before[line_start..]);
-        app.start_body_edit(line, column);
-        app.preview_state
-            .editor
-            .as_mut()
-            .expect("标量编辑器应打开")
-            .input
-            .value = "updated".to_string();
-
-        app.commit_body_value();
-
-        let BodyPart::Raw(stored) = &app.collection_state.request_edits[&request_id].body_parts[0]
-        else {
-            panic!("编辑后的 JSON 应保存为原始请求体")
-        };
-        assert!(stored.contains(r#""changed": "updated""#));
-        assert!(stored.contains(r#""kept": "{{second}}""#));
-    }
-
-    #[test]
-    fn switching_requests_commits_the_active_body_editor() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.select_request(2);
-
-        let preview = app.body_json();
-        let value_offset = preview.find("task-from-config").unwrap();
-        let before = &preview[..value_offset];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count();
-        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-        let column = before[line_start..].chars().count();
-        app.start_body_edit(line, column);
-        app.preview_state.editor.as_mut().unwrap().input.value = "temporary-body".to_string();
-
-        app.select_request(0);
-        app.select_request(2);
-
-        assert!(app.body_json().contains("\"taskId\": \"temporary-body\""));
-    }
-
-    #[test]
-    fn switching_requests_commits_active_header_and_param_inputs() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.select_request(1);
-
-        app.open_headers();
-        let header_index = match app.dialog.as_ref().unwrap() {
-            Dialog::Headers(dialog) => dialog
-                .rows
-                .iter()
-                .position(|row| row.name == "X-Debug-Token")
-                .unwrap(),
-            _ => unreachable!(),
-        };
-        app.click_header_row(header_index, HeaderField::Value, true);
-        let Dialog::Headers(dialog) = app.dialog.as_mut().unwrap() else {
-            unreachable!()
-        };
-        dialog.editor.as_mut().unwrap().value = "temporary-header".to_string();
-
-        app.select_request(0);
-        app.select_request(1);
-        assert_eq!(
-            app.current_resolved_request().headers["X-Debug-Token"],
-            "temporary-header"
-        );
-
-        app.open_params();
-        app.click_param_row(0, HeaderField::Value, true);
-        let Dialog::Params(dialog) = app.dialog.as_mut().unwrap() else {
-            unreachable!()
-        };
-        dialog.editor.as_mut().unwrap().value = "temporary-param".to_string();
-
-        app.select_request(0);
-        app.select_request(1);
-        app.open_params();
-        let Dialog::Params(dialog) = app.dialog.as_ref().unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(dialog.rows[0].value, "temporary-param");
-    }
-
-    #[test]
-    fn urlencoded_body_preview_is_human_readable() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let index = app
-            .config
-            .requests
-            .iter()
-            .position(|request| request.id.ends_with("08-form.http"))
-            .expect("应包含 URL 编码表单请求");
-        app.select_request(index);
-
-        let preview = app.body_preview();
-        assert!(preview.contains("name=文档接口测试"));
-        assert!(preview.contains("note=multipart note"));
-        assert!(!preview.contains("%E6"));
-        assert!(
-            app.current_resolved_request()
-                .raw_body
-                .unwrap()
-                .contains("name=%E6%96%87")
-        );
-    }
-
-    #[test]
-    fn urlencoded_query_editor_uses_decoded_values_without_losing_its_type() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let index = app
-            .config
-            .requests
-            .iter()
-            .position(|request| request.id.ends_with("02-search.http"))
-            .expect("应包含查询请求");
-        app.select_request(index);
-        app.open_params();
-
-        let Dialog::Params(dialog) = app.dialog.as_ref().expect("参数编辑器应当打开")
-        else {
-            panic!("应打开参数编辑器");
-        };
-        assert_eq!(dialog.rows[0].value, "{{search_term}}");
-        assert_eq!(
-            template::resolve_text(&dialog.rows[0].value, &app.collection_state.variables),
-            "文档审查 & edge"
-        );
-        assert_eq!(dialog.rows[0].part_type, Some(BodyPartSource::UrlEncoded));
-    }
-
-    #[test]
-    fn params_editor_reopens_from_the_current_session_state() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let index = app
-            .config
-            .requests
-            .iter()
-            .position(|request| request.id.ends_with("02-search.http"))
-            .expect("应包含查询请求");
-        app.select_request(index);
-        let request_id = app.current_request().id.clone();
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .query_parts = vec![BodyPart::Raw("term=plain value".to_string())];
-
-        app.open_params();
-
-        let Dialog::Params(dialog) = app.dialog.as_ref().expect("参数编辑器应当打开")
-        else {
-            panic!("应打开参数编辑器");
-        };
-        assert_eq!(dialog.rows[0].value, "plain value");
-        assert_eq!(dialog.rows[0].part_type, Some(BodyPartSource::Raw));
-    }
-
-    #[test]
-    fn opening_inline_tables_preserves_templates_and_query_flags() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        let edits = app
-            .collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在");
-        edits.headers.push(HeaderRow {
-            name: "X-Template".to_string(),
-            value: "{{host}}".to_string(),
-            enabled: true,
-            source: HeaderSource::Request,
-        });
-        edits.query_parts = vec![
-            BodyPart::Raw("flag".to_string()),
-            BodyPart::Raw("empty=".to_string()),
-            BodyPart::Raw("value={{host}}".to_string()),
-        ];
-
-        app.open_headers();
-        app.select_request(1);
-        app.select_request(0);
-        assert!(
-            app.collection_state.request_edits[&request_id]
-                .headers
-                .iter()
-                .any(|row| row.name == "X-Template" && row.value == "{{host}}")
-        );
-
-        app.open_params();
-        app.select_request(1);
-        assert_eq!(
-            app.collection_state.request_edits[&request_id].query_parts,
-            vec![
-                BodyPart::Raw("flag".to_string()),
-                BodyPart::Raw("empty=".to_string()),
-                BodyPart::Raw("value={{host}}".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn opening_a_query_flag_value_without_changes_preserves_the_flag() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .query_parts = vec![BodyPart::Raw("flag".to_string())];
-
-        app.open_params();
-        app.click_param_row(0, HeaderField::Value, true);
-        app.commit_active_editors();
-
-        assert_eq!(
-            app.collection_state.request_edits[&request_id].query_parts,
-            vec![BodyPart::Raw("flag".to_string())]
-        );
-    }
-
-    #[test]
-    fn unchanged_collection_header_does_not_become_a_request_override() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.open_headers();
-
-        app.click_header_row(0, HeaderField::Value, true);
-        app.commit_active_editors();
-
-        assert!(
-            app.collection_state.request_edits[&request_id]
-                .headers
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn clicking_an_inline_cell_keeps_its_editor_open() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.open_headers();
-        app.click_header_row(0, HeaderField::Value, true);
-
-        let Dialog::Headers(dialog) = app.dialog.as_ref().expect("Header 表格应当打开")
-        else {
-            panic!("应打开 Header 表格")
-        };
-        assert!(dialog.editor.is_some());
-    }
-
-    #[test]
-    fn response_menu_commits_and_releases_an_inline_editor() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.collection_state.request_states.insert(
-            request_id.clone(),
-            RequestRuntimeState::from_response(ResponseData {
-                status: 200,
-                reason: "OK".to_string(),
-                headers: Vec::new(),
-                body: "ok".to_string(),
-                body_bytes: b"ok".to_vec(),
-                elapsed_ms: 1,
-            }),
-        );
-        app.open_headers();
-        let row = 0;
-        app.click_header_row(row, HeaderField::Value, true);
-        let Dialog::Headers(dialog) = app.dialog.as_mut().expect("Header 表格应当打开")
-        else {
-            panic!("应打开 Header 表格")
-        };
-        dialog.editor.as_mut().expect("单元格编辑器应打开").value =
-            "committed-before-menu".to_string();
-
-        app.open_response_menu();
-
-        assert!(app.response_state.menu_open);
-        assert!(app.dialog.is_none());
-        assert!(
-            app.collection_state.request_edits[&request_id]
-                .headers
-                .iter()
-                .any(|row| row.value == "committed-before-menu")
-        );
-    }
-
-    #[test]
-    fn non_json_body_does_not_open_the_scalar_editor() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .body_parts = vec![BodyPart::Raw("plain text".to_string())];
-
-        app.start_body_edit(0, 0);
-
-        assert!(app.body_editor().is_none());
-        assert_eq!(
-            app.collection_state.request_edits[&request_id].body_parts,
-            vec![BodyPart::Raw("plain text".to_string())]
-        );
-    }
-
-    #[test]
-    fn body_value_conversion_preserves_the_original_json_type() {
-        assert_eq!(
-            convert_json_scalar(JsonScalarKind::String, "42").as_deref(),
-            Some("\"42\"")
-        );
-        assert_eq!(
-            convert_json_scalar(JsonScalarKind::Number, "42.5").as_deref(),
-            Some("42.5")
-        );
-        assert_eq!(
-            convert_json_scalar(JsonScalarKind::Boolean, "false").as_deref(),
-            Some("false")
-        );
-        assert!(convert_json_scalar(JsonScalarKind::Number, "nope").is_none());
-        assert!(convert_json_scalar(JsonScalarKind::Boolean, "yes").is_none());
-    }
-
-    #[test]
-    fn blurring_an_invalid_body_value_restores_the_previous_body() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .body_parts = vec![BodyPart::Raw(r#"{"count": 1}"#.to_string())];
-        let before = app.body_json();
-        let offset = before.find('1').unwrap();
-        let prefix = &before[..offset];
-        let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-        let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-        let column = prefix[line_start..].chars().count();
-        app.start_body_edit(line, column);
-        app.preview_state.editor.as_mut().unwrap().input.value = "invalid".to_string();
-
-        app.commit_active_editors();
-
-        assert!(app.body_editor().is_none());
-        assert_eq!(app.body_json(), before);
-        assert_eq!(app.status, "Invalid value for the selected JSON type");
-    }
-
-    #[test]
-    fn request_status_message_follows_the_selected_request() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let first_id = app.current_request().id.clone();
-        let state = app
-            .collection_state
-            .request_states
-            .get_mut(&first_id)
-            .expect("请求状态应存在");
-        state.status = RequestStatus::Sending;
-        state.operation_id = Some("status-test".to_string());
-        state.message = Some("Sending first request".to_string());
-        app.status = "Sending first request".to_string();
-
-        app.select_request(1);
-        assert_eq!(app.status, "Ready");
-        app.sender
-            .send(AppMessage::RequestFinished {
-                request_id: first_id.clone(),
-                operation_id: "status-test".to_string(),
-                result: Ok(ResponseData {
-                    status: 200,
-                    reason: "OK".to_string(),
-                    headers: Vec::new(),
-                    body: "{}".to_string(),
-                    body_bytes: b"{}".to_vec(),
-                    elapsed_ms: 5,
-                }),
-            })
-            .expect("测试消息应可发送");
-        app.poll_messages();
-        assert_eq!(app.status, "Ready");
-
-        app.select_request(0);
-        assert!(app.status.contains("200"));
-    }
-
-    #[test]
-    fn params_include_and_update_query_embedded_in_the_url() {
-        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        config.requests[0].url = "https://example.test/items?first=one&flag#result".to_string();
-        let mut app = App::new(
-            config,
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-
-        app.open_params();
-        let Dialog::Params(dialog) = app.dialog.as_mut().expect("参数编辑器应打开") else {
-            panic!("应打开参数编辑器");
-        };
-        assert_eq!(dialog.rows.len(), 2);
-        assert!(dialog.rows.iter().all(|row| row.source == ParamSource::Url));
-        dialog.rows[0].value = "updated".to_string();
-        app.persist_request_edits();
-
-        assert_eq!(
-            app.current_effective_request().url,
-            "https://example.test/items?first=updated&flag#result"
-        );
-    }
-
-    #[test]
-    fn params_add_row_uses_the_existing_payload_source() {
-        let mut config = load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载");
-        config.requests[0].query_parts.clear();
-        config.requests[0].body_parts.clear();
-        config.requests[0]
-            .form
-            .insert("field".to_string(), "value".to_string());
-        let mut app = App::new(
-            config,
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        app.open_params();
-        app.add_preview_row(PreviewTab::Params);
-
-        let Dialog::Params(dialog) = app.dialog.as_ref().expect("参数编辑器应打开") else {
-            panic!("应打开参数编辑器");
-        };
-        assert_eq!(
-            dialog.rows.last().map(|row| row.source),
-            Some(ParamSource::Form)
-        );
-    }
-
-    #[test]
-    fn urlencoded_body_is_editable_from_params() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let index = app
-            .config
-            .requests
-            .iter()
-            .position(|request| request.id.ends_with("08-form.http"))
-            .expect("应包含 URL 编码表单请求");
-        app.select_request(index);
-        app.open_params();
-        let Dialog::Params(dialog) = app.dialog.as_mut().expect("参数编辑器应打开") else {
-            panic!("应打开参数编辑器");
-        };
-        assert!(
-            dialog
-                .rows
-                .iter()
-                .all(|row| row.source == ParamSource::Body)
-        );
-        dialog.rows[0].value = "changed value".to_string();
-        app.persist_request_edits();
-
-        assert!(
-            app.current_resolved_request()
-                .raw_body
-                .expect("应有请求体")
-                .contains("changed%20value")
-        );
-    }
-
-    #[test]
-    fn json_scalar_hit_testing_excludes_keys_and_containers() {
-        let document = r#"{"name": 1, "enabled": true}"#;
-        assert!(json_scalar_at(document, 2).is_none());
-        assert!(json_scalar_at(document, 0).is_none());
-        assert_eq!(
-            json_scalar_at(document, document.find('1').unwrap()).map(|(_, kind, _)| kind),
-            Some(JsonScalarKind::Number)
-        );
-    }
-
-    #[test]
-    fn resolved_request_merges_collection_and_request_headers_case_insensitively() {
-        let mut app = App::new(
-            load(Path::new("mock/.postui")).expect("mock 请求配置应当可以加载"),
-            PathBuf::from("mock/.postui"),
-            GlobalConfig::default(),
-        );
-        let request_id = app.current_request().id.clone();
-        app.config
-            .headers
-            .insert("X-Collection-Test".to_string(), "collection".to_string());
-        app.collection_state
-            .request_edits
-            .get_mut(&request_id)
-            .expect("请求编辑状态应存在")
-            .headers
-            .push(HeaderRow {
-                name: "x-collection-test".to_string(),
-                value: "request".to_string(),
-                enabled: true,
-                source: HeaderSource::Request,
-            });
-
-        let resolved = app.current_resolved_request();
-        assert_eq!(resolved.headers.len(), app.current_header_count());
-        assert_eq!(
-            resolved
-                .headers
-                .get("x-collection-test")
-                .map(String::as_str),
-            Some("request")
-        );
     }
 }

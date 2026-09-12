@@ -224,12 +224,12 @@ pub(super) fn draw_headers_dialog(
                 let name = if editing && dialog.field == HeaderField::Name {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(name_width))
                 } else {
-                    crate::template::resolve_text(&row.name, &app.collection_state.variables)
+                    crate::template::resolve_text(&row.name, &app.workspace_state.variables)
                 };
                 let value = if editing && dialog.field == HeaderField::Value {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(value_width))
                 } else {
-                    crate::template::resolve_text(&row.value, &app.collection_state.variables)
+                    crate::template::resolve_text(&row.value, &app.workspace_state.variables)
                 };
                 let name = if editing && dialog.field == HeaderField::Name {
                     name
@@ -327,9 +327,9 @@ pub(super) fn draw_params_dialog(
             .map(|(index, row)| {
                 let is_selected = dialog.selected == index;
                 let mut key =
-                    crate::template::resolve_text(&row.key, &app.collection_state.variables);
+                    crate::template::resolve_text(&row.key, &app.workspace_state.variables);
                 let mut value =
-                    crate::template::resolve_text(&row.value, &app.collection_state.variables);
+                    crate::template::resolve_text(&row.value, &app.workspace_state.variables);
                 if is_selected {
                     if let Some(editor) = dialog.editor.as_ref() {
                         match dialog.field {

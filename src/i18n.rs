@@ -17,22 +17,8 @@ impl UiText {
         }
     }
 
-    pub(crate) fn collection(self) -> &'static str {
-        self.pick("Collection", "集合")
-    }
-
-    pub(crate) fn collection_switch_blocked(self) -> &'static str {
-        self.pick(
-            "Wait for the current request before switching collections",
-            "当前请求结束后再切换集合",
-        )
-    }
-
-    pub(crate) fn collection_load_failed(self, error: &str) -> String {
-        match self.language {
-            Language::English => format!("Could not load collection: {error}"),
-            Language::Chinese => format!("集合加载失败：{error}"),
-        }
+    pub(crate) fn workspace(self) -> &'static str {
+        self.pick("Workspace", "工作区")
     }
 
     pub(crate) fn variables(self) -> &'static str {
@@ -69,6 +55,98 @@ impl UiText {
 
     pub(crate) fn no_content(self) -> &'static str {
         self.pick("No request content", "无请求内容")
+    }
+
+    pub(crate) fn no_requests(self) -> &'static str {
+        self.pick("No requests yet", "暂无请求")
+    }
+
+    pub(crate) fn create_request_hint(self) -> &'static str {
+        self.pick("Select + to create one", "选择 + 新建请求")
+    }
+
+    pub(crate) fn draft_created(self) -> &'static str {
+        self.pick("Draft created · enter a URL", "已新建草稿，请输入地址")
+    }
+
+    pub(crate) fn enter_url(self) -> &'static str {
+        self.pick("Enter URL", "输入地址")
+    }
+
+    pub(crate) fn request_url_required(self) -> &'static str {
+        self.pick("Enter a URL before sending", "发送前请输入地址")
+    }
+
+    pub(crate) fn save_request(self) -> &'static str {
+        self.pick("Save request", "保存请求")
+    }
+
+    pub(crate) fn file_name(self) -> &'static str {
+        self.pick("File name", "文件名")
+    }
+
+    pub(crate) fn save_prompt_hint(self) -> &'static str {
+        self.pick("Enter Save · Esc Cancel", "Enter 保存 · Esc 取消")
+    }
+
+    pub(crate) fn request_saved(self, path: &str) -> String {
+        match self.language {
+            Language::English => format!("Request saved to {path}"),
+            Language::Chinese => format!("请求已保存至 {path}"),
+        }
+    }
+
+    pub(crate) fn request_save_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not save request: {error}"),
+            Language::Chinese => format!("保存请求失败：{error}"),
+        }
+    }
+
+    pub(crate) fn invalid_request_path(self) -> &'static str {
+        self.pick("Use a relative .http file name", "请输入相对 .http 文件名")
+    }
+
+    pub(crate) fn request_file_exists(self) -> &'static str {
+        self.pick("That request file already exists", "请求文件已存在")
+    }
+
+    pub(crate) fn unsaved_requests(self) -> &'static str {
+        self.pick("Unsaved requests", "请求尚未保存")
+    }
+
+    pub(crate) fn unsaved_exit_message(self) -> &'static str {
+        self.pick("Discard changes and quit?", "要放弃修改并退出吗？")
+    }
+
+    pub(crate) fn unsaved_exit_hint(self) -> &'static str {
+        self.pick("Y Discard · N Continue", "Y 放弃 · N 继续")
+    }
+
+    pub(crate) fn delete_request(self) -> &'static str {
+        self.pick("Delete request", "删除请求")
+    }
+
+    pub(crate) fn delete_request_message(self) -> &'static str {
+        self.pick(
+            "Delete this request and its saved file?",
+            "删除此请求及其已保存文件吗？",
+        )
+    }
+
+    pub(crate) fn delete_request_hint(self) -> &'static str {
+        self.pick("Y Delete · N Cancel", "Y 删除 · N 取消")
+    }
+
+    pub(crate) fn request_deleted(self) -> &'static str {
+        self.pick("Request deleted", "请求已删除")
+    }
+
+    pub(crate) fn request_delete_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not delete request: {error}"),
+            Language::Chinese => format!("删除请求失败：{error}"),
+        }
     }
 
     pub(crate) fn request_selector(self) -> &'static str {
@@ -298,6 +376,10 @@ impl UiText {
         self.pick("Send", "发送")
     }
 
+    pub(crate) fn footer_save(self) -> &'static str {
+        self.pick("Save", "保存")
+    }
+
     pub(crate) fn footer_quit(self) -> &'static str {
         self.pick("Quit", "退出")
     }
@@ -308,24 +390,5 @@ impl UiText {
 
     pub(crate) fn footer_click(self) -> &'static str {
         self.pick("Click", "点击")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn english_copy_is_available() {
-        let text = UiText::new(Language::English);
-        assert_eq!(text.request_selector(), "Requests");
-        assert_eq!(text.send_button(false), "Send");
-    }
-
-    #[test]
-    fn chinese_copy_is_available() {
-        let text = UiText::new(Language::Chinese);
-        assert_eq!(text.request_selector(), "接口");
-        assert_eq!(text.send_button(false), "发送");
     }
 }

@@ -10,6 +10,8 @@ repository = "https://github.com/refiget/postui"
 
 [dependencies]
 anyhow = "1.0"
+blake3 = "1.8"
+cacache = { version = "13.1", default-features = false, features = ["tokio-runtime"] }
 crossterm = "0.28"
 ratatui = "0.29"
 ratatui-interact = { version = "0.2.0", default-features = false }

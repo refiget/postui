@@ -17,6 +17,8 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(format!(" {}  │  ", text.request_editor())),
             Span::styled("r", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.footer_send())),
+            Span::styled("Ctrl+S", Style::default().fg(theme.accent)),
+            Span::raw(format!(" {}  │  ", text.footer_save())),
             Span::styled("q", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.footer_quit())),
             Span::styled(text.footer_mouse(), Style::default().fg(theme.accent)),
@@ -93,7 +95,7 @@ pub(super) fn draw_header(
         content_area,
     );
 
-    if !send_button.is_empty() {
+    if !send_button.is_empty() && app.has_current_request() {
         let request_status = app.request_status(&app.current_request().id);
         let loading = request_status == RequestStatus::Sending;
         let label = if loading {
@@ -116,7 +118,7 @@ pub(super) fn draw_header(
 pub(super) fn draw_request_list(
     frame: &mut Frame<'_>,
     area: Rect,
-    collection_label_area: Rect,
+    workspace_label_area: Rect,
     variables_button_area: Rect,
     list_area: Rect,
     scrollbar_area: Rect,
@@ -136,47 +138,29 @@ pub(super) fn draw_request_list(
         area,
     );
 
-    if !collection_label_area.is_empty() {
+    if !workspace_label_area.is_empty() {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(collection_label_area);
-        let marker = if app.collection_menu_open {
-            "▴"
-        } else {
-            "▾"
-        };
-        let collection_name = app
-            .collections
-            .get(app.selected_collection)
-            .map(|choice| choice.name.as_str())
-            .unwrap_or(app.config.name.as_str());
-        let fixed_width = Line::from(format!("◆   {}", marker)).width();
-        let collection = format!(
-            "◆ {} {}",
+            .split(workspace_label_area);
+        let fixed_width = Line::from("◆ ").width();
+        let workspace = format!(
+            "◆ {}",
             truncate(
-                collection_name,
-                usize::from(collection_label_area.width).saturating_sub(fixed_width)
-            ),
-            marker,
+                &app.config.name,
+                usize::from(workspace_label_area.width).saturating_sub(fixed_width)
+            )
         );
-        let style = if focus.collection_focused() {
-            Style::default()
-                .fg(theme.background)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.selection)
-                .add_modifier(Modifier::BOLD)
-        };
+        let style = Style::default()
+            .fg(theme.accent)
+            .bg(theme.selection)
+            .add_modifier(Modifier::BOLD);
         frame.render_widget(
-            Paragraph::new(text.collection())
+            Paragraph::new(text.workspace())
                 .style(Style::default().fg(theme.muted).bg(theme.surface)),
             rows[0],
         );
-        frame.render_widget(Paragraph::new(collection).style(style), rows[1]);
+        frame.render_widget(Paragraph::new(workspace).style(style), rows[1]);
     }
     if !variables_button_area.is_empty() {
         let mut state = ButtonState::enabled();
@@ -188,11 +172,34 @@ pub(super) fn draw_request_list(
         );
     }
 
+    let list_height = list_area.height.saturating_sub(3);
+    let request_list_area = Rect::new(list_area.x, list_area.y, list_area.width, list_height);
+    let add_area = Rect::new(
+        list_area.x,
+        list_area.y.saturating_add(list_height),
+        list_area.width,
+        list_area.height.saturating_sub(list_height),
+    );
     let items = app
         .config
         .requests
         .iter()
-        .map(|request| request_item(request, theme, list_area.width))
+        .map(|request| {
+            let mut item = request_item(request, theme, request_list_area.width);
+            if app.is_request_dirty(&request.id) {
+                item = ListItem::new(Line::from(vec![
+                    Span::styled("● ", Style::default().fg(theme.warning)),
+                    Span::styled(
+                        truncate(
+                            &request.name,
+                            usize::from(request_list_area.width).saturating_sub(4),
+                        ),
+                        Style::default().fg(theme.text),
+                    ),
+                ]));
+            }
+            item
+        })
         .collect::<Vec<_>>();
     let list = List::new(items)
         .style(Style::default().bg(theme.surface).fg(theme.text))
@@ -203,18 +210,40 @@ pub(super) fn draw_request_list(
         )
         .highlight_symbol("› ");
     let mut state = ListState::default();
-    if !app.config.requests.is_empty() {
+    if app.has_current_request() {
         state.select(Some(app.requests_state.selected_request));
     }
-    frame.render_stateful_widget(list, list_area, &mut state);
+    frame.render_stateful_widget(list, request_list_area, &mut state);
     draw_scrollbar(
         frame,
         scrollbar_area,
         app.config.requests.len(),
-        usize::from(list_area.height),
+        usize::from(request_list_area.height),
         state.offset(),
         theme,
     );
+    if !add_area.is_empty() {
+        let focused = app.focus == Focus::Requests && app.add_request_selected();
+        let style = Style::default()
+            .fg(if focused { theme.accent } else { theme.muted })
+            .bg(if focused {
+                theme.selection
+            } else {
+                theme.surface
+            })
+            .add_modifier(if focused {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        frame.render_widget(
+            Paragraph::new("+")
+                .alignment(Alignment::Center)
+                .style(style)
+                .block(Block::default().borders(Borders::ALL).border_style(style)),
+            add_area,
+        );
+    }
 }
 
 pub(super) fn request_item(

@@ -13,7 +13,6 @@ usage() {
   --prefix DIR       安装目录，默认是 ~/.local/share/postui
   --archive-url URL  本地没有二进制时使用的发布包地址
   --skip-init        安装后不执行 postui init
-  --force-config     用发布包中的配置覆盖已存在的配置
   -h, --help         显示帮助
 
 环境变量:
@@ -42,49 +41,6 @@ copy_file() {
         return
     fi
     install -m "$mode" "$source_path" "$destination_path"
-}
-
-copy_if_needed() {
-    source_path=$1
-    destination_path=$2
-    mode=$3
-
-    if [ -e "$destination_path" ]; then
-        [ -f "$destination_path" ] || die "安装路径不是文件: $destination_path"
-        if [ "$force_config" -ne 1 ]; then
-            return
-        fi
-    fi
-    copy_file "$source_path" "$destination_path" "$mode"
-}
-
-copy_directory_contents() {
-    source_path=$1
-    destination_path=$2
-    overwrite=$3
-
-    [ -d "$source_path" ] || die "发布目录中没有目录: $source_path"
-    if [ -e "$destination_path" ] && [ ! -d "$destination_path" ]; then
-        die "安装路径不是目录: $destination_path"
-    fi
-    mkdir -p "$destination_path"
-
-    for source_entry in "$source_path"/* "$source_path"/.[!.]* "$source_path"/..?*; do
-        [ -e "$source_entry" ] || continue
-        entry_name=${source_entry##*/}
-        destination_entry=$destination_path/$entry_name
-        if [ -d "$source_entry" ]; then
-            if [ -e "$destination_entry" ] && [ ! -d "$destination_entry" ]; then
-                die "安装路径不是目录: $destination_entry"
-            fi
-            (copy_directory_contents "$source_entry" "$destination_entry" "$overwrite")
-        elif [ -f "$source_entry" ]; then
-            if [ -e "$destination_entry" ] && [ "$overwrite" -ne 1 ]; then
-                continue
-            fi
-            (copy_file "$source_entry" "$destination_entry" 644)
-        fi
-    done
 }
 
 download_package() {
@@ -127,7 +83,6 @@ fi
 
 archive_url=${POSTUI_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}
 skip_init=${POSTUI_SKIP_INIT:-0}
-force_config=0
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 install_dir=${POSTUI_INSTALL_DIR:-$data_home/postui}
 package_dir=
@@ -154,10 +109,6 @@ while [ "$#" -gt 0 ]; do
             ;;
         --skip-init)
             skip_init=1
-            shift
-            ;;
-        --force-config)
-            force_config=1
             shift
             ;;
         -h|--help)
@@ -188,14 +139,7 @@ if [ -z "$package_dir" ]; then
 fi
 
 binary_path=$package_dir/postui.bin
-config_path=$package_dir/config.yaml
-project_config_path=$package_dir/.postui/config.yaml
-collections_dir=$package_dir/.postui/collections
-
 [ -f "$binary_path" ] || die "发布目录中没有 postui.bin: $package_dir"
-[ -f "$config_path" ] || die "发布目录中没有 config.yaml: $package_dir"
-[ -f "$project_config_path" ] || die "发布目录中没有 .postui/config.yaml: $package_dir"
-[ -d "$collections_dir" ] || die "发布目录中没有 .postui/collections: $package_dir"
 command_exists install || die "系统没有 install 命令"
 command_exists cp || die "系统没有 cp 命令"
 command_exists mkdir || die "系统没有 mkdir 命令"
@@ -217,14 +161,6 @@ EOF
     chmod 755 "$install_dir/postui"
 fi
 
-copy_if_needed "$config_path" "$install_dir/config.yaml" 644
-copy_directory_contents "$package_dir/.postui" "$install_dir/.postui" "$force_config"
-if [ -d "$package_dir/test_files" ]; then
-    copy_directory_contents "$package_dir/test_files" "$install_dir/test_files" 0
-fi
-if [ -d "$package_dir/themes" ]; then
-    copy_directory_contents "$package_dir/themes" "$install_dir/themes" 0
-fi
 
 if [ "$skip_init" -eq 0 ]; then
     if [ -z "${SHELL:-}" ]; then

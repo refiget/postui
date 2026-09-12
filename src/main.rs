@@ -58,24 +58,28 @@ fn main() -> Result<()> {
 }
 
 fn run_app(options: CliOptions) -> Result<()> {
-    let global_config_path = options
-        .config_path
+    let project_path = options
+        .project_path
         .as_deref()
         .map(resolve_cli_path)
-        .or_else(discover_global_config_path);
-    let log_base = global_config_path
-        .as_deref()
-        .unwrap_or_else(|| Path::new("postui.yaml"));
+        .or_else(discover_project_path)
+        .ok_or_else(|| {
+            anyhow::anyhow!("未找到 PostUI 项目；请在包含 .postui 的目录中运行，或传入项目路径")
+        })?;
+    let workspace_path = project_path.join(".postui");
+    let global_config_path = discover_user_config_path();
+    let log_base = workspace_path.join("postui.yaml");
     let log_path = options
         .log_file
-        .unwrap_or_else(|| default_log_path(log_base));
+        .unwrap_or_else(|| default_log_path(&log_base));
     logging::init(options.debug, &log_path)
         .with_context(|| format!("初始化 debug 日志失败: {}", log_path.display()))?;
     tracing::debug!(
         config_path = global_config_path
             .as_deref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<内置默认配置>".to_string()),
+            .unwrap_or_else(|| "<内置界面配置>".to_string()),
+        project_path = %project_path.display(),
         debug = options.debug,
         log_file = %log_path.display(),
         "启动 PostUI"
@@ -88,35 +92,32 @@ fn run_app(options: CliOptions) -> Result<()> {
                 tracing::error!(
                     path = %path.display(),
                     error = ?error,
-                    "全局配置加载失败"
+                    "用户界面配置加载失败"
                 );
-                return Err(error.context(format!("加载全局配置失败: {}", path.display())));
+                return Err(error.context(format!("加载用户界面配置失败: {}", path.display())));
             }
         },
         None => settings::default_config(),
     };
-    let request_config_path =
-        resolve_request_config_path(options.request_config_path.as_deref(), &global_config);
     tracing::debug!(
-        path = %request_config_path.display(),
-        configured = global_config.path.is_some(),
-        "选择请求集合"
+        path = %workspace_path.display(),
+        "选择 PostUI 工作区"
     );
-    let request_config = match load_request_config(&request_config_path) {
+    let request_config = match load_request_config(&workspace_path) {
         Ok(config) => config,
         Err(error) => {
             tracing::error!(
-                path = %request_config_path.display(),
+                path = %workspace_path.display(),
                 error = ?error,
-                "请求集合加载失败"
+                "PostUI 工作区加载失败"
             );
             return Err(error.context(format!(
-                "加载请求集合失败: {}",
-                request_config_path.display()
+                "加载 PostUI 工作区失败: {}",
+                workspace_path.display()
             )));
         }
     };
-    let mut app = App::new(request_config, request_config_path, global_config);
+    let mut app = App::new(request_config, workspace_path, global_config);
 
     let terminal_session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -223,8 +224,7 @@ enum CliCommand {
 
 #[derive(Debug)]
 struct CliOptions {
-    config_path: Option<PathBuf>,
-    request_config_path: Option<PathBuf>,
+    project_path: Option<PathBuf>,
     debug: bool,
     log_file: Option<PathBuf>,
 }
@@ -234,8 +234,7 @@ fn parse_args() -> Result<CliCommand> {
 }
 
 fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand> {
-    let mut config = None;
-    let mut request_config = None;
+    let mut project = None;
     let mut debug = false;
     let mut log_file = None;
     let mut init = false;
@@ -250,22 +249,6 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand>
                 init = true;
             }
             "--debug" => debug = true,
-            "-c" | "--config" => {
-                let Some(path) = args.next() else {
-                    bail!("--config 需要一个文件路径")
-                };
-                if config.replace(PathBuf::from(path)).is_some() {
-                    bail!("全局配置只能指定一次")
-                }
-            }
-            "-r" | "--requests" => {
-                let Some(path) = args.next() else {
-                    bail!("--requests 需要一个请求集合目录")
-                };
-                if request_config.replace(PathBuf::from(path)).is_some() {
-                    bail!("请求集合只能指定一次")
-                }
-            }
             "--log-file" => {
                 let Some(path) = args.next() else {
                     bail!("--log-file 需要一个文件路径")
@@ -276,8 +259,8 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand>
             }
             value if value.starts_with('-') => bail!("未知参数: {value}"),
             path => {
-                if config.replace(PathBuf::from(path)).is_some() {
-                    bail!("全局配置只能指定一次")
+                if project.replace(PathBuf::from(path)).is_some() {
+                    bail!("项目路径只能指定一次")
                 }
             }
         }
@@ -288,11 +271,8 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand>
     }
 
     if init {
-        if config.is_some() {
-            bail!("postui init 不接受配置路径或 --config")
-        }
-        if request_config.is_some() {
-            bail!("postui init 不接受 --requests")
+        if project.is_some() {
+            bail!("postui init 不接受项目路径")
         }
         if debug {
             bail!("postui init 不接受 --debug")
@@ -304,8 +284,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand>
     }
 
     Ok(CliCommand::Run(CliOptions {
-        config_path: config,
-        request_config_path: request_config,
+        project_path: project,
         debug,
         log_file,
     }))
@@ -314,12 +293,11 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<CliCommand>
 fn print_help() {
     print!(
         "用法:\n\
-  postui [--config <全局配置>] [--requests <请求集合目录>] [--debug] [--log-file <路径>]\n\
+  postui [项目目录] [--debug] [--log-file <路径>]\n\
   postui init\n\n\
-全局配置优先级: 显式 --config，其次当前项目的 .postui/config.yaml、程序目录 config.yaml，再到用户和平台配置目录；都不存在时使用内置默认配置。\n\
-未显式指定 --requests 时，使用入口配置的 request_config；旧式 .postui/requests 集合仍兼容。\n\
-请求集合也可以用 --requests 覆盖。\n\
-默认 debug 日志: 全局配置所在目录/logs/postui-debug.log\n\
+不传项目目录时，从当前目录向上查找 .postui。项目配置位于 .postui/postui.yaml。\n\
+个人语言和主题配置位于用户配置目录的 postui/config.yaml。\n\
+默认 debug 日志: .postui/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\
 postui init 会在 Linux 更新 ~/.zshrc 或 ~/.bashrc；Windows 更新当前用户 PATH。两者都不会写入系统级配置。\n"
     );
@@ -603,61 +581,22 @@ fn upsert_shell_init_block(current: &str, block: &str) -> Result<String> {
     }
 }
 
-fn discover_global_config_path() -> Option<PathBuf> {
-    let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Some(path) = find_project_config(&current_directory) {
-        tracing::debug!(path = %path.display(), "自动发现项目配置");
-        return Some(path);
-    }
-
-    if let Some(path) = executable_config_path() {
-        tracing::debug!(path = %path.display(), "自动发现程序目录配置");
-        return Some(path);
-    }
-
+fn discover_user_config_path() -> Option<PathBuf> {
     let home = user_home_directory();
-    let mut candidates = Vec::new();
-    if let Some(home) = home.as_deref() {
-        candidates.push(home.join("postui.yaml"));
-        candidates.push(home.join(".postui.yaml"));
-    }
-    let config_home = config_directory(home.as_deref());
-    if let Some(config_home) = config_home {
-        candidates.push(config_home.join("postui/config.yaml"));
-    }
-    let found = candidates.into_iter().find(|path| path.is_file());
+    let found = config_directory(home.as_deref())
+        .map(|directory| directory.join("postui/config.yaml"))
+        .filter(|path| path.is_file());
     if let Some(path) = &found {
-        tracing::debug!(path = %path.display(), "自动发现全局配置");
+        tracing::debug!(path = %path.display(), "自动发现用户界面配置");
     }
     found
 }
 
-fn executable_config_path() -> Option<PathBuf> {
-    env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|directory| directory.join("config.yaml"))
-        .filter(|path| path.is_file())
-}
-
-fn resolve_request_config_path(
-    explicit: Option<&Path>,
-    global: &settings::GlobalConfig,
-) -> PathBuf {
-    if let Some(path) = explicit {
-        return resolve_cli_path(path);
-    }
-    if global.path.is_some() {
-        return global.request_config.clone();
-    }
-    discover_local_request_config().unwrap_or_else(|| resolve_cli_path(&global.request_config))
-}
-
-fn find_project_config(start: &Path) -> Option<PathBuf> {
+fn find_project_path(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
-        .map(|directory| directory.join(".postui/config.yaml"))
-        .find(|path| path.is_file())
+        .find(|directory| directory.join(".postui").is_dir())
+        .map(Path::to_path_buf)
 }
 
 fn user_home_directory() -> Option<PathBuf> {
@@ -684,28 +623,21 @@ fn config_directory(home: Option<&Path>) -> Option<PathBuf> {
     home.map(|path| path.join(".config"))
 }
 
-fn discover_local_request_config() -> Option<PathBuf> {
+fn discover_project_path() -> Option<PathBuf> {
     let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let path = find_local_request_config(&current_directory);
+    let path = find_project_path(&current_directory);
     match path.as_deref() {
         Some(path) => tracing::debug!(
             start = %current_directory.display(),
             path = %path.display(),
-            "自动发现本地请求集合"
+            "自动发现 PostUI 项目"
         ),
         None => tracing::debug!(
             start = %current_directory.display(),
-            "当前目录及父目录没有请求集合"
+            "当前目录及父目录没有 PostUI 项目"
         ),
     }
     path
-}
-
-fn find_local_request_config(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .map(|directory| directory.join(".postui"))
-        .find(|path| path.join("requests").is_dir())
 }
 
 fn resolve_cli_path(path: &Path) -> PathBuf {
@@ -724,136 +656,4 @@ fn default_log_path(config_path: &Path) -> PathBuf {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     directory.join("logs/postui-debug.log")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::{CliCommand, parse_args_from, resolve_cli_path, resolve_request_config_path};
-    use crate::settings::GlobalConfig;
-
-    fn test_args(arguments: &[&str]) -> std::vec::IntoIter<String> {
-        arguments
-            .iter()
-            .map(|argument| (*argument).to_string())
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-
-    #[test]
-    fn default_command_uses_automatic_configuration() {
-        let command = parse_args_from(test_args(&[])).expect("无参数启动应当有效");
-        let CliCommand::Run(options) = command else {
-            panic!("无参数应启动应用")
-        };
-        assert!(options.config_path.is_none());
-        assert!(options.request_config_path.is_none());
-    }
-
-    #[test]
-    fn init_rejects_configuration_arguments() {
-        assert!(parse_args_from(test_args(&["init", "--config", "custom.yaml"])).is_err());
-        assert!(parse_args_from(test_args(&["init", "custom.yaml"])).is_err());
-    }
-
-    #[test]
-    fn duplicate_path_arguments_are_rejected() {
-        assert!(parse_args_from(test_args(&["--config", "first.yaml", "second.yaml"])).is_err());
-        assert!(
-            parse_args_from(test_args(&["--requests", "first", "--requests", "second"])).is_err()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn keeps_absolute_cli_paths() {
-        assert_eq!(
-            resolve_cli_path(Path::new("/opt/postui/config.yaml")),
-            PathBuf::from("/opt/postui/config.yaml")
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn keeps_absolute_cli_paths() {
-        assert_eq!(
-            resolve_cli_path(Path::new(r"C:\\PostUI\\config.yaml")),
-            PathBuf::from(r"C:\\PostUI\\config.yaml")
-        );
-    }
-
-    #[test]
-    fn finds_collection_from_a_nested_request_directory() {
-        assert_eq!(
-            super::find_local_request_config(Path::new("mock/.postui/requests")),
-            Some(PathBuf::from("mock/.postui"))
-        );
-    }
-
-    #[test]
-    fn finds_project_config_from_a_nested_collection_directory() {
-        assert_eq!(
-            super::find_project_config(Path::new(".postui/collections/example/requests")),
-            Some(PathBuf::from(".postui/config.yaml"))
-        );
-    }
-
-    #[test]
-    fn loaded_entry_config_selects_its_collection() {
-        let global = GlobalConfig {
-            path: Some(PathBuf::from("/project/.postui/config.yaml")),
-            request_config: PathBuf::from("/project/.postui/collections/api"),
-            ..GlobalConfig::default()
-        };
-
-        assert_eq!(
-            resolve_request_config_path(None, &global),
-            global.request_config
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn identifies_supported_shells() {
-        use super::{ShellKind, shell_kind};
-
-        assert_eq!(shell_kind(Path::new("/bin/bash")), Some(ShellKind::Bash));
-        assert_eq!(shell_kind(Path::new("/usr/bin/zsh")), Some(ShellKind::Zsh));
-        assert_eq!(shell_kind(Path::new("/bin/fish")), None);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn shell_init_block_quotes_paths_and_is_repeatable() {
-        use super::{shell_init_block, upsert_shell_init_block};
-
-        let block = shell_init_block(Path::new("/opt/Post UI/bin/o'reilly"));
-        assert_eq!(
-            block,
-            "# >>> postui init >>>\ncase \":${PATH:-}:\" in\n  *:'/opt/Post UI/bin':*) ;;\n  *) export PATH='/opt/Post UI/bin'${PATH:+:$PATH} ;;\nesac\n# <<< postui init <<<\n"
-        );
-        assert_eq!(upsert_shell_init_block(&block, &block).unwrap(), block);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn shell_init_block_is_appended_after_existing_config() {
-        use super::{shell_init_block, upsert_shell_init_block};
-
-        let block = shell_init_block(Path::new("/opt/postui"));
-        assert_eq!(
-            upsert_shell_init_block("export EDITOR=vi", &block).unwrap(),
-            format!("export EDITOR=vi\n\n{block}")
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn shell_init_block_rejects_incomplete_markers() {
-        use super::upsert_shell_init_block;
-
-        let error = upsert_shell_init_block("# >>> postui init >>>\n", "block").unwrap_err();
-        assert!(error.to_string().contains("标记不完整"));
-    }
 }

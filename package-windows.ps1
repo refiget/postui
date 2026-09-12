@@ -2,8 +2,6 @@
 
 [CmdletBinding()]
 param(
-    [string]$ConfigPath,
-    [string]$CollectionPath,
     [string]$OutputDir
 )
 
@@ -49,22 +47,11 @@ function Get-CargoPath {
 
 try {
     $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-    if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-        $ConfigPath = Join-Path $projectRoot "config.yaml"
-    }
-    if ([string]::IsNullOrWhiteSpace($CollectionPath)) {
-        $CollectionPath = Join-Path $projectRoot ".postui"
-    }
     if ([string]::IsNullOrWhiteSpace($OutputDir)) {
         $OutputDir = Join-Path $projectRoot "打包区"
     }
 
-    $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
-    $CollectionPath = [IO.Path]::GetFullPath($CollectionPath)
     $OutputDir = [IO.Path]::GetFullPath($OutputDir)
-    Require-File $ConfigPath "全局配置文件"
-    Require-File (Join-Path $CollectionPath "config.yaml") "项目入口配置文件"
-    Require-Directory (Join-Path $CollectionPath "collections") "请求集合目录"
     Require-File (Join-Path $projectRoot "install.ps1") "PowerShell 安装脚本"
 
     $cargoPath = Get-CargoPath
@@ -91,16 +78,10 @@ try {
     $packageRoot = Join-Path $script:TempRoot "postui-windows-amd64"
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $packageRoot "postui.exe") -Force
-    Copy-Item -LiteralPath $ConfigPath -Destination (Join-Path $packageRoot "config.yaml") -Force
-    Copy-Item -LiteralPath $CollectionPath `
-        -Destination (Join-Path $packageRoot ".postui") -Recurse -Force
-    Get-ChildItem -LiteralPath (Join-Path $packageRoot ".postui") `
-        -Filter "requests.cache.json" -File -Recurse |
-        Remove-Item -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot "install.ps1") -Destination (Join-Path $packageRoot "install.ps1") -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination (Join-Path $packageRoot "README.md") -Force
 
-    foreach ($optionalDirectory in @("docs", "test_files", "themes")) {
+    foreach ($optionalDirectory in @("docs")) {
         $sourceDirectory = Join-Path $projectRoot $optionalDirectory
         if (Test-Path -LiteralPath $sourceDirectory -PathType Container) {
             Copy-Item -LiteralPath $sourceDirectory -Destination (Join-Path $packageRoot $optionalDirectory) -Recurse -Force

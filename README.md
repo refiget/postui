@@ -45,71 +45,27 @@ Windows 发布包：
 
 ## 配置
 
-### 全局配置
-
-复制配置模板：
-
-```bash
-cp config.example.yaml config.yaml
-```
-
-全局配置示例：
-
-```yaml
-request_config: .postui/collections/example
-language: en
-theme: gruvbox-dark
-
-highlight:
-  enabled: true
-  syntax: base16-mocha.dark
-  variable: "#d3869b"
-```
-
-字段：
-
-| 字段 | 值 |
-| --- | --- |
-| `request_config` | 请求集合目录 |
-| `language` | `en` 或 `zh` |
-| `theme` | `gruvbox-dark`、`ocean`、`nord`、`mono` |
-| `theme_file` | 自定义主题文件路径 |
-| `highlight.enabled` | 是否启用语法高亮 |
-| `highlight.syntax` | 语法主题名称 |
-| `highlight.variable` | 变量颜色 |
-
-未指定 `--config` 时，配置查找顺序如下：
-
-1. 当前项目及父目录中的 `.postui/config.yaml`。
-2. 程序目录中的 `config.yaml`。
-3. 用户级配置文件。
-
-命令行参数：
-
-```bash
-postui --config ./config.yaml --requests ./.postui/collections/example
-```
-
-### 请求集合
-
-请求集合包含 `config.yaml` 和 `requests/`：
+一个包含 `.postui/` 的目录就是一个工作区：
 
 ```text
 .postui/
-├── config.yaml
-└── collections/
-    └── example/
-        ├── config.yaml
-        └── requests/
-            ├── 01-list.http
-            └── 02-detail.http
+├── postui.yaml
+└── requests/
+    ├── 01-list.http
+    └── 02-detail.http
+test_files/
+temp/
 ```
 
-集合配置示例：
+项目配置 `.postui/postui.yaml`：
 
 ```yaml
 name: 示例接口
-timeout_seconds: 30
+timeout: 30
+
+directories:
+  uploads: test_files
+  downloads: temp
 
 headers:
   Accept: application/json
@@ -120,7 +76,16 @@ variables:
   item_id:
 ```
 
-集合字段：`name`、`timeout_seconds`、`headers`、`variables`、`file_directory`、`download_directory`。
+所有字段都可省略。相对上传和下载目录以项目根目录为基准。在项目目录或子目录运行 `postui` 会自动发现工作区，也可以运行 `postui /path/to/project`。
+
+`requests/` 目录也可以省略。空工作区会正常打开；选择侧栏底部的 `+` 新建临时请求，输入 URL 后可直接发送，按 `Ctrl+S` 保存为 `.postui/requests/*.http`。
+
+个人界面配置位于 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`，Windows 位于 `%APPDATA%\postui\config.yaml`：
+
+```yaml
+language: zh
+theme: ocean
+```
 
 ### 请求文件
 

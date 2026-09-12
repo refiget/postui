@@ -16,7 +16,7 @@ pub(super) struct UiLayout {
     pub(super) header: Rect,
     pub(super) header_content: Rect,
     pub(super) requests: Rect,
-    pub(super) collection_label: Rect,
+    pub(super) workspace_label: Rect,
     pub(super) variables_button: Rect,
     pub(super) request_list: Rect,
     pub(super) request_scrollbar: Rect,
@@ -72,7 +72,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         header: sections[0],
         header_content,
         requests: columns[0],
-        collection_label: sidebar.collection_label,
+        workspace_label: sidebar.workspace_label,
         variables_button: sidebar.variables_button,
         request_list: sidebar.request_list.content,
         request_scrollbar: sidebar.request_list.scrollbar,
@@ -150,7 +150,7 @@ fn sidebar_width(width: u16) -> u16 {
 
 #[derive(Debug, Clone, Copy)]
 struct SidebarLayout {
-    collection_label: Rect,
+    workspace_label: Rect,
     variables_button: Rect,
     request_list: ScrollAreas,
 }
@@ -159,7 +159,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
     let inner = area.inner(Margin::new(1, 1));
     if inner.height < 5 {
         return SidebarLayout {
-            collection_label: Rect::default(),
+            workspace_label: Rect::default(),
             variables_button: Rect::default(),
             request_list: panel_scroll_areas(area),
         };
@@ -189,7 +189,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
         (parts[1], parts[2])
     };
     SidebarLayout {
-        collection_label: parts[0],
+        workspace_label: parts[0],
         variables_button,
         request_list: inner_scroll_areas(request_list),
     }

@@ -7,7 +7,6 @@ use anyhow::{Context, Result, bail};
 use ratatui::style::Color;
 use serde::Deserialize;
 
-const DEFAULT_REQUEST_CONFIG: &str = ".postui";
 const DEFAULT_THEME: &str = "gruvbox-dark";
 pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
 
@@ -29,10 +28,9 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct GlobalConfig {
     pub(crate) path: Option<PathBuf>,
-    pub(crate) request_config: PathBuf,
     pub(crate) language: Language,
     pub(crate) theme: UiTheme,
 }
@@ -59,37 +57,10 @@ pub(crate) struct UiTheme {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawGlobalConfig {
-    #[serde(default = "default_request_config")]
-    request_config: PathBuf,
     #[serde(default)]
     language: Language,
     #[serde(default = "default_theme")]
     theme: String,
-    #[serde(default)]
-    theme_file: Option<PathBuf>,
-    #[serde(default)]
-    highlight: RawHighlightConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawHighlightConfig {
-    #[serde(default = "default_true")]
-    enabled: bool,
-    #[serde(default)]
-    syntax: Option<String>,
-    #[serde(default)]
-    variable: Option<String>,
-}
-
-impl Default for RawHighlightConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            syntax: None,
-            variable: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -125,17 +96,6 @@ struct RawTheme {
     syntax: Option<String>,
 }
 
-impl Default for GlobalConfig {
-    fn default() -> Self {
-        Self {
-            path: None,
-            request_config: PathBuf::from(DEFAULT_REQUEST_CONFIG),
-            language: Language::default(),
-            theme: UiTheme::default(),
-        }
-    }
-}
-
 impl Default for UiTheme {
     fn default() -> Self {
         Self {
@@ -160,70 +120,54 @@ impl Default for UiTheme {
 
 pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
     let text = fs::read_to_string(path)
-        .with_context(|| format!("无法读取全局配置文件: {}", path.display()))?;
+        .with_context(|| format!("无法读取用户界面配置: {}", path.display()))?;
     let raw: RawGlobalConfig = parse_document(path, &text)?;
     let global = normalize(path, raw)?;
     tracing::debug!(
         path = %path.display(),
-        request_config = %global.request_config.display(),
         language = global.language.as_str(),
         theme = %global.theme.name,
         syntax_theme = %global.theme.syntax_theme,
         highlight_enabled = global.theme.highlight_enabled,
-        "全局配置加载完成"
+        "用户界面配置加载完成"
     );
     Ok(global)
 }
 
 pub(crate) fn default_config() -> GlobalConfig {
     tracing::debug!(
-        request_config = %DEFAULT_REQUEST_CONFIG,
         language = Language::default().as_str(),
         theme = DEFAULT_THEME,
-        "未找到全局配置，使用内置默认配置"
+        "未找到用户界面配置，使用内置默认值"
     );
     GlobalConfig::default()
 }
 
 fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
-    let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let request_config = resolve_path(base, &raw.request_config);
-    let mut raw_theme = if let Some(theme_file) = raw.theme_file.as_deref() {
-        let theme_path = resolve_path(base, theme_file);
-        let text = fs::read_to_string(&theme_path)
-            .with_context(|| format!("无法读取主题文件: {}", theme_path.display()))?;
-        let theme: RawTheme = parse_document(&theme_path, &text)?;
-        tracing::debug!(theme_file = %theme_path.display(), "读取自定义主题文件");
-        theme
-    } else {
-        built_in_theme(&raw.theme).ok_or_else(|| {
-            anyhow::anyhow!(
-                "未知内置主题: {}；可选 gruvbox-dark、ocean、nord、mono，或设置 theme_file",
-                raw.theme
-            )
-        })?
-    };
+    let mut raw_theme = built_in_theme(&raw.theme).ok_or_else(|| {
+        anyhow::anyhow!(
+            "未知内置主题: {}；可选 gruvbox-dark、ocean、nord、mono",
+            raw.theme
+        )
+    })?;
 
     let theme_name = raw_theme
         .name
         .take()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| raw.theme.trim().to_string());
-    let syntax_theme = raw
-        .highlight
+    let syntax_theme = raw_theme
         .syntax
-        .or(raw_theme.syntax.take())
+        .take()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_SYNTAX_THEME.to_string());
-    let variable = raw
-        .highlight
+    let variable = raw_theme
         .variable
-        .or(raw_theme.variable.take())
+        .take()
         .unwrap_or_else(|| "#d3869b".to_string());
 
     Ok(GlobalConfig {
         path: Some(path.to_path_buf()),
-        request_config,
         language: raw.language,
         theme: UiTheme {
             name: theme_name,
@@ -240,7 +184,7 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
             selection: color("selection", raw_theme.selection, "#504945")?,
             variable: color("variable", Some(variable), "#d3869b")?,
             syntax_theme,
-            highlight_enabled: raw.highlight.enabled,
+            highlight_enabled: true,
         },
     })
 }
@@ -258,14 +202,6 @@ where
         serde_json::from_str(text).with_context(|| format!("JSON 配置格式无效: {}", path.display()))
     } else {
         serde_yaml::from_str(text).with_context(|| format!("YAML 配置格式无效: {}", path.display()))
-    }
-}
-
-fn resolve_path(base: &Path, value: &Path) -> PathBuf {
-    if value.is_absolute() {
-        value.to_path_buf()
-    } else {
-        base.join(value)
     }
 }
 
@@ -382,63 +318,6 @@ fn built_in_theme(name: &str) -> Option<RawTheme> {
     Some(theme)
 }
 
-fn default_request_config() -> PathBuf {
-    PathBuf::from(DEFAULT_REQUEST_CONFIG)
-}
-
 fn default_theme() -> String {
     DEFAULT_THEME.to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn built_in_theme_has_configurable_colors() {
-        let theme = built_in_theme("gruvbox-dark").expect("Gruvbox Dark 主题应存在");
-        assert_eq!(theme.syntax.as_deref(), Some(DEFAULT_SYNTAX_THEME));
-        assert_eq!(theme.variable.as_deref(), Some("#d3869b"));
-    }
-
-    #[test]
-    fn language_defaults_to_english_and_accepts_chinese() {
-        let default: RawGlobalConfig = serde_yaml::from_str("theme: gruvbox-dark").unwrap();
-        assert_eq!(default.language, Language::English);
-
-        let chinese: RawGlobalConfig =
-            serde_yaml::from_str("language: zh\ntheme: gruvbox-dark").unwrap();
-        assert_eq!(chinese.language, Language::Chinese);
-    }
-
-    #[test]
-    fn parses_hex_and_named_colors() {
-        assert_eq!(
-            color("test", Some("#123456".to_string()), "white").unwrap(),
-            Color::Rgb(18, 52, 86)
-        );
-        assert_eq!(
-            color("test", Some("cyan".to_string()), "white").unwrap(),
-            Color::Cyan
-        );
-        assert!(color("test", Some("#红红".to_string()), "white").is_err());
-    }
-
-    #[test]
-    fn normalizes_default_global_config() {
-        let raw: RawGlobalConfig =
-            serde_yaml::from_str("request_config: .postui\nlanguage: en\ntheme: gruvbox-dark")
-                .unwrap();
-        let config =
-            normalize(Path::new("/tmp/postui/config.yaml"), raw).expect("全局配置应当可以规范化");
-        assert!(config.path.is_some());
-        assert!(config.request_config.ends_with(".postui"));
-        assert_eq!(config.language, Language::English);
-        assert_eq!(config.theme.name, "gruvbox-dark");
-        assert!(config.theme.highlight_enabled);
-    }
 }

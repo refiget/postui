@@ -1,14 +1,5 @@
-# PostUI 全局配置示例。
-# 复制为根目录 config.yaml 后，再按本地项目修改 request_config。
-request_config: .postui/collections/example
-
-# 可选 en 或 zh。
+# 可选的用户界面配置。
+# Linux: ${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml
+# Windows: %APPDATA%\postui\config.yaml
 language: en
-
-# 可选 gruvbox-dark、ocean、nord、mono。
 theme: gruvbox-dark
-
-highlight:
-  enabled: true
-  syntax: base16-mocha.dark
-  variable: "#d3869b"

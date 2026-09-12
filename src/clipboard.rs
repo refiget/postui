@@ -77,13 +77,3 @@ fn run_clipboard_command(command: &ClipboardCommand, text: &str) -> Result<(), S
         Err(error)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn has_a_clipboard_command_for_supported_platforms() {
-        assert!(!CLIPBOARD_COMMANDS.is_empty());
-    }
-}

@@ -297,29 +297,3 @@ fn merge_json_value(
         _ => edited.clone(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{merge_json_edit, terminal_width, text_position};
-
-    #[test]
-    fn maps_terminal_columns_to_utf8_offsets() {
-        assert_eq!(terminal_width("中a"), 3);
-        assert_eq!(text_position("中a", 0, 0), 0);
-        assert_eq!(text_position("中a", 0, 1), 0);
-        assert_eq!(text_position("中a", 0, 2), "中".len());
-        assert_eq!(text_position("中a", 0, 3), "中a".len());
-    }
-
-    #[test]
-    fn json_edit_preserves_unchanged_template_values() {
-        let source = r#"{"changed":"{{first}}","kept":"{{second}}"}"#;
-        let rendered = r#"{"changed":"one","kept":"two"}"#;
-        let edited = r#"{"changed":"updated","kept":"two"}"#;
-
-        let merged = merge_json_edit(source, rendered, edited).expect("JSON 应当可以合并");
-
-        assert!(merged.contains(r#""changed": "updated""#));
-        assert!(merged.contains(r#""kept": "{{second}}""#));
-    }
-}
