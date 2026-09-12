@@ -28,7 +28,7 @@ pub(super) struct UiLayout {
     pub(super) send_button: Rect,
     pub(super) response: Rect,
     pub(super) response_menu_button: Rect,
-    pub(super) footer: Rect,
+    pub(super) response_zoom_button: Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,13 +42,42 @@ pub(super) fn screen(area: Rect) -> UiLayout {
     screen_with_summary(area, 2)
 }
 
+pub(super) fn response_zoom(area: Rect) -> UiLayout {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_height(area.height)),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    let (header_content, send_button) = header_parts(sections[0]);
+    let response = sections[1];
+    UiLayout {
+        header: sections[0],
+        header_content,
+        requests: Rect::default(),
+        workspace_selector: Rect::default(),
+        variables_button: Rect::default(),
+        request_list: Rect::default(),
+        request_scrollbar: Rect::default(),
+        preview: Rect::default(),
+        preview_details: Rect::default(),
+        preview_summary: Rect::default(),
+        preview_tabs: Rect::default(),
+        preview_content: Rect::default(),
+        send_button,
+        response,
+        response_menu_button: response_action_buttons(response).0,
+        response_zoom_button: response_action_buttons(response).1,
+    }
+}
+
 pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height(area.height)),
             Constraint::Min(0),
-            Constraint::Length(u16::from(area.height >= 8)),
         ])
         .split(area);
     let columns = Layout::default()
@@ -66,7 +95,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
     let (header_content, send_button) = header_parts(sections[0]);
     let preview_details = main[0].inner(Margin::new(1, 1));
     let preview = preview_sections(preview_details, summary_height);
-    let response_menu_button = response_menu_button(main[1]);
+    let (response_menu_button, response_zoom_button) = response_action_buttons(main[1]);
 
     UiLayout {
         header: sections[0],
@@ -84,7 +113,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         send_button,
         response: main[1],
         response_menu_button,
-        footer: sections[2],
+        response_zoom_button,
     }
 }
 
@@ -215,17 +244,21 @@ fn header_parts(area: Rect) -> (Rect, Rect) {
     (columns[0], button)
 }
 
-fn response_menu_button(area: Rect) -> Rect {
+fn response_action_buttons(area: Rect) -> (Rect, Rect) {
     if area.width <= 2 || area.height <= 1 {
-        return Rect::default();
+        return (Rect::default(), Rect::default());
     }
     let inner = area.inner(Margin::new(1, 1));
     if inner.is_empty() {
-        return Rect::default();
+        return (Rect::default(), Rect::default());
     }
     let width = 10.min(area.width.saturating_sub(2));
     if width == 0 {
-        return Rect::default();
+        return (Rect::default(), Rect::default());
     }
-    Rect::new(inner.right().saturating_sub(width), inner.y, width, 1)
+    let x = inner.right().saturating_sub(width);
+    (
+        Rect::new(x, inner.y, width, 1),
+        Rect::new(x, inner.y.saturating_add(1), width, 1),
+    )
 }

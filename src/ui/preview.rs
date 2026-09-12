@@ -10,8 +10,12 @@ pub(super) fn draw_preview(
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
+    let focus = FocusStyles::new(app.focus, theme);
     if !app.has_current_request() {
-        frame.render_widget(panel_block(text.request_editor(), area, theme), area);
+        frame.render_widget(
+            panel_block(text.request_editor(), area, theme).border_style(focus.preview_border()),
+            area,
+        );
         let empty = area.inner(Margin::new(2, 2));
         frame.render_widget(
             Paragraph::new(Span::styled(text.no_requests(), label_style(theme)))
@@ -43,10 +47,8 @@ pub(super) fn draw_preview(
         theme,
         app.animation_frame,
     ));
-    let focus = FocusStyles::new(app.focus, theme);
     frame.render_widget(
-        focused_panel_block(title, area, theme, focus.preview_focused())
-            .border_style(focus.preview_border()),
+        panel_block(title, area, theme).border_style(focus.preview_border()),
         area,
     );
     draw_preview_summary(frame, summary, app, request_status);
@@ -179,19 +181,16 @@ pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut line = Vec::new();
     for (index, tab) in tabs.into_iter().enumerate() {
         if index > 0 {
-            line.push(Span::styled(" │", Style::default().fg(theme.muted)));
+            line.push(Span::raw(" "));
         }
         let active = app.preview_state.active_tab == tab;
         let style = if active {
             Style::default()
-                .fg(theme.text)
+                .fg(theme.background)
                 .bg(theme.accent)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::default()
-                .fg(theme.text)
-                .bg(theme.primary)
                 .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text).bg(theme.selection)
         };
         line.push(Span::styled(preview_tab_label(tab, app), style));
     }

@@ -102,7 +102,10 @@ variables:
 ```yaml
 language: zh
 theme: ocean
+max_response_display_bytes: 16777216
 ```
+
+`max_response_display_bytes` 默认是 `16777216`（16 MiB），控制响应体最多交给格式化和界面展示的字节数，可直接覆盖 10 MiB 级响应。界面只为当前视口生成文本行，不会等待完整响应完成格式化；超过上限时原始响应仍可通过 Response 的 Actions 下载。
 
 ### 请求文件
 

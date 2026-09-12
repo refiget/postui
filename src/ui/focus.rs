@@ -1,4 +1,4 @@
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 
 use crate::{app::Focus, settings::UiTheme};
 
@@ -13,38 +13,55 @@ impl<'a> FocusStyles<'a> {
     }
 
     pub(super) fn sidebar_border(&self) -> Style {
-        self.panel(matches!(self.focus, Focus::Requests | Focus::Variables))
+        self.panel(matches!(
+            self.focus,
+            Focus::Requests | Focus::WorkspaceButton | Focus::Variables
+        ))
     }
 
-    pub(super) fn sidebar_focused(&self) -> bool {
-        matches!(self.focus, Focus::Requests | Focus::Variables)
+    pub(super) fn header_border(&self) -> Style {
+        self.panel(matches!(self.focus, Focus::Header | Focus::SendButton))
     }
 
     pub(super) fn preview_border(&self) -> Style {
-        self.panel(matches!(self.focus, Focus::Preview | Focus::Actions))
+        self.panel(self.focus == Focus::Preview)
     }
 
-    pub(super) fn preview_focused(&self) -> bool {
-        matches!(self.focus, Focus::Preview | Focus::Actions)
+    pub(super) fn response_border(&self) -> Style {
+        self.panel(matches!(
+            self.focus,
+            Focus::Response | Focus::ResponseActions | Focus::ResponseZoom
+        ))
     }
 
-    pub(super) fn request_selection(&self) -> Color {
-        if self.focus == Focus::Requests {
-            self.theme.selection
-        } else {
-            self.theme.surface
-        }
+    pub(super) fn request_selection(&self) -> Style {
+        selection_style(self.theme, self.focus == Focus::Requests)
     }
 
     pub(super) fn variables_focused(&self) -> bool {
         self.focus == Focus::Variables
     }
 
+    pub(super) fn workspace_focused(&self) -> bool {
+        self.focus == Focus::WorkspaceButton
+    }
+
     fn panel(&self, active: bool) -> Style {
-        Style::default().fg(if active {
-            self.theme.accent
+        if active {
+            Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
-            self.theme.muted
-        })
+            Style::default().fg(self.theme.muted)
+        }
+    }
+}
+
+pub(super) fn selection_style(theme: &UiTheme, focused: bool) -> Style {
+    let style = Style::default().bg(theme.selection);
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
     }
 }

@@ -34,17 +34,27 @@ pub(super) fn response_sections(area: Rect, menu_button: Rect) -> ResponseLayout
         status: Rect::new(inner.x, inner.y, status_width, 1),
         body: inner_scroll_areas(Rect::new(
             inner.x,
-            inner.y.saturating_add(1),
+            inner.y.saturating_add(2),
             inner.width,
-            inner.height.saturating_sub(1),
+            inner.height.saturating_sub(2),
         )),
     }
 }
 
-pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect, app: &App) {
+pub(super) fn draw_response(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    menu_button: Rect,
+    zoom_button: Rect,
+    app: &App,
+) {
     let theme = &app.global_config.theme;
     let text = app.text();
-    frame.render_widget(panel_block(text.response(), area, theme), area);
+    let focus = FocusStyles::new(app.focus, theme);
+    frame.render_widget(
+        panel_block(text.response(), area, theme).border_style(focus.response_border()),
+        area,
+    );
     if !app.has_current_request() {
         frame.render_widget(
             Paragraph::new(text.request_not_sent())
@@ -55,6 +65,7 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect
         return;
     }
     draw_response_menu_button(frame, menu_button, app);
+    draw_response_zoom_button(frame, zoom_button, app);
     let Some(request) = app.current_request() else {
         return;
     };
@@ -126,45 +137,132 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect
     };
     frame.render_widget(Paragraph::new(status), sections.status);
 
-    let mut body_lines = Vec::new();
     if let Some(response) = response {
-        body_lines.push(Line::from(Span::styled(
-            text.response_body(),
-            section_style(theme),
-        )));
-        if response.body.is_empty() {
-            body_lines.push(Line::from(Span::styled(
-                text.empty_response(),
-                label_style(theme),
-            )));
-        } else {
-            match highlight::json_text_lines_if_valid(&response.body, theme) {
-                Some(lines) => body_lines.extend(lines),
-                None => body_lines.extend(highlight::plain_lines(&response.body, theme)),
-            }
+        let heading = Line::from(Span::styled(text.response_body(), section_style(theme)));
+        if response.body_bytes.is_empty() {
+            render_response_lines(
+                frame,
+                sections.body,
+                app,
+                vec![
+                    heading,
+                    Line::from(Span::styled(text.empty_response(), label_style(theme))),
+                ],
+                theme,
+            );
+        } else if let Some(document) = app.current_response_document() {
+            let limited_line = document.limited().then(|| {
+                Line::from(Span::styled(
+                    text.response_body_limited(
+                        document.displayed_bytes(),
+                        response.body_bytes.len(),
+                    ),
+                    Style::default().fg(theme.warning),
+                ))
+            });
+            render_response_document(
+                frame,
+                sections.body,
+                app,
+                heading,
+                document,
+                limited_line,
+                theme,
+            );
         }
     } else if let Some(error) = error {
-        let message = request_status.error_message(text, error);
-        body_lines.push(Line::from(Span::styled(
-            message,
-            Style::default().fg(theme.error),
-        )));
+        render_response_lines(
+            frame,
+            sections.body,
+            app,
+            vec![Line::from(Span::styled(
+                request_status.error_message(text, error),
+                Style::default().fg(theme.error),
+            ))],
+            theme,
+        );
     }
-    let content_length = wrapped_line_count(&body_lines, sections.body.content.width);
-    let paragraph = Paragraph::new(body_lines).wrap(Wrap { trim: false });
-    let viewport_length = usize::from(sections.body.content.height);
+}
+
+fn render_response_document(
+    frame: &mut Frame<'_>,
+    areas: ScrollAreas,
+    app: &App,
+    heading: Line<'static>,
+    document: &crate::response_document::ResponseDocument,
+    limited_line: Option<Line<'static>>,
+    theme: &crate::settings::UiTheme,
+) {
+    let body_length = document.line_count();
+    let content_length = 1_usize
+        .saturating_add(body_length)
+        .saturating_add(usize::from(limited_line.is_some()));
+    let viewport_length = usize::from(areas.content.height);
     let offset = scroll_offset(
         app.response_state.scroll.offset(),
         content_length,
         viewport_length,
     );
-    frame.render_widget(paragraph.scroll((offset, 0)), sections.body.content);
+    let end = offset.saturating_add(viewport_length).min(content_length);
+    let mut lines = Vec::with_capacity(viewport_length);
+
+    if offset == 0 {
+        lines.push(heading);
+    }
+
+    let body_start = offset.max(1).saturating_sub(1).min(body_length);
+    let body_end = end.saturating_sub(1).min(body_length);
+    if body_start < body_end {
+        lines.extend(document.visible_lines(
+            body_start,
+            body_end.saturating_sub(body_start),
+            theme,
+        ));
+    }
+
+    let limited_index = 1usize.saturating_add(body_length);
+    if offset <= limited_index && limited_index < end {
+        if let Some(limited_line) = limited_line {
+            lines.push(limited_line);
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), areas.content);
     draw_scrollbar(
         frame,
-        sections.body.scrollbar,
+        areas.scrollbar,
         content_length,
         viewport_length,
-        usize::from(offset),
+        offset,
+        theme,
+    );
+}
+
+fn render_response_lines(
+    frame: &mut Frame<'_>,
+    areas: ScrollAreas,
+    app: &App,
+    lines: Vec<Line<'static>>,
+    theme: &crate::settings::UiTheme,
+) {
+    let content_length = wrapped_line_count(&lines, areas.content.width);
+    let viewport_length = usize::from(areas.content.height);
+    let offset = scroll_offset(
+        app.response_state.scroll.offset(),
+        content_length,
+        viewport_length,
+    );
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(
+        paragraph.scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
+        areas.content,
+    );
+    draw_scrollbar(
+        frame,
+        areas.scrollbar,
+        content_length,
+        viewport_length,
+        offset,
         theme,
     );
 }
@@ -174,7 +272,10 @@ pub(super) fn response_menu_area(panel: Rect, trigger: Rect) -> Rect {
         return Rect::default();
     }
     let width = 20.min(panel.width.saturating_sub(2));
-    let height = 4.min(panel.height);
+    let height = u16::try_from(ResponseMenuAction::all().len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(panel.height);
     if width < 3 || height < 3 {
         return Rect::default();
     }
@@ -196,12 +297,45 @@ pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: 
     }
     let theme = &app.global_config.theme;
     let text = app.text();
-    let style = Style::default()
-        .fg(theme.text)
-        .bg(theme.selection)
-        .add_modifier(Modifier::BOLD);
+    let focused = app.focus == Focus::ResponseActions;
+    let style = if focused {
+        Style::default()
+            .fg(theme.background)
+            .bg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(theme.background)
+            .bg(theme.secondary)
+            .add_modifier(Modifier::BOLD)
+    };
     frame.render_widget(
         Paragraph::new(format!("{} ▾", text.response_menu()))
+            .alignment(Alignment::Center)
+            .style(style),
+        area,
+    );
+}
+
+pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.is_empty() {
+        return;
+    }
+    let theme = &app.global_config.theme;
+    let focused = app.focus == Focus::ResponseZoom;
+    let style = Style::default().fg(theme.background).bg(theme.primary);
+    let style = if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    };
+    let (symbol, label) = if app.response_zoomed() {
+        ("↙", app.text().response_restore())
+    } else {
+        ("↗", app.text().response_zoom())
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{symbol} {label}"))
             .alignment(Alignment::Center)
             .style(style),
         area,

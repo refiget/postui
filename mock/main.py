@@ -1,10 +1,17 @@
 """FastAPI endpoints used by the PostUI configuration and HTTP smoke tests."""
 
 import asyncio
-from typing import Any
+import json
+from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 
 
 app = FastAPI(title="PostUI Mock", version="0.2.0")
@@ -178,6 +185,77 @@ async def empty_response() -> Response:
 @app.get("/v1/plain")
 async def plain_response() -> PlainTextResponse:
     return PlainTextResponse("postui mock plain text\n")
+
+
+async def paced_plain_response(size_bytes: int, delay_ms: int) -> AsyncIterator[bytes]:
+    chunk = b"PostUI long response stability sample. 0123456789abcdef\n" * 64
+    remaining = size_bytes
+    while remaining:
+        part = chunk[:remaining]
+        yield part
+        remaining -= len(part)
+        if remaining and delay_ms:
+            await asyncio.sleep(delay_ms / 1000)
+
+
+async def paced_json_response(size_bytes: int, delay_ms: int) -> AsyncIterator[bytes]:
+    chunk_size = 64 * 1024
+    prefix = b'{"data":{"items":['
+    suffix = b"]}}"
+    total = len(prefix) + len(suffix)
+    index = 0
+    chunk = bytearray(prefix)
+    while total < size_bytes:
+        item = json.dumps(
+            {
+                "index": index,
+                "message": "PostUI long response stability sample",
+                "tags": ["large", "scroll", "json"],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        fragment = item if index == 0 else b"," + item
+        chunk.extend(fragment)
+        total += len(fragment)
+        index += 1
+        if len(chunk) >= chunk_size:
+            yield bytes(chunk)
+            chunk.clear()
+            if delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
+    chunk.extend(suffix)
+    if chunk:
+        yield bytes(chunk)
+
+
+@app.get("/v1/large-response")
+async def large_response(
+    response_format: str = Query("json", alias="format"),
+    size_kb: int = Query(1024, ge=1, le=65536),
+    delay_ms: int = Query(0, ge=0, le=1000),
+) -> StreamingResponse:
+    if response_format not in {"json", "plain"}:
+        raise HTTPException(
+            status_code=422,
+            detail="format must be either 'json' or 'plain'",
+        )
+
+    size_bytes = size_kb * 1024
+    if response_format == "json":
+        stream = paced_json_response(size_bytes, delay_ms)
+        media_type = "application/json"
+    else:
+        stream = paced_plain_response(size_bytes, delay_ms)
+        media_type = "text/plain; charset=utf-8"
+    return StreamingResponse(
+        stream,
+        media_type=media_type,
+        headers={
+            "X-PostUI-Response-Format": response_format,
+            "X-PostUI-Response-Bytes": str(size_bytes),
+        },
+    )
 
 
 @app.get("/v1/delay/{seconds}")

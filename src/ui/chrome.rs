@@ -1,62 +1,5 @@
 use super::*;
 
-pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = &app.global_config.theme;
-    let text = app.text();
-    let line = if area.width >= 80 {
-        Line::from(vec![
-            Span::styled("Tab", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_focus())),
-            Span::styled("↑↓/jk", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_move())),
-            Span::styled("Enter", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_select())),
-            Span::styled("w", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.workspace())),
-            Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.variables())),
-            Span::styled("←→", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.request_editor())),
-            Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_send())),
-            Span::styled("Ctrl+S", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_save())),
-            Span::styled("q", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_quit())),
-            Span::styled(text.footer_mouse(), Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}", text.footer_click())),
-        ])
-    } else if area.width >= 48 {
-        Line::from(vec![
-            Span::styled("Tab", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_focus())),
-            Span::styled("↑↓", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_move())),
-            Span::styled("w", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.workspace())),
-            Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.variables())),
-            Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_send())),
-            Span::styled("q", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}", text.footer_quit())),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("v", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.variables())),
-            Span::styled("r", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}  │  ", text.footer_send())),
-            Span::styled("q", Style::default().fg(theme.accent)),
-            Span::raw(format!(" {}", text.footer_quit())),
-        ])
-    };
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().fg(theme.muted)),
-        area,
-    );
-}
-
 pub(super) fn draw_header(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -65,6 +8,7 @@ pub(super) fn draw_header(
     app: &App,
 ) {
     let theme = &app.global_config.theme;
+    let focus = FocusStyles::new(app.focus, theme);
     let mut line = vec![
         Span::styled(
             " POSTUI ",
@@ -90,7 +34,7 @@ pub(super) fn draw_header(
         theme,
     ));
     frame.render_widget(
-        panel_block("", area, theme).border_style(Style::default().fg(theme.accent)),
+        panel_block("", area, theme).border_style(focus.header_border()),
         area,
     );
     frame.render_widget(
@@ -135,13 +79,7 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     let text = app.text();
     let focus = FocusStyles::new(app.focus, theme);
     frame.render_widget(
-        focused_panel_block(
-            text.request_selector(),
-            area,
-            theme,
-            focus.sidebar_focused(),
-        )
-        .border_style(focus.sidebar_border()),
+        panel_block(text.request_selector(), area, theme).border_style(focus.sidebar_border()),
         area,
     );
 
@@ -167,7 +105,7 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
             frame,
             rows[1],
             &configuration,
-            matches!(app.dialog, Some(Dialog::Configurations(_))),
+            focus.workspace_focused(),
             theme,
         );
     }
@@ -188,29 +126,19 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         .requests
         .iter()
         .map(|session| {
-            let mut item = request_item(&session.source, theme, request_list_area.width);
-            if session.dirty {
-                item = ListItem::new(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(theme.warning)),
-                    Span::styled(
-                        truncate(
-                            &session.source.name,
-                            usize::from(request_list_area.width).saturating_sub(4),
-                        ),
-                        Style::default().fg(theme.text),
-                    ),
-                ]));
-            }
-            item
+            request_item(
+                &session.source,
+                app.request_status(&session.source.id),
+                session.dirty,
+                theme,
+                request_list_area.width,
+                app.animation_frame,
+            )
         })
         .collect::<Vec<_>>();
     let list = List::new(items)
         .style(Style::default().bg(theme.surface).fg(theme.text))
-        .highlight_style(
-            Style::default()
-                .bg(focus.request_selection())
-                .fg(theme.text),
-        )
+        .highlight_style(focus.request_selection())
         .highlight_symbol("› ");
     let mut state = ListState::default();
     if let Some(selected) = app.workspace_state.selected_request {
@@ -229,14 +157,28 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
 
 pub(super) fn request_item(
     request: &ApiRequest,
+    status: RequestStatus,
+    dirty: bool,
     theme: &crate::settings::UiTheme,
     width: u16,
+    animation_frame: usize,
 ) -> ListItem<'static> {
-    let label_width = width
-        .saturating_sub(TABLE_HIGHLIGHT_WIDTH)
-        .saturating_sub(1);
-    ListItem::new(Line::from(Span::styled(
-        truncate(&request.name, usize::from(label_width)),
+    let status_width = 2;
+    let dirty_width = usize::from(dirty) * 2;
+    let label_width = usize::from(width)
+        .saturating_sub(usize::from(TABLE_HIGHLIGHT_WIDTH))
+        .saturating_sub(status_width)
+        .saturating_sub(dirty_width);
+    let mut spans = vec![Span::styled(
+        format!("{} ", request_status_symbol(status, animation_frame)),
+        request_status_style(status, theme),
+    )];
+    if dirty {
+        spans.push(Span::styled("* ", request_dirty_style(theme)));
+    }
+    spans.push(Span::styled(
+        truncate(&request.name, label_width),
         Style::default().fg(theme.text),
-    )))
+    ));
+    ListItem::new(Line::from(spans))
 }

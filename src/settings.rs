@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 const DEFAULT_THEME: &str = "gruvbox-dark";
 pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
+pub(crate) const DEFAULT_MAX_RESPONSE_DISPLAY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub(crate) enum Language {
@@ -28,11 +29,23 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct GlobalConfig {
     pub(crate) path: Option<PathBuf>,
     pub(crate) language: Language,
     pub(crate) theme: UiTheme,
+    pub(crate) max_response_display_bytes: usize,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            language: Language::default(),
+            theme: UiTheme::default(),
+            max_response_display_bytes: DEFAULT_MAX_RESPONSE_DISPLAY_BYTES,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +73,8 @@ struct RawGlobalConfig {
     language: Language,
     #[serde(default = "default_theme")]
     theme: String,
+    #[serde(default = "default_max_response_display_bytes")]
+    max_response_display_bytes: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,6 +141,7 @@ pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
         language = global.language.as_str(),
         theme = %global.theme.name,
         syntax_theme = %global.theme.syntax_theme,
+        max_response_display_bytes = global.max_response_display_bytes,
         "用户界面配置加载完成"
     );
     Ok(global)
@@ -135,12 +151,17 @@ pub(crate) fn default_config() -> GlobalConfig {
     tracing::debug!(
         language = Language::default().as_str(),
         theme = DEFAULT_THEME,
+        max_response_display_bytes = DEFAULT_MAX_RESPONSE_DISPLAY_BYTES,
         "未找到用户界面配置，使用内置默认值"
     );
     GlobalConfig::default()
 }
 
 fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
+    if raw.max_response_display_bytes == 0 {
+        bail!("max_response_display_bytes 必须大于 0")
+    }
+
     let mut raw_theme = built_in_theme(&raw.theme).ok_or_else(|| {
         anyhow::anyhow!(
             "未知内置主题: {}；可选 gruvbox-dark、ocean、nord、mono",
@@ -166,6 +187,7 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
     Ok(GlobalConfig {
         path: Some(path.to_path_buf()),
         language: raw.language,
+        max_response_display_bytes: raw.max_response_display_bytes,
         theme: UiTheme {
             name: theme_name,
             primary: color("primary", raw_theme.primary, "#83a598")?,
@@ -183,6 +205,10 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
             syntax_theme,
         },
     })
+}
+
+fn default_max_response_display_bytes() -> usize {
+    DEFAULT_MAX_RESPONSE_DISPLAY_BYTES
 }
 
 fn parse_document<T>(path: &Path, text: &str) -> Result<T>

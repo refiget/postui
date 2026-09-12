@@ -4,7 +4,9 @@ use form_urlencoded::{Serializer, parse};
 use serde_json::Value;
 use url::Url;
 
-use crate::config::{ApiRequest, DataPart, NameValue, RequestOverride, RequestParam};
+use crate::config::{
+    ApiRequest, DataPart, NameValue, RequestOverride, RequestParam, ResponseExtract,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -14,6 +16,7 @@ pub(crate) struct ResolvedRequest {
     pub(crate) raw_body: Option<String>,
     pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<ResolvedFile>,
+    pub(crate) extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,7 @@ pub(crate) fn resolve_request(
                     .map(|value| resolve_text(value, variables)),
             })
             .collect(),
+        extracts: request.extracts.clone(),
     }
 }
 
@@ -98,9 +102,7 @@ pub(crate) fn url_variable_names(input: &str) -> Vec<String> {
     names.into_iter().collect()
 }
 
-pub(crate) fn extract_json_value(body: &str, path: &str) -> Result<String, String> {
-    let root: Value = serde_json::from_str(body)
-        .map_err(|error| format!("响应不是有效 JSON，无法提取: {error}"))?;
+pub(crate) fn extract_json_value(root: &Value, path: &str) -> Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("响应提取路径不能为空".to_string());
@@ -114,7 +116,7 @@ pub(crate) fn extract_json_value(body: &str, path: &str) -> Result<String, Strin
         if segments.is_empty() {
             return Err(format!("响应提取路径无效: {path}"));
         }
-        let mut value = &root;
+        let mut value = root;
         for segment in segments {
             value = match value {
                 Value::Object(fields) => fields

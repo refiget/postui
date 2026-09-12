@@ -475,13 +475,7 @@ pub(super) fn dialog_row_highlight(
     theme: &crate::settings::UiTheme,
     content_focused: bool,
 ) -> Style {
-    Style::default()
-        .bg(if content_focused {
-            theme.selection
-        } else {
-            theme.surface
-        })
-        .fg(theme.text)
+    super::focus::selection_style(theme, content_focused)
 }
 
 fn active_editor_style(theme: &crate::settings::UiTheme) -> Style {

@@ -4,7 +4,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use serde_json::Value;
 use syntect::{
     easy::HighlightLines,
     highlighting::{FontStyle, Theme, ThemeSet},
@@ -81,14 +80,6 @@ pub(crate) fn json_text_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>
             }
         })
         .collect()
-}
-
-pub(crate) fn json_text_lines_if_valid(value: &str, theme: &UiTheme) -> Option<Vec<Line<'static>>> {
-    serde_json::from_str::<Value>(value).ok().and_then(|value| {
-        serde_json::to_string_pretty(&value)
-            .ok()
-            .map(|formatted| json_text_lines(&formatted, theme))
-    })
 }
 
 pub(crate) fn plain_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {

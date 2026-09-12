@@ -11,6 +11,7 @@ use crate::{
     i18n::UiText,
     request_executor::{RequestExecutor, RequestResult},
     request_file::RequestFileStore,
+    response_document::ResponseDocument,
     settings::GlobalConfig,
     template::{self, ResolvedRequest},
 };
@@ -26,32 +27,56 @@ pub(crate) use dialog::{
     VariablesDialog,
 };
 pub(crate) use session::RequestStatus;
-use session::{RequestDraft, WorkspaceSession};
+pub(crate) use session::{RequestDraft, WorkspaceSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
+    Header,
     Requests,
+    WorkspaceButton,
     Variables,
     Preview,
-    Actions,
+    SendButton,
+    ResponseActions,
+    ResponseZoom,
+    Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ViewMode {
+    #[default]
+    Standard,
+    ResponseZoom {
+        return_focus: Focus,
+    },
 }
 
 impl Focus {
     fn next(self) -> Self {
         match self {
-            Self::Requests => Self::Variables,
+            Self::Header => Self::Requests,
+            Self::Requests => Self::WorkspaceButton,
+            Self::WorkspaceButton => Self::Variables,
             Self::Variables => Self::Preview,
-            Self::Preview => Self::Actions,
-            Self::Actions => Self::Requests,
+            Self::Preview => Self::SendButton,
+            Self::SendButton => Self::ResponseActions,
+            Self::ResponseActions => Self::ResponseZoom,
+            Self::ResponseZoom => Self::Response,
+            Self::Response => Self::Header,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Requests => Self::Actions,
-            Self::Variables => Self::Requests,
+            Self::Header => Self::Response,
+            Self::Requests => Self::Header,
+            Self::WorkspaceButton => Self::Requests,
+            Self::Variables => Self::WorkspaceButton,
             Self::Preview => Self::Variables,
-            Self::Actions => Self::Preview,
+            Self::SendButton => Self::Preview,
+            Self::ResponseActions => Self::SendButton,
+            Self::ResponseZoom => Self::ResponseActions,
+            Self::Response => Self::ResponseZoom,
         }
     }
 }
@@ -144,6 +169,34 @@ impl ScrollState {
 }
 
 #[derive(Debug, Default)]
+pub(crate) struct ResponseScrollState {
+    offset: usize,
+}
+
+impl ResponseScrollState {
+    const STEP: usize = 3;
+
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+
+    fn reset(&mut self) {
+        self.offset = 0;
+    }
+
+    pub(crate) fn move_by(&mut self, direction: isize, max_offset: usize) -> bool {
+        let previous = self.offset;
+        self.offset = match direction {
+            -1 => self.offset.saturating_sub(Self::STEP),
+            1 => self.offset.saturating_add(Self::STEP),
+            _ => self.offset,
+        }
+        .min(max_offset);
+        self.offset != previous
+    }
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct PreviewContentState {
     pub(crate) active_tab: PreviewTab,
     pub(crate) scroll: ScrollState,
@@ -177,7 +230,7 @@ pub(crate) struct RequestVariableEditor {
 
 #[derive(Debug, Default)]
 pub(crate) struct ResponseContentState {
-    pub(crate) scroll: ScrollState,
+    pub(crate) scroll: ResponseScrollState,
     pub(crate) menu_open: bool,
     pub(crate) menu_selected: usize,
 }
@@ -186,6 +239,7 @@ pub(crate) struct App {
     pub(crate) config: WorkspaceConfig,
     pub(crate) global_config: GlobalConfig,
     pub(crate) focus: Focus,
+    pub(crate) view_mode: ViewMode,
     pub(crate) preview_state: PreviewContentState,
     pub(crate) response_state: ResponseContentState,
     pub(crate) workspace_state: WorkspaceSession,
@@ -229,6 +283,7 @@ impl App {
             config,
             global_config,
             focus: Focus::Requests,
+            view_mode: ViewMode::default(),
             preview_state: PreviewContentState::default(),
             response_state: ResponseContentState::default(),
             workspace_state,
@@ -263,6 +318,13 @@ impl App {
 
     pub(crate) fn advance_animation(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);
+    }
+
+    pub(crate) fn is_animating(&self) -> bool {
+        self.workspace_state
+            .requests
+            .iter()
+            .any(|session| session.runtime.status() == RequestStatus::Sending)
     }
 
     fn mark_current_dirty(&mut self) {
@@ -884,6 +946,7 @@ impl App {
             rows,
             selected,
         }));
+        self.focus = Focus::WorkspaceButton;
         tracing::debug!(
             configuration = %self.active_configuration(),
             configuration_count = self.config.configurations.len(),
@@ -1164,7 +1227,7 @@ impl App {
 
     pub(crate) fn focused_preview_action(&self) -> Option<PreviewAction> {
         match self.focus {
-            Focus::Actions => Some(PreviewAction::Send),
+            Focus::SendButton => Some(PreviewAction::Send),
             _ => None,
         }
     }
@@ -1439,56 +1502,26 @@ impl App {
             .and_then(|session| session.runtime.response())
     }
 
+    pub(crate) fn current_response_document(&self) -> Option<&ResponseDocument> {
+        self.workspace_state
+            .current()
+            .and_then(|session| session.runtime.document())
+    }
+
     pub(crate) fn current_error(&self) -> Option<&str> {
         self.workspace_state
             .current()
             .and_then(|session| session.runtime.error())
     }
 
-    fn apply_response_extracts(&mut self, request_id: &str, body: &str) -> usize {
-        let Some(session) = self.workspace_state.request(request_id) else {
-            return 0;
-        };
-        let Some(request) = self
-            .workspace_state
-            .effective_request(&self.config, session)
-        else {
-            return 0;
-        };
-
-        let variables = &mut self.workspace_state.variables;
-        let mut failures = 0;
-        for extract in &request.extracts {
-            match template::extract_json_value(body, &extract.path) {
-                Ok(value) => {
-                    variables.insert(extract.variable.clone(), value);
-                    tracing::debug!(
-                        request_id,
-                        variable = %extract.variable,
-                        path = %extract.path,
-                        "响应字段已写入会话变量"
-                    );
-                }
-                Err(error) => {
-                    failures += 1;
-                    tracing::debug!(
-                        request_id,
-                        variable = %extract.variable,
-                        path = %extract.path,
-                        error = %error,
-                        "响应字段提取失败"
-                    );
-                }
-            }
-        }
-        failures
-    }
-
-    pub(crate) fn poll_messages(&mut self) {
+    pub(crate) fn poll_messages(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(RequestResult {
             request_id,
             operation_id,
             result,
+            extracted_variables,
+            extract_failures,
         }) = self.request_executor.try_recv()
         {
             tracing::debug!(
@@ -1521,8 +1554,11 @@ impl App {
                 );
                 continue;
             }
+            changed = true;
             let status_message = match result {
-                Ok(response) => {
+                Ok(completed) => {
+                    let response = completed.response;
+                    let document = completed.document;
                     let status = response.status;
                     let elapsed = response.elapsed_ms;
                     let request_status = RequestStatus::from_http_status(status);
@@ -1536,11 +1572,9 @@ impl App {
                         body_bytes = response.body_bytes.len(),
                         "后台请求成功"
                     );
-                    let extract_failures = if request_status == RequestStatus::Success {
-                        self.apply_response_extracts(&request_id, &response.body)
-                    } else {
-                        0
-                    };
+                    for (variable, value) in extracted_variables {
+                        self.workspace_state.variables.insert(variable, value);
+                    }
                     let complete = text.request_complete(status, elapsed);
                     let message = if extract_failures == 0 {
                         complete
@@ -1553,9 +1587,12 @@ impl App {
                     let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
                     };
-                    session
-                        .runtime
-                        .complete_success(request_status, response, message.clone());
+                    session.runtime.complete_success(
+                        request_status,
+                        response,
+                        document,
+                        message.clone(),
+                    );
                     is_current.then_some(message)
                 }
                 Err(error) => {
@@ -1585,10 +1622,11 @@ impl App {
                 self.status = status;
             }
         }
+        changed
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
-        tracing::debug!(
+        tracing::trace!(
             key_kind = key_kind(key.code),
             modifiers = ?key.modifiers,
             focus = ?self.focus,
@@ -1648,6 +1686,7 @@ impl App {
         if self.response_state.menu_open {
             match key.code {
                 KeyCode::Esc => self.close_response_menu(),
+                KeyCode::Char('q') if self.response_zoomed() => self.restore_standard_view(),
                 KeyCode::Up | KeyCode::Char('k') => self.move_response_menu_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_response_menu_selection(1),
                 KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_response_action(),
@@ -1658,15 +1697,15 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                self.request_quit();
-                tracing::debug!("通过快捷键请求退出");
+                if self.response_zoomed() {
+                    self.restore_standard_view();
+                } else {
+                    self.request_quit();
+                    tracing::debug!("通过快捷键请求退出");
+                }
             }
             KeyCode::Tab => {
-                self.focus = if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.focus.previous()
-                } else {
-                    self.focus.next()
-                };
+                self.focus = self.next_focus(key.modifiers.contains(KeyModifiers::SHIFT));
                 tracing::debug!(focus = ?self.focus, "切换 TUI 区域焦点");
             }
             KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
@@ -1686,23 +1725,34 @@ impl App {
     fn handle_enter(&mut self) {
         tracing::debug!(focus = ?self.focus, "处理 Enter 操作");
         match self.focus {
+            Focus::Header => {}
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
                 let action = PreviewAction::Edit(self.preview_state.active_tab);
                 self.handle_preview_action(action);
             }
-            Focus::Actions => self.handle_preview_action(PreviewAction::Send),
+            Focus::WorkspaceButton => self.open_configurations(),
+            Focus::SendButton => self.handle_preview_action(PreviewAction::Send),
+            Focus::ResponseActions => self.open_response_menu(),
+            Focus::ResponseZoom => self.toggle_response_zoom(),
+            Focus::Response => {}
         }
     }
 
     fn move_focused(&mut self, direction: isize) {
         match self.focus {
+            Focus::Header => {}
             Focus::Requests => self.move_request(direction),
             Focus::Preview => {
                 self.preview_state.scroll.move_by(direction);
             }
-            Focus::Variables | Focus::Actions => {}
+            Focus::Response => self.scroll_response(direction),
+            Focus::WorkspaceButton
+            | Focus::Variables
+            | Focus::SendButton
+            | Focus::ResponseActions
+            | Focus::ResponseZoom => {}
         }
     }
 
@@ -1770,11 +1820,16 @@ impl App {
     }
 
     pub(crate) fn scroll_response(&mut self, direction: isize) {
-        if self.current_response().is_none() {
+        let Some(max_offset) = self.current_response_document().map(|document| {
+            1usize
+                .saturating_add(document.line_count())
+                .saturating_add(usize::from(document.limited()))
+                .saturating_sub(1)
+        }) else {
             return;
-        }
-        if self.response_state.scroll.move_by(direction) {
-            tracing::debug!(
+        };
+        if self.response_state.scroll.move_by(direction, max_offset) {
+            tracing::trace!(
                 offset = self.response_state.scroll.offset(),
                 direction,
                 "滚动响应内容"
@@ -1789,6 +1844,7 @@ impl App {
         }
         self.response_state.menu_open = true;
         self.response_state.menu_selected = 0;
+        self.focus = Focus::ResponseActions;
     }
 
     pub(crate) fn close_response_menu(&mut self) {
@@ -1821,10 +1877,57 @@ impl App {
         }
     }
 
+    pub(crate) fn response_zoomed(&self) -> bool {
+        matches!(self.view_mode, ViewMode::ResponseZoom { .. })
+    }
+
+    pub(crate) fn toggle_response_zoom(&mut self) {
+        if self.response_zoomed() {
+            self.restore_standard_view();
+        } else {
+            self.view_mode = ViewMode::ResponseZoom {
+                return_focus: self.focus,
+            };
+            self.focus = Focus::ResponseZoom;
+        }
+    }
+
+    fn restore_standard_view(&mut self) {
+        let ViewMode::ResponseZoom { return_focus } = self.view_mode else {
+            return;
+        };
+        self.view_mode = ViewMode::Standard;
+        self.focus = return_focus;
+        self.close_response_menu();
+    }
+
+    fn next_focus(&self, reverse: bool) -> Focus {
+        if !self.response_zoomed() {
+            return if reverse {
+                self.focus.previous()
+            } else {
+                self.focus.next()
+            };
+        }
+        match (self.focus, reverse) {
+            (Focus::Header, true) => Focus::Response,
+            (Focus::Header, false) => Focus::SendButton,
+            (Focus::SendButton, true) => Focus::Header,
+            (Focus::SendButton, false) => Focus::ResponseActions,
+            (Focus::ResponseActions, true) => Focus::SendButton,
+            (Focus::ResponseActions, false) => Focus::ResponseZoom,
+            (Focus::ResponseZoom, true) => Focus::ResponseActions,
+            (Focus::ResponseZoom, false) => Focus::Response,
+            (Focus::Response, true) => Focus::ResponseZoom,
+            (Focus::Response, false) => Focus::Header,
+            (_, _) => Focus::Response,
+        }
+    }
+
     fn copy_current_response(&mut self) {
         let Some(body) = self
             .current_response()
-            .map(|response| response.body.clone())
+            .map(|response| String::from_utf8_lossy(&response.body_bytes).into_owned())
         else {
             self.status = self.text().response_action_no_response().to_string();
             return;
@@ -1908,8 +2011,13 @@ impl App {
             return;
         }
         self.status = message;
-        self.request_executor
-            .start(operation, resolved, timeout, file_directory);
+        self.request_executor.start(
+            operation,
+            resolved,
+            timeout,
+            file_directory,
+            self.global_config.max_response_display_bytes,
+        );
     }
 }
 

@@ -34,7 +34,9 @@ use response::*;
 use widgets::*;
 
 use focus::FocusStyles;
-use layout::{UiLayout, preview_summary_height, screen as screen_layout, screen_with_summary};
+use layout::{
+    UiLayout, preview_summary_height, response_zoom, screen as screen_layout, screen_with_summary,
+};
 
 const TABLE_HIGHLIGHT_WIDTH: u16 = 2;
 const TABLE_COLUMN_SPACING: u16 = 1;
@@ -54,16 +56,24 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
         areas.send_button,
         app,
     );
-    draw_request_list(frame, areas, app);
-    draw_preview(
+    if !app.response_zoomed() {
+        draw_request_list(frame, areas, app);
+        draw_preview(
+            frame,
+            areas.preview,
+            areas.preview_summary,
+            areas.preview_tabs,
+            areas.preview_content,
+            app,
+        );
+    }
+    draw_response(
         frame,
-        areas.preview,
-        areas.preview_summary,
-        areas.preview_tabs,
-        areas.preview_content,
+        areas.response,
+        areas.response_menu_button,
+        areas.response_zoom_button,
         app,
     );
-    draw_response(frame, areas.response, areas.response_menu_button, app);
     if app.response_state.menu_open {
         draw_response_menu(
             frame,
@@ -71,7 +81,6 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
             app,
         );
     }
-    draw_footer(frame, areas.footer, app);
     match &app.dialog {
         Some(Dialog::Variables(dialog)) => draw_dialog(frame, app, dialog),
         Some(Dialog::Configurations(dialog)) => {
@@ -96,7 +105,7 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     let areas = screen_layout_for_app(area, app);
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            tracing::debug!(
+            tracing::trace!(
                 column = event.column,
                 row = event.row,
                 area = ?area,
@@ -110,7 +119,7 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
             } else {
                 1
             };
-            tracing::debug!(
+            tracing::trace!(
                 kind = ?event.kind,
                 column = event.column,
                 row = event.row,
@@ -183,11 +192,13 @@ fn handle_configuration_mouse(app: &mut App, event: MouseEvent, area: Rect) {
 
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
     app.commit_active_editors();
+    focus_panel_at(app, column, row, areas);
 
     if app.response_state.menu_open {
         let menu = response_menu_area(areas.response, areas.response_menu_button);
         let content = menu.inner(Margin::new(1, 1));
         if contains(content, column, row) {
+            app.focus = Focus::ResponseActions;
             app.choose_response_action(usize::from(row.saturating_sub(content.y)));
             return;
         }
@@ -199,6 +210,7 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
     }
 
     if contains(areas.workspace_selector, column, row) {
+        app.focus = Focus::WorkspaceButton;
         app.open_configurations();
     } else if contains(areas.variables_button, column, row) {
         app.focus = Focus::Variables;
@@ -243,15 +255,25 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
             app.activate_preview_tab(tab);
         }
     } else if contains(areas.response_menu_button, column, row) {
+        app.focus = Focus::ResponseActions;
         app.open_response_menu();
+    } else if contains(areas.response_zoom_button, column, row) {
+        app.focus = Focus::ResponseZoom;
+        app.toggle_response_zoom();
     } else if contains(areas.send_button, column, row)
         && app.can_execute_preview_action(PreviewAction::Send)
     {
+        app.focus = Focus::SendButton;
         app.handle_preview_action(PreviewAction::Send);
+    } else if contains(areas.response, column, row) {
+        app.focus = Focus::Response;
     }
 }
 
 fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
+    if app.response_zoomed() {
+        return response_zoom(area);
+    }
     let base = screen_layout(area);
     if !app.has_current_request() {
         return base;
@@ -293,15 +315,17 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
+    focus_panel_at(app, column, row, areas);
     let response_menu = response_menu_area(areas.response, areas.response_menu_button);
     if app.response_state.menu_open && contains(response_menu, column, row) {
         app.move_response_menu_selection(direction);
     } else if contains(areas.request_list, column, row) {
         app.focus = Focus::Requests;
-        tracing::debug!(column, row, direction, "滚动左侧接口列表");
+        tracing::trace!(column, row, direction, "滚动左侧接口列表");
         app.move_request(direction);
     } else if contains(areas.response, column, row) {
-        tracing::debug!(column, row, direction, "滚动响应内容");
+        app.focus = Focus::Response;
+        tracing::trace!(column, row, direction, "滚动响应内容");
         app.scroll_response(direction);
     } else if contains(areas.preview_content, column, row) {
         app.focus = Focus::Preview;
@@ -317,6 +341,20 @@ fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, directio
             }
         }
     }
+}
+
+fn focus_panel_at(app: &mut App, column: u16, row: u16, areas: UiLayout) {
+    app.focus = if contains(areas.header, column, row) {
+        Focus::Header
+    } else if contains(areas.requests, column, row) {
+        Focus::Requests
+    } else if contains(areas.preview, column, row) {
+        Focus::Preview
+    } else if contains(areas.response, column, row) {
+        Focus::Response
+    } else {
+        return;
+    };
 }
 
 fn contains(area: Rect, column: u16, row: u16) -> bool {

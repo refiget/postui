@@ -208,7 +208,7 @@ App
 │   └── result channel
 └── UI and business state
     ├── editors and dialogs
-    ├── response state
+    ├── response state and document index
     └── keyboard/mouse orchestration
 ```
 
@@ -217,7 +217,7 @@ App
 - `src/app/session.rs` 负责 `RequestDraft`、`RequestSession` 和 `WorkspaceSession`。
 - `RequestStatus` 和 `RequestRuntimeState` 与请求会话放在同一模块，保持运行态字段的所有权集中。
 - 有效请求的 Header 合并由会话模型完成，请求运行态的开始、成功结束和失败结束由运行态对象统一迁移。
-- `App` 仍负责变量提取、状态提示和事件编排，这些行为需要同时协调工作区与 UI，因此没有继续下沉。
+- `App` 负责接收请求线程提取的变量、状态提示和事件编排；响应线程生成 `ResponseDocument` 的轻量索引，运行态按请求持有原始字节和索引。
 
 这里需要的是职责划分，不是动态多态。不要先创建大量 trait。阶段四已经将 `RequestFileStore` 和 `RequestExecutor` 接入 `App`；结果如何写入 `RequestSession` 仍由 `App` 编排。
 
@@ -297,7 +297,9 @@ RequestFileStore::delete(...)
 - 后台线程创建。
 - 请求结果 channel。
 
-`App` 只准备已解析请求、更新 `RequestSession.runtime`，并在主循环中消费 `RequestResult`。过期结果校验、response extract 和状态消息仍属于界面业务流程，因此保留在 `App`。
+`App` 只准备已解析请求、更新 `RequestSession.runtime`，并在主循环中消费 `RequestResult`。请求线程负责 response extract，`App` 只提交提取结果并更新变量；过期结果校验和状态消息仍属于界面业务流程。
+
+响应展示由 `ResponseDocument` 负责索引和按视口生成。JSON 格式化、语法高亮和大响应截断不再发生在 `terminal.draw` 中；`RequestRuntimeState` 按请求保存原始字节与文档索引，并使用请求 operation id 丢弃过期结果。大响应渲染只提交当前可视行给 Ratatui，原始 Body 仍保留给下载操作。
 
 ### Header 和参数模型（阶段 5/7 已完成）
 

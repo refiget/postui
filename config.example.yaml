@@ -3,3 +3,5 @@
 # Windows: %APPDATA%\postui\config.yaml
 language: en
 theme: gruvbox-dark
+# 响应体最多交给格式化和界面展示的字节数，默认 16777216（16 MiB）。
+# max_response_display_bytes: 16777216

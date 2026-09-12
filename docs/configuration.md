@@ -99,9 +99,10 @@ overrides:
 ```yaml
 language: zh
 theme: ocean
+max_response_display_bytes: 16777216
 ```
 
-`language` 支持 `en` 和 `zh`；`theme` 支持 `gruvbox-dark`、`ocean`、`nord` 和 `mono`。用户配置不存在时使用内置默认值。语法和变量高亮默认开启并跟随主题。
+`language` 支持 `en` 和 `zh`；`theme` 支持 `gruvbox-dark`、`ocean`、`nord` 和 `mono`。`max_response_display_bytes` 控制响应体最多交给格式化和界面展示的字节数，默认是 `16777216`（16 MiB），可完整展示 10 MiB 级响应。超过上限时只展示响应前缀，完整响应仍可通过 Response 的 Actions 下载。用户配置不存在时使用内置默认值。JSON 使用按视口生成的格式化与高亮，不需要等待完整展示内容预生成。
 
 ## 请求文件
 

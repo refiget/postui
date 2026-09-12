@@ -16,9 +16,9 @@ pub(super) fn request_list_offset(selected: usize, item_count: usize, visible: u
         .min(item_count.saturating_sub(visible))
 }
 
-pub(super) fn scroll_offset(offset: u16, content_length: usize, viewport_length: usize) -> u16 {
+pub(super) fn scroll_offset(offset: usize, content_length: usize, viewport_length: usize) -> usize {
     let max_offset = content_length.saturating_sub(viewport_length);
-    u16::try_from(usize::from(offset).min(max_offset)).unwrap_or(u16::MAX)
+    offset.min(max_offset)
 }
 
 pub(super) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
@@ -109,6 +109,12 @@ pub(super) fn request_status_style(
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
+pub(super) fn request_dirty_style(theme: &crate::settings::UiTheme) -> Style {
+    Style::default()
+        .fg(theme.warning)
+        .add_modifier(Modifier::BOLD)
+}
+
 pub(super) fn request_status_symbol(status: RequestStatus, animation_frame: usize) -> &'static str {
     const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     match status {
@@ -152,26 +158,7 @@ pub(super) fn panel_block(
     area: Rect,
     theme: &crate::settings::UiTheme,
 ) -> Block<'static> {
-    let block = bordered_block(title, theme, border::PLAIN);
-    if area.width >= 2 && area.height >= 2 {
-        block
-    } else {
-        Block::default()
-    }
-}
-
-pub(super) fn focused_panel_block(
-    title: impl Into<Line<'static>>,
-    area: Rect,
-    theme: &crate::settings::UiTheme,
-    focused: bool,
-) -> Block<'static> {
-    let symbols = if focused {
-        border::THICK
-    } else {
-        border::PLAIN
-    };
-    let block = bordered_block(title, theme, symbols);
+    let block = bordered_block(title, theme, border::ROUNDED);
     if area.width >= 2 && area.height >= 2 {
         block
     } else {

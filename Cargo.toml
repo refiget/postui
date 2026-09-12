@@ -11,6 +11,7 @@ repository = "https://github.com/refiget/postui"
 [dependencies]
 anyhow = "1.0"
 blake3 = "1.8"
+bytes = "1.10"
 cacache = { version = "13.1", default-features = false, features = ["async-std", "mmap"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 crossterm = "0.28"
@@ -23,5 +24,6 @@ syntect = { version = "5.3", default-features = false, features = ["default-fanc
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 form_urlencoded = "1.2"
+memchr = "2.7"
 unicode-segmentation = "1.13"
 url = "2.5"

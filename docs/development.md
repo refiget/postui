@@ -22,6 +22,18 @@ python3 -m venv .venv
 
 在 `mock/` 目录启动 `postui`，手工检查编辑、发送和响应展示。示例配置中的 token、Cookie 和接口地址均为虚构值，不要替换成个人项目凭据后提交。
 
+超长响应可以直接使用示例请求“10 MiB 响应稳定性”。它默认请求 10 MiB 的分块 JSON，修改请求参数即可调整规模或切换为纯文本：
+
+```text
+size_kb=10240      # 1–65536 KiB
+format=json        # json 或 plain
+delay_ms=0         # 每个分块之间的延迟，0–1000 ms
+```
+
+接口地址为 `GET /v1/large-response`。响应采用流式传输，并通过 `X-PostUI-Response-Bytes` 标明目标大小，适合手工观察大响应、滚动、JSON 高亮和慢速分块场景。
+
+响应体使用共享字节存储，HTTP 工作线程只建立轻量稀疏行索引，不生成完整 pretty 字符串或完整 Ratatui 行集合。TUI 收到响应时即可绘制首屏，JSON 格式化和高亮只针对当前视口生成。默认最多展示 16 MiB，完整内容仍可通过 Response 的 Actions 下载；上限位于用户界面配置 `max_response_display_bytes`。大响应不会在 debug 日志中执行完整 Body 脱敏解析。
+
 ## Linux 打包
 
 安装目标并构建发布包：

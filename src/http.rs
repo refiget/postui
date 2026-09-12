@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use reqwest::{
     Method,
     blocking::{
@@ -87,8 +88,7 @@ pub(crate) struct ResponseData {
     pub(crate) status: u16,
     pub(crate) reason: String,
     pub(crate) headers: Vec<(String, String)>,
-    pub(crate) body: String,
-    pub(crate) body_bytes: Vec<u8>,
+    pub(crate) body_bytes: Bytes,
     pub(crate) elapsed_ms: u128,
 }
 
@@ -263,13 +263,12 @@ pub(crate) fn send(
         );
         HttpError::from_reqwest("读取响应失败", error)
     })?;
-    let body = String::from_utf8_lossy(&body_bytes).into_owned();
     let elapsed_ms = started.elapsed().as_millis();
     tracing::debug!(
         status = status.as_u16(),
         elapsed_ms,
         body_bytes = body_bytes.len(),
-        body = %log_body(&body),
+        body = %log_body_bytes(&body_bytes),
         "HTTP 响应读取完成"
     );
 
@@ -277,8 +276,7 @@ pub(crate) fn send(
         status: status.as_u16(),
         reason: status.canonical_reason().unwrap_or_default().to_string(),
         headers,
-        body,
-        body_bytes: body_bytes.to_vec(),
+        body_bytes,
         elapsed_ms,
     })
 }
@@ -403,9 +401,19 @@ fn log_text(value: &str) -> String {
 }
 
 fn log_body(body: &str) -> String {
+    if body.len() > MAX_LOG_VALUE_BYTES {
+        return format!("<日志字段已省略，原始长度 {} 字节>", body.len());
+    }
     serde_json::from_str::<serde_json::Value>(body)
         .map(|value| log_json_value(&value))
         .unwrap_or_else(|_| log_form_body(body).unwrap_or_else(|| log_text(body)))
+}
+
+fn log_body_bytes(body: &[u8]) -> String {
+    if body.len() > MAX_LOG_VALUE_BYTES {
+        return format!("<日志字段已省略，原始长度 {} 字节>", body.len());
+    }
+    log_body(&String::from_utf8_lossy(body))
 }
 
 fn log_form_body(body: &str) -> Option<String> {

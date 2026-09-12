@@ -286,6 +286,14 @@ impl UiText {
         self.pick("Actions", "操作")
     }
 
+    pub(crate) fn response_zoom(self) -> &'static str {
+        self.pick("Zoom", "放大")
+    }
+
+    pub(crate) fn response_restore(self) -> &'static str {
+        self.pick("Restore", "还原")
+    }
+
     pub(crate) fn response_download(self) -> &'static str {
         self.pick("Download", "下载")
     }
@@ -339,35 +347,14 @@ impl UiText {
         self.pick("Empty response", "响应为空")
     }
 
-    pub(crate) fn footer_focus(self) -> &'static str {
-        self.pick("Focus", "区域")
-    }
-
-    pub(crate) fn footer_move(self) -> &'static str {
-        self.pick("Move", "移动")
-    }
-
-    pub(crate) fn footer_select(self) -> &'static str {
-        self.pick("Select", "选择")
-    }
-
-    pub(crate) fn footer_send(self) -> &'static str {
-        self.pick("Send", "发送")
-    }
-
-    pub(crate) fn footer_save(self) -> &'static str {
-        self.pick("Save", "保存")
-    }
-
-    pub(crate) fn footer_quit(self) -> &'static str {
-        self.pick("Quit", "退出")
-    }
-
-    pub(crate) fn footer_mouse(self) -> &'static str {
-        self.pick("Mouse", "鼠标")
-    }
-
-    pub(crate) fn footer_click(self) -> &'static str {
-        self.pick("Click", "点击")
+    pub(crate) fn response_body_limited(self, shown: usize, total: usize) -> String {
+        match self.language {
+            Language::English => {
+                format!("Large response: showing {shown} of {total} bytes; use Actions → Download")
+            }
+            Language::Chinese => {
+                format!("响应过大：仅显示 {shown} / {total} 字节，可在操作中下载")
+            }
+        }
     }
 }

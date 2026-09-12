@@ -7,6 +7,7 @@ use crate::{
     },
     http::{HttpError, ResponseData},
     i18n::UiText,
+    response_document::ResponseDocument,
 };
 
 use super::dialog::{HeaderRow, HeaderSource};
@@ -61,6 +62,7 @@ impl RequestStatus {
 pub(super) struct RequestRuntimeState {
     status: RequestStatus,
     response: Option<ResponseData>,
+    document: Option<ResponseDocument>,
     error: Option<String>,
     message: Option<String>,
     operation_id: Option<String>,
@@ -73,6 +75,10 @@ impl RequestRuntimeState {
 
     pub(super) fn response(&self) -> Option<&ResponseData> {
         self.response.as_ref()
+    }
+
+    pub(super) fn document(&self) -> Option<&ResponseDocument> {
+        self.document.as_ref()
     }
 
     pub(super) fn error(&self) -> Option<&str> {
@@ -90,6 +96,7 @@ impl RequestRuntimeState {
     pub(super) fn start(&mut self, operation_id: String, message: String) {
         self.status = RequestStatus::Sending;
         self.response = None;
+        self.document = None;
         self.error = None;
         self.operation_id = Some(operation_id);
         self.message = Some(message);
@@ -99,11 +106,13 @@ impl RequestRuntimeState {
         &mut self,
         status: RequestStatus,
         response: ResponseData,
+        document: ResponseDocument,
         message: String,
     ) {
         self.operation_id = None;
         self.status = status;
         self.response = Some(response);
+        self.document = Some(document);
         self.error = None;
         self.message = Some(message);
     }
@@ -117,6 +126,7 @@ impl RequestRuntimeState {
         self.operation_id = None;
         self.status = status;
         self.response = None;
+        self.document = None;
         self.error = Some(error);
         self.message = Some(message);
     }
