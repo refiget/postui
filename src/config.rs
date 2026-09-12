@@ -18,7 +18,7 @@ pub(crate) struct RequestConfig {
     pub(crate) name: String,
     pub(crate) file_directory: PathBuf,
     pub(crate) download_directory: PathBuf,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
     #[serde(default)]
     pub(crate) editable_variables: BTreeSet<String>,
@@ -31,7 +31,7 @@ pub(crate) struct WorkspaceConfig {
     pub(crate) name: String,
     pub(crate) file_directory: PathBuf,
     pub(crate) download_directory: PathBuf,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
     pub(crate) editable_variables: BTreeSet<String>,
     pub(crate) timeout_seconds: u64,
@@ -69,6 +69,12 @@ pub(crate) struct VariableDefinition {
     pub(crate) default: Option<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NameValue {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ApiRequest {
     pub(crate) id: String,
@@ -77,10 +83,10 @@ pub(crate) struct ApiRequest {
     pub(crate) url: String,
     pub(crate) timeout_seconds: u64,
     pub(crate) description: String,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: Vec<NameValue>,
     pub(crate) body_parts: Vec<BodyPart>,
     pub(crate) query_parts: Vec<BodyPart>,
-    pub(crate) form: BTreeMap<String, String>,
+    pub(crate) form: Vec<NameValue>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) extracts: Vec<ResponseExtract>,
 }
@@ -115,7 +121,7 @@ struct RawWorkspaceConfig {
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
-    headers: BTreeMap<String, String>,
+    headers: Vec<NameValue>,
     #[serde(default = "default_timeout_seconds")]
     timeout: u64,
 }
@@ -144,7 +150,7 @@ impl Default for RawWorkspaceConfig {
             name: None,
             directories: RawDirectories::default(),
             variables: BTreeMap::new(),
-            headers: BTreeMap::new(),
+            headers: Vec::new(),
             timeout: default_timeout_seconds(),
         }
     }
@@ -170,10 +176,10 @@ struct ParsedRequest {
 struct ParsedCommand {
     method: Option<String>,
     url: Option<String>,
-    headers: BTreeMap<String, String>,
+    headers: Vec<NameValue>,
     data: Vec<BodyPart>,
     query_data: Vec<BodyPart>,
-    form: BTreeMap<String, String>,
+    form: Vec<NameValue>,
     files: Vec<FileUpload>,
     get_mode: bool,
 }
@@ -317,10 +323,10 @@ fn normalize_config(
                 .or_insert_with(|| VariableDefinition { default: None });
         }
     }
-    for (name, value) in &headers {
-        for variable in crate::template::variable_names_in_text(name)
+    for header in &headers {
+        for variable in crate::template::variable_names_in_text(&header.name)
             .into_iter()
-            .chain(crate::template::variable_names_in_text(value))
+            .chain(crate::template::variable_names_in_text(&header.value))
         {
             variables
                 .entry(variable)
@@ -635,20 +641,15 @@ fn normalize_variables(
     Ok(variables)
 }
 
-fn normalize_headers(raw_headers: BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
-    let mut headers = BTreeMap::<String, String>::new();
-    for (raw_name, value) in raw_headers {
-        let name = raw_name.trim().to_string();
+fn normalize_headers(raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
+    let mut headers = Vec::with_capacity(raw_headers.len());
+    for mut header in raw_headers {
+        let name = header.name.trim().to_string();
         if name.is_empty() {
             bail!("工作区 Header 名称不能为空")
         }
-        if headers
-            .keys()
-            .any(|existing| existing.eq_ignore_ascii_case(&name))
-        {
-            bail!("工作区 Header 名称重复: {name}")
-        }
-        headers.insert(name, value);
+        header.name = name;
+        headers.push(header);
     }
     Ok(headers)
 }

@@ -4,7 +4,10 @@ use std::{
 };
 
 use crate::{
-    config::{ApiRequest, BodyPart, FileUpload, RequestConfig, WorkspaceConfig, value_to_string},
+    config::{
+        ApiRequest, BodyPart, FileUpload, NameValue, RequestConfig, WorkspaceConfig,
+        value_to_string,
+    },
     editor::{
         BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
         merge_json_edit, terminal_width, text_position,
@@ -24,7 +27,7 @@ pub(crate) use dialog::{
     BodyPartSource, Dialog, DialogFocus, HeaderField, HeaderRow, HeaderSource, HeadersDialog,
     ParamSource, ParamsDialog, ParamsDialogRow, VariableRow, VariablesDialog,
 };
-use dialog::{DialogAction, remove_header, remove_header_map, split_key_value};
+use dialog::{DialogAction, split_key_value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -254,18 +257,32 @@ impl RequestSession {
         }
     }
 
-    fn effective_request(&self, collection_headers: &BTreeMap<String, String>) -> ApiRequest {
+    fn effective_request(&self, collection_headers: &[NameValue]) -> ApiRequest {
         let mut effective = self.source.clone();
         if let Some(url) = &self.draft.url {
             effective.url = url.clone();
         }
-        let mut headers = collection_headers.clone();
-        for row in &self.draft.headers {
-            remove_header_map(&mut headers, &row.name);
-            if row.enabled && !row.name.trim().is_empty() {
-                headers.insert(row.name.clone(), row.value.clone());
-            }
-        }
+        let headers = collection_headers
+            .iter()
+            .filter(|header| {
+                !self
+                    .draft
+                    .headers
+                    .iter()
+                    .any(|row| row.name.eq_ignore_ascii_case(&header.name))
+            })
+            .cloned()
+            .chain(
+                self.draft
+                    .headers
+                    .iter()
+                    .filter(|row| row.enabled && !row.name.trim().is_empty())
+                    .map(|row| NameValue {
+                        name: row.name.trim().to_string(),
+                        value: row.value.clone(),
+                    }),
+            )
+            .collect();
         effective.headers = headers;
         effective.query_parts = self.draft.query_parts.clone();
         effective.form = self.draft.form.clone();
@@ -332,7 +349,7 @@ pub(crate) struct RequestDraft {
     pub(crate) url: Option<String>,
     pub(crate) headers: Vec<HeaderRow>,
     pub(crate) query_parts: Vec<BodyPart>,
-    pub(crate) form: BTreeMap<String, String>,
+    pub(crate) form: Vec<NameValue>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) body_parts: Vec<BodyPart>,
 }
@@ -344,9 +361,9 @@ impl From<&ApiRequest> for RequestDraft {
             headers: request
                 .headers
                 .iter()
-                .map(|(name, value)| HeaderRow {
-                    name: name.clone(),
-                    value: value.clone(),
+                .map(|header| HeaderRow {
+                    name: header.name.clone(),
+                    value: header.value.clone(),
                     enabled: true,
                     source: HeaderSource::Request,
                 })
@@ -1083,14 +1100,14 @@ impl App {
                     .config
                     .headers
                     .iter()
-                    .filter(|(name, _)| {
+                    .filter(|header| {
                         !request_rows
                             .iter()
-                            .any(|row| row.name.eq_ignore_ascii_case(name))
+                            .any(|row| row.name.eq_ignore_ascii_case(&header.name))
                     })
-                    .map(|(name, value)| HeaderRow {
-                        name: name.clone(),
-                        value: value.clone(),
+                    .map(|header| HeaderRow {
+                        name: header.name.clone(),
+                        value: header.value.clone(),
                         enabled: true,
                         source: HeaderSource::Collection,
                     })
@@ -1132,11 +1149,11 @@ impl App {
                         has_equals,
                     });
                 }
-                for (key, value) in &draft.form {
+                for field in &draft.form {
                     rows.push(ParamsDialogRow {
                         source: ParamSource::Form,
-                        key: key.clone(),
-                        value: value.clone(),
+                        key: field.name.clone(),
+                        value: field.value.clone(),
                         part_type: None,
                         has_equals: true,
                     });
@@ -1311,14 +1328,11 @@ impl App {
                     .filter(|row| {
                         row.source == HeaderSource::Request && !row.name.trim().is_empty()
                     })
-                    .fold(Vec::new(), |mut rows, row| {
-                        remove_header(&mut rows, &row.name);
-                        rows.push(HeaderRow {
-                            name: row.name.trim().to_string(),
-                            ..row.clone()
-                        });
-                        rows
-                    });
+                    .map(|row| HeaderRow {
+                        name: row.name.trim().to_string(),
+                        ..row.clone()
+                    })
+                    .collect();
                 if let Some(session) = self.workspace_state.request_mut(&dialog.request_id) {
                     session.draft.headers = rows;
                 }
@@ -1340,7 +1354,7 @@ impl App {
                     let url_location = template::split_url_query(&effective_url);
                     let mut url_parts = Vec::new();
                     let mut query_parts = Vec::new();
-                    let mut form = BTreeMap::new();
+                    let mut form = Vec::new();
                     let mut body_parts = Vec::new();
                     for row in &dialog.rows {
                         let key = row.key.trim();
@@ -1356,7 +1370,10 @@ impl App {
                                 );
                             }
                             ParamSource::Form if !key.is_empty() => {
-                                form.insert(key.to_string(), row.value.clone());
+                                form.push(NameValue {
+                                    name: key.to_string(),
+                                    value: row.value.clone(),
+                                });
                             }
                             ParamSource::Body if !key.is_empty() || !value.is_empty() => {
                                 let part = join_param_row(key, value, row.has_equals);

@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::RequestConfig;
 
-const CACHE_FORMAT_VERSION: u32 = 1;
+const CACHE_FORMAT_VERSION: u32 = 2;
 const CACHE_DIRECTORY_NAME: &str = "cache";
-const WORKSPACE_CACHE_KEY: &str = "workspace-config-v1";
+const WORKSPACE_CACHE_KEY: &str = "workspace-config-v2";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheEnvelope {

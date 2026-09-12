@@ -135,26 +135,36 @@ pub(crate) fn send(
     let request_headers = request
         .headers
         .iter()
-        .map(|(name, value)| (name.clone(), log_field_value(name, value)))
+        .map(|header| {
+            (
+                header.name.clone(),
+                log_field_value(&header.name, &header.value),
+            )
+        })
         .collect::<Vec<_>>();
     tracing::debug!(headers = ?request_headers, "准备请求头");
-    for (name, value) in &request.headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
-            tracing::error!(header = %name, error = %error, "请求头名称无效");
-            HttpError::failed(format!("请求头名称无效 {name}: {error}"))
+    for header in &request.headers {
+        let header_name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
+            tracing::error!(header = %header.name, error = %error, "请求头名称无效");
+            HttpError::failed(format!("请求头名称无效 {}: {error}", header.name))
         })?;
-        builder = builder.header(header_name, value);
+        builder = builder.header(header_name, &header.value);
     }
     if !request.form.is_empty() || !request.files.is_empty() {
         let form_fields = request
             .form
             .iter()
-            .map(|(name, value)| (name.clone(), log_field_value(name, value)))
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    log_field_value(&field.name, &field.value),
+                )
+            })
             .collect::<Vec<_>>();
         tracing::debug!(fields = ?form_fields, "准备 multipart 表单字段");
         let mut form = Form::new();
-        for (name, value) in &request.form {
-            form = form.text(name.clone(), value.clone());
+        for field in &request.form {
+            form = form.text(field.name.clone(), field.value.clone());
         }
         for file in &request.files {
             if file.path.trim().is_empty() {

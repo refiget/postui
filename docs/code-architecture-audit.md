@@ -10,14 +10,15 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段四已经完成依赖整理、请求状态收敛和第一轮职责拆分，后续重点是请求字段模型和输入组件评估：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段五已经完成依赖整理、请求状态收敛、第一轮职责拆分和请求字段模型整理，后续重点是输入组件评估：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
 3. [已完成] 用 `serde-saphyr` 替换已经停止维护的 `serde_yaml`。
 4. [已完成] 合并请求配置、编辑态和运行态，消除平行状态容器。
 5. [阶段 4 已完成第一轮] 按职责拆分 1980 行的 `App`。
-6. 最后评估剪贴板和文本编辑器库。
+6. [阶段 5 已完成] 将 Header/Form 统一为有序、可重复的 `NameValue` 条目。
+7. 最后评估剪贴板和文本编辑器库。
 
 ## 值得使用现成库替换的实现
 
@@ -292,18 +293,18 @@ RequestFileStore::delete(...)
 
 `App` 只准备已解析请求、更新 `RequestSession.runtime`，并在主循环中消费 `RequestResult`。过期结果校验、response extract 和状态消息仍属于界面业务流程，因此保留在 `App`。
 
-### Header 和 Form 模型不能表达重复字段
+### Header 和 Form 模型（阶段 5 已完成）
 
-请求头、form 字段和解析后的请求大量使用 `BTreeMap<String, String>`，无法完整表达：
+此前请求头、form 字段和解析后的请求大量使用 `BTreeMap<String, String>`，无法完整表达：
 
 - 重复 Header。
 - 重复 form key。
 - 顺序敏感的参数。
 - 大小写不同但语义相同的 Header。
 
-UI 编辑层已经使用 `Vec<HeaderRow>`，但保存和发送时又压回 Map，可能造成信息损失。
+UI 编辑层已经使用 `Vec<HeaderRow>`，但保存和发送时又压回 Map，造成了信息损失。
 
-建议领域模型统一为有序列表，例如：
+当前领域模型已经统一为有序列表：
 
 ```rust
 struct NameValue {
@@ -312,7 +313,7 @@ struct NameValue {
 }
 ```
 
-请求头发送阶段再转换为 `HeaderMap`，并明确哪些 Header 允许重复。该修改会影响配置格式，应作为单独任务实施。
+`ApiRequest`、工作区配置、模板展开结果和 Form 编辑态都使用 `Vec<NameValue>`。请求头发送阶段逐条交给 reqwest，Form 逐条加入 multipart；因此重复字段和原始顺序不会在中间层丢失。工作区配置的 `headers` 现在是条目数组，请求级同名 Header 覆盖工作区默认项，缓存格式同步升版。
 
 ## 可能的过度抽象或过度设计
 
@@ -380,8 +381,8 @@ struct CellSelection {
 
 ### 第三批：模型完善
 
-1. Header 改为有序、可重复结构。
-2. Form 参数改为有序、可重复结构。
+1. [已完成] Header 改为有序、可重复结构。
+2. [已完成] Form 参数改为有序、可重复结构。
 3. 统一 URL query、curl data 和 form 的数据语义。
 4. 再评估 `tui-input` 和剪贴板库。
 

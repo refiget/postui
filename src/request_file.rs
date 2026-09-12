@@ -101,10 +101,10 @@ fn serialize_request(request: &ApiRequest) -> String {
         request.method,
         shell_quote(&request.url)
     )];
-    for (name, value) in &request.headers {
+    for header in &request.headers {
         command.push(format!(
             "  --header {}",
-            shell_quote(&format!("{name}: {value}"))
+            shell_quote(&format!("{}: {}", header.name, header.value))
         ));
     }
     for part in &request.query_parts {
@@ -130,10 +130,10 @@ fn serialize_request(request: &ApiRequest) -> String {
             shell_quote(crate::template::body_part_value(part))
         ));
     }
-    for (name, value) in &request.form {
+    for field in &request.form {
         command.push(format!(
             "  --form-string {}",
-            shell_quote(&format!("{name}={value}"))
+            shell_quote(&format!("{}={}", field.name, field.value))
         ));
     }
     for file in &request.files {

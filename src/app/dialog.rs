@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::{
     config::BodyPart,
     editor::{EditorAction, TextEditor},
@@ -553,20 +551,6 @@ fn move_index(current: usize, direction: isize, length: usize) -> usize {
         value => current
             .saturating_add(value as usize)
             .min(length.saturating_sub(1)),
-    }
-}
-
-pub(super) fn remove_header(rows: &mut Vec<HeaderRow>, name: &str) {
-    rows.retain(|row| !row.name.eq_ignore_ascii_case(name));
-}
-
-pub(super) fn remove_header_map(headers: &mut BTreeMap<String, String>, name: &str) {
-    if let Some(existing) = headers
-        .keys()
-        .find(|existing| existing.eq_ignore_ascii_case(name))
-        .cloned()
-    {
-        headers.remove(&existing);
     }
 }
 

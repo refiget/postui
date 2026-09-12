@@ -349,8 +349,13 @@ fn request_content_lines(
 
     if !request.form.is_empty() {
         lines.push(Line::from(Span::styled(text.form(), section_style(theme))));
-        for (name, value) in &request.form {
-            lines.push(content_value_line(name, value, theme.text, theme));
+        for field in &request.form {
+            lines.push(content_value_line(
+                &field.name,
+                &field.value,
+                theme.text,
+                theme,
+            ));
         }
     }
 

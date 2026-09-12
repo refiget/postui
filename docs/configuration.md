@@ -38,7 +38,8 @@ directories:
   downloads: temp
 
 headers:
-  Accept: application/json
+  - name: Accept
+    value: application/json
 
 variables:
   host: https://api.example.test
@@ -52,7 +53,7 @@ variables:
 | `timeout` | `30` | 默认请求超时秒数；请求文件中的 `@timeout` 可以覆盖 |
 | `directories.uploads` | `test_files` | 相对上传目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
-| `headers` | `{}` | 所有请求继承的 Header |
+| `headers` | `[]` | 所有请求继承的 Header 条目，按列表顺序发送 |
 | `variables` | `{}` | 工作区变量；空值表示启动后填写 |
 
 目录相对路径始终以项目根目录为基准，也支持绝对路径。下载目录在保存响应时自动创建；上传目录或文件不存在时，发送操作会显示错误。
@@ -95,6 +96,20 @@ curl --request POST "{{host}}/files" \
 ~~~
 
 `@extract` 只在 HTTP 状态码小于 400 时从 JSON 响应提取字段。支持点路径、数组下标和 JSON Pointer。
+
+Header 使用 `name`/`value` 条目数组，而不是 YAML 映射，因此可以保留重复名称和书写顺序：
+
+```yaml
+headers:
+  - name: Accept
+    value: application/json
+  - name: X-Trace-Tag
+    value: one
+  - name: X-Trace-Tag
+    value: two
+```
+
+请求文件中的同名 Header 会覆盖工作区默认 Header；请求文件中的重复 Header 会全部保留并按原顺序发送。Form 字段也保留重复名称，参数编辑器不会合并同名条目。
 
 ## 编辑、保存与缓存
 

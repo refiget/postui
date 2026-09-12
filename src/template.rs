@@ -4,15 +4,15 @@ use form_urlencoded::parse;
 use serde_json::Value;
 use url::Url;
 
-use crate::config::{ApiRequest, BodyPart};
+use crate::config::{ApiRequest, BodyPart, NameValue};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
     pub(crate) method: String,
     pub(crate) url: String,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: Vec<NameValue>,
     pub(crate) raw_body: Option<String>,
-    pub(crate) form: BTreeMap<String, String>,
+    pub(crate) form: Vec<NameValue>,
     pub(crate) files: Vec<ResolvedFile>,
 }
 
@@ -55,10 +55,10 @@ pub(crate) fn resolve_request(
     ResolvedRequest {
         method: request.method.clone(),
         url,
-        headers: expand_text_map(&request.headers, variables),
+        headers: expand_text_values(&request.headers, variables),
         raw_body: (!request.body_parts.is_empty())
             .then(|| resolve_data_parts(&request.body_parts, variables)),
-        form: expand_text_map(&request.form, variables),
+        form: expand_text_values(&request.form, variables),
         files: request
             .files
             .iter()
@@ -86,8 +86,8 @@ pub(crate) fn display_url(request: &ApiRequest) -> String {
 pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text(&request.url, &mut names);
-    collect_text_map(&request.headers, &mut names);
-    collect_text_map(&request.form, &mut names);
+    collect_text_values(&request.headers, &mut names);
+    collect_text_values(&request.form, &mut names);
     for file in &request.files {
         collect_text(&file.field, &mut names);
         collect_text(&file.path, &mut names);
@@ -371,20 +371,23 @@ fn append_query_fallback(url: &str, query: &str) -> String {
     rebuilt
 }
 
-fn expand_text_map(
-    values: &BTreeMap<String, String>,
+fn expand_text_values(
+    values: &[NameValue],
     variables: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+) -> Vec<NameValue> {
     values
         .iter()
-        .map(|(key, value)| (resolve_text(key, variables), resolve_text(value, variables)))
+        .map(|value| NameValue {
+            name: resolve_text(&value.name, variables),
+            value: resolve_text(&value.value, variables),
+        })
         .collect()
 }
 
-fn collect_text_map(values: &BTreeMap<String, String>, names: &mut BTreeSet<String>) {
-    for (key, value) in values {
-        collect_text(key, names);
-        collect_text(value, names);
+fn collect_text_values(values: &[NameValue], names: &mut BTreeSet<String>) {
+    for value in values {
+        collect_text(&value.name, names);
+        collect_text(&value.value, names);
     }
 }
 

@@ -1,8 +1,8 @@
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::{BodyPart, FileUpload, ParsedCommand};
+use super::{BodyPart, FileUpload, NameValue, ParsedCommand};
 
 pub(super) fn parse_curl(source: &str, request_id: &str) -> Result<ParsedCommand> {
     if source.trim().is_empty() {
@@ -162,19 +162,22 @@ fn parse_option_value(
         "--form-string" => parse_form_string(&mut parsed.form, value, request_id)?,
         "-o" | "--output" => {}
         "-b" | "--cookie" => {
-            parsed
-                .headers
-                .insert("Cookie".to_string(), value.to_string());
+            parsed.headers.push(NameValue {
+                name: "Cookie".to_string(),
+                value: value.to_string(),
+            });
         }
         "-A" | "--user-agent" => {
-            parsed
-                .headers
-                .insert("User-Agent".to_string(), value.to_string());
+            parsed.headers.push(NameValue {
+                name: "User-Agent".to_string(),
+                value: value.to_string(),
+            });
         }
         "-e" | "--referer" => {
-            parsed
-                .headers
-                .insert("Referer".to_string(), value.to_string());
+            parsed.headers.push(NameValue {
+                name: "Referer".to_string(),
+                value: value.to_string(),
+            });
         }
         "--url" => set_url(&mut parsed.url, value, request_id)?,
         _ => unreachable!("unsupported curl value option: {option}"),
@@ -249,11 +252,7 @@ fn set_url(url: &mut Option<String>, value: &str, request_id: &str) -> Result<()
     Ok(())
 }
 
-fn parse_header(
-    headers: &mut BTreeMap<String, String>,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
+fn parse_header(headers: &mut Vec<NameValue>, value: &str, request_id: &str) -> Result<()> {
     let Some((name, value)) = value.split_once(':') else {
         bail!("接口 {} 的 curl 请求头格式无效: {}", request_id, value)
     };
@@ -261,7 +260,10 @@ fn parse_header(
     if name.is_empty() {
         bail!("接口 {} 的 curl 请求头名称不能为空", request_id)
     }
-    headers.insert(name.to_string(), value.trim().to_string());
+    headers.push(NameValue {
+        name: name.to_string(),
+        value: value.trim().to_string(),
+    });
     Ok(())
 }
 
@@ -292,18 +294,20 @@ fn parse_form(parsed: &mut ParsedCommand, value: &str, request_id: &str) -> Resu
             content_type,
         });
     } else {
-        parsed.form.insert(field.to_string(), content.to_string());
+        parsed.form.push(NameValue {
+            name: field.to_string(),
+            value: content.to_string(),
+        });
     }
     Ok(())
 }
 
-fn parse_form_string(
-    form: &mut BTreeMap<String, String>,
-    value: &str,
-    request_id: &str,
-) -> Result<()> {
+fn parse_form_string(form: &mut Vec<NameValue>, value: &str, request_id: &str) -> Result<()> {
     let (field, content) = split_form_field(value, request_id)?;
-    form.insert(field.to_string(), content.to_string());
+    form.push(NameValue {
+        name: field.to_string(),
+        value: content.to_string(),
+    });
     Ok(())
 }
 
@@ -352,9 +356,15 @@ fn reject_body_file(value: &str, option: &str, request_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn insert_header_if_missing(headers: &mut BTreeMap<String, String>, name: &str, value: &str) {
-    if !headers.keys().any(|key| key.eq_ignore_ascii_case(name)) {
-        headers.insert(name.to_string(), value.to_string());
+fn insert_header_if_missing(headers: &mut Vec<NameValue>, name: &str, value: &str) {
+    if !headers
+        .iter()
+        .any(|header| header.name.eq_ignore_ascii_case(name))
+    {
+        headers.push(NameValue {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
     }
 }
 

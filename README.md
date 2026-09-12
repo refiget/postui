@@ -68,7 +68,8 @@ directories:
   downloads: temp
 
 headers:
-  Accept: application/json
+  - name: Accept
+    value: application/json
 
 variables:
   host: https://api.example.test
