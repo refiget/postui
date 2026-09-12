@@ -110,11 +110,14 @@ pub(super) fn draw_header(
         } else {
             format!("[ {} ]", app.text().send_button(false))
         };
-        let state = preview_action_button_state(
-            !app.can_execute_preview_action(PreviewAction::Send),
+        draw_send_button(
+            frame,
+            send_button,
+            &label,
+            app.can_execute_preview_action(PreviewAction::Send),
             app.focused_preview_action() == Some(PreviewAction::Send),
+            theme,
         );
-        frame.render_widget(send_button_widget(&label, &state, theme), send_button);
     }
 }
 
@@ -166,12 +169,13 @@ pub(super) fn draw_request_list(
         frame.render_widget(Paragraph::new(workspace).style(style), rows[1]);
     }
     if !variables_button_area.is_empty() {
-        let mut state = ButtonState::enabled();
-        state.set_focused(focus.variables_focused());
         let label = format!("◇ {} ({})", text.variables(), app.variable_count());
-        frame.render_widget(
-            variables_button_widget(&label, &state, theme),
+        draw_primary_button(
+            frame,
             variables_button_area,
+            &label,
+            focus.variables_focused(),
+            theme,
         );
     }
 

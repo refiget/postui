@@ -1,17 +1,3 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Modifier, Style},
-    symbols::{border, scrollbar::VERTICAL},
-    text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
-        Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
-    },
-};
-use ratatui_interact::components::{Button, ButtonState, ButtonStyle, ButtonVariant};
-
 use crate::{
     app::{
         App, AppPrompt, Dialog, DialogFocus, Focus, HeaderField, HeaderSource, PreviewAction,
@@ -19,6 +5,18 @@ use crate::{
     },
     config::ApiRequest,
     highlight,
+};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
+    symbols::{border, scrollbar::VERTICAL},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
+        Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
+    },
 };
 
 mod chrome;

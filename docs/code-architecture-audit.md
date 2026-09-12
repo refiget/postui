@@ -10,7 +10,7 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段七已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理、输入基础设施收敛和参数语义统一：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段八已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理、输入基础设施收敛、参数语义统一和按钮渲染收敛：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
@@ -20,6 +20,7 @@ cargo clippy --all-targets -- -D warnings
 6. [阶段 5 已完成] 将 Header/Form 字段统一为有序、可重复的条目模型。
 7. [阶段 6 已完成] 收敛单行编辑器的 Unicode 边界，并使用正式剪贴板库。
 8. [阶段 7 已完成] 统一 URL query、curl data 和 form 的参数表示与编码路径。
+9. [阶段 8 已完成] 删除仅用于 Button 渲染的 `ratatui-interact`，改用 Ratatui 原生组件。
 
 ## 值得使用现成库替换的实现
 
@@ -158,16 +159,17 @@ PostUI 仍只调用 `read_sync` 和 `write_sync`，不会启动 async-std runtim
 
 优先级：高。
 
-### ratatui-interact 使用范围过窄
+### ratatui-interact（阶段 8 已移除）
 
-`ratatui-interact` 当前基本只用于 Button。按钮的鼠标命中、focus、disabled 判断和 action 分发仍主要由项目自己维护。
+`ratatui-interact` 之前基本只用于 Button。按钮的鼠标命中、focus、disabled 判断和 action 分发仍主要由项目自己维护，因此这层依赖没有提供完整的交互抽象。
 
-可选择：
+阶段八已完成：
 
-1. 扩大组件库的使用范围，让它统一管理交互状态。
-2. 删除该依赖，使用 Ratatui 的 `Block`/`Paragraph` 渲染按钮，并保留现有命中处理。
+- 使用 Ratatui 的 `Block`/`Paragraph` 渲染单行和块按钮。
+- 将 enabled、focused 和按钮样式直接传给渲染函数。
+- 保留现有 `UiLayout` 命中区域和 `App` 动作分发，不引入新的组件状态机。
 
-考虑当前项目规模，更倾向第二种，但这不是近期高优先级事项。
+这样减少了一层只有渲染用途的依赖，同时不会改变键盘、鼠标、焦点和禁用态逻辑。优先级：已完成。
 
 ## 抽象不足
 
@@ -376,6 +378,10 @@ struct CellSelection {
 2. [已完成] Form 参数改为有序、可重复结构。
 3. [已完成] 统一 URL query、curl data 和 form 的数据语义。
 4. [已完成] 评估 `tui-input`，并接入 `unicode-segmentation` 和 `arboard`。
+
+### 第四批：界面依赖收敛
+
+1. [阶段 8 已完成] 删除仅用于 Button 渲染的 `ratatui-interact`，使用 Ratatui 原生 `Block`/`Paragraph`。
 
 不建议一次性进行框架化重写。先解决 HTTP Client 生命周期和请求状态模型，项目复杂度会自然下降，再进行模块拆分。
 

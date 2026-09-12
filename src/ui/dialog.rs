@@ -438,41 +438,23 @@ pub(super) fn draw_dialog_footer(
     let theme = &app.global_config.theme;
     let text = app.text();
     if !layout.apply_button.is_empty() {
-        let state = dialog_button_state(focus, DialogFocus::Apply);
-        frame.render_widget(
-            dialog_button_widget(text.apply(), &state, theme, layout.apply_button),
+        draw_secondary_button(
+            frame,
             layout.apply_button,
+            text.apply(),
+            focus == DialogFocus::Apply,
+            theme,
         );
     }
     if !layout.close_button.is_empty() {
-        let state = dialog_button_state(focus, DialogFocus::Close);
-        frame.render_widget(
-            dialog_button_widget(text.close(), &state, theme, layout.close_button),
+        draw_secondary_button(
+            frame,
             layout.close_button,
+            text.close(),
+            focus == DialogFocus::Close,
+            theme,
         );
     }
-}
-
-pub(super) fn dialog_button_state(current: DialogFocus, focus: DialogFocus) -> ButtonState {
-    let focused = current == focus;
-    let mut state = ButtonState::enabled();
-    state.set_focused(focused);
-    state
-}
-
-pub(super) fn dialog_button_widget<'a>(
-    label: &'a str,
-    state: &'a ButtonState,
-    theme: &crate::settings::UiTheme,
-    area: Rect,
-) -> Button<'a> {
-    let label_width = u16::try_from(crate::editor::terminal_width(label)).unwrap_or(u16::MAX);
-    let variant = if area.height >= 3 && area.width >= label_width.saturating_add(4) {
-        ButtonVariant::Block
-    } else {
-        ButtonVariant::SingleLine
-    };
-    button_widget(label, state, secondary_button_style(theme), variant)
 }
 
 pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) {

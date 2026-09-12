@@ -192,73 +192,135 @@ pub(super) fn dialog_block(
     }
 }
 
-pub(super) fn send_button_widget<'a>(
-    label: &'a str,
-    state: &'a ButtonState,
+pub(super) fn draw_send_button(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    enabled: bool,
+    focused: bool,
     theme: &crate::settings::UiTheme,
-) -> Button<'a> {
-    button_widget(
+) {
+    draw_single_line_button(
+        frame,
+        area,
         label,
-        state,
-        send_button_style(theme),
-        ButtonVariant::SingleLine,
-    )
+        enabled,
+        focused,
+        ButtonPalette::new(
+            theme.text,
+            theme.selection,
+            theme.accent,
+            theme.surface,
+            theme.muted,
+        ),
+    );
 }
 
-pub(super) fn send_button_style(theme: &crate::settings::UiTheme) -> ButtonStyle {
-    let mut style = ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(theme.text, theme.selection)
-        .unfocused(theme.accent, theme.surface);
-    style.disabled_fg = theme.muted;
-    style
-}
-
-pub(super) fn variables_button_widget<'a>(
-    label: &'a str,
-    state: &'a ButtonState,
+pub(super) fn draw_primary_button(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    focused: bool,
     theme: &crate::settings::UiTheme,
-) -> Button<'a> {
-    button_widget(
+) {
+    draw_single_line_button(
+        frame,
+        area,
         label,
-        state,
-        primary_button_style(theme),
-        ButtonVariant::SingleLine,
-    )
+        true,
+        focused,
+        ButtonPalette::new(
+            theme.text,
+            theme.primary,
+            theme.background,
+            theme.accent,
+            theme.muted,
+        ),
+    );
 }
 
-pub(super) fn preview_action_button_state(loading_or_disabled: bool, focused: bool) -> ButtonState {
-    if loading_or_disabled {
-        ButtonState::disabled()
+pub(super) fn draw_secondary_button(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    focused: bool,
+    theme: &crate::settings::UiTheme,
+) {
+    let label_width = crate::editor::terminal_width(label);
+    let block = area.height >= 3 && usize::from(area.width) >= label_width.saturating_add(4);
+    let style = ButtonPalette::new(
+        theme.text,
+        theme.selection,
+        theme.text,
+        theme.surface,
+        theme.muted,
+    )
+    .style(true, focused);
+    if block {
+        let button = Block::default().borders(Borders::ALL).border_style(style);
+        let inner = button.inner(area);
+        frame.render_widget(button, area);
+        frame.render_widget(
+            Paragraph::new(label)
+                .style(style)
+                .alignment(Alignment::Center),
+            inner,
+        );
     } else {
-        let mut state = ButtonState::enabled();
-        state.set_focused(focused);
-        state
+        render_button_line(frame, area, label, style);
     }
 }
 
-pub(super) fn button_widget<'a>(
-    label: &'a str,
-    state: &'a ButtonState,
-    style: ButtonStyle,
-    variant: ButtonVariant,
-) -> Button<'a> {
-    Button::new(label, state).variant(variant).style(style)
+fn draw_single_line_button(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    enabled: bool,
+    focused: bool,
+    palette: ButtonPalette,
+) {
+    render_button_line(frame, area, label, palette.style(enabled, focused));
 }
 
-pub(super) fn primary_button_style(theme: &crate::settings::UiTheme) -> ButtonStyle {
-    let mut style = ButtonStyle::new(ButtonVariant::SingleLine)
-        .focused(theme.text, theme.primary)
-        .unfocused(theme.background, theme.accent);
-    style.disabled_fg = theme.muted;
-    style
+fn render_button_line(frame: &mut Frame<'_>, area: Rect, label: &str, style: Style) {
+    let line = Line::from(Span::styled(format!(" {label} "), style));
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-pub(super) fn secondary_button_style(theme: &crate::settings::UiTheme) -> ButtonStyle {
-    let mut style = ButtonStyle::new(ButtonVariant::Block)
-        .focused(theme.text, theme.selection)
-        .unfocused(theme.text, theme.surface);
-    style.disabled_fg = theme.muted;
-    style
+#[derive(Debug, Clone, Copy)]
+struct ButtonPalette {
+    focused: Style,
+    unfocused: Style,
+    disabled: Style,
+}
+
+impl ButtonPalette {
+    fn new(
+        focused_fg: Color,
+        focused_bg: Color,
+        unfocused_fg: Color,
+        unfocused_bg: Color,
+        disabled_fg: Color,
+    ) -> Self {
+        Self {
+            focused: Style::default()
+                .fg(focused_fg)
+                .bg(focused_bg)
+                .add_modifier(Modifier::BOLD),
+            unfocused: Style::default().fg(unfocused_fg).bg(unfocused_bg),
+            disabled: Style::default().fg(disabled_fg),
+        }
+    }
+
+    fn style(self, enabled: bool, focused: bool) -> Style {
+        if !enabled {
+            self.disabled
+        } else if focused {
+            self.focused
+        } else {
+            self.unfocused
+        }
+    }
 }
 
 fn bordered_block(
