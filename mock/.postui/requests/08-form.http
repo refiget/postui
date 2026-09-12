@@ -1,7 +1,0 @@
-# @name URL 编码表单
-# @description 多个 data-urlencode 参数会在变量展开后合并为表单请求体。
-# @extract header_echo = request.headers.content-type
-curl --request POST "http://{{host}}/v1/form" \
-  --header "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "name={{item_name}}" \
-  --data-urlencode "note={{note}}"

@@ -1,7 +1,0 @@
-# @name 更新项目（短参数）
-# @description 测试 -X、-H 的附着参数形式和 JSON body。
-# @extract updated_method = data.method
-curl -XPUT "http://{{host}}/v1/items/{{item_id}}" \
-  -H"Content-Type: application/json" \
-  -H"X-Debug-Token: {{token}}" \
-  --data-raw '{"name":"{{item_name}}","value":"{{item_value}}"}'

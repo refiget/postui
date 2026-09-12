@@ -11,6 +11,8 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(format!(" {}  │  ", text.footer_move())),
             Span::styled("Enter", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.footer_select())),
+            Span::styled("e", Style::default().fg(theme.accent)),
+            Span::raw(format!(" {}  │  ", text.environment())),
             Span::styled("v", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.variables())),
             Span::styled("←→", Style::default().fg(theme.accent)),
@@ -30,6 +32,8 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(format!(" {}  │  ", text.footer_focus())),
             Span::styled("↑↓", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.footer_move())),
+            Span::styled("e", Style::default().fg(theme.accent)),
+            Span::raw(format!(" {}  │  ", text.environment())),
             Span::styled("v", Style::default().fg(theme.accent)),
             Span::raw(format!(" {}  │  ", text.variables())),
             Span::styled("r", Style::default().fg(theme.accent)),
@@ -121,15 +125,13 @@ pub(super) fn draw_header(
     }
 }
 
-pub(super) fn draw_request_list(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    workspace_label_area: Rect,
-    variables_button_area: Rect,
-    list_area: Rect,
-    scrollbar_area: Rect,
-    app: &App,
-) {
+pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &App) {
+    let area = layout.requests;
+    let workspace_label_area = layout.workspace_label;
+    let environment_button_area = layout.environment_button;
+    let variables_button_area = layout.variables_button;
+    let list_area = layout.request_list;
+    let scrollbar_area = layout.request_scrollbar;
     let theme = &app.global_config.theme;
     let text = app.text();
     let focus = FocusStyles::new(app.focus, theme);
@@ -167,6 +169,16 @@ pub(super) fn draw_request_list(
             rows[0],
         );
         frame.render_widget(Paragraph::new(workspace).style(style), rows[1]);
+    }
+    if !environment_button_area.is_empty() {
+        let label = format!("◇ {}: {}", text.environment(), app.active_environment());
+        draw_primary_button(
+            frame,
+            environment_button_area,
+            &label,
+            focus.environment_focused(),
+            theme,
+        );
     }
     if !variables_button_area.is_empty() {
         let label = format!("◇ {} ({})", text.variables(), app.variable_count());

@@ -1,0 +1,16 @@
+name: 创建任务
+description: JSON 请求体在变量展开后发送。
+method: POST
+url: http://{{host}}/v1/tasks
+headers:
+  - name: X-Debug-Token
+    value: "{{token}}"
+body: '{"taskId":"{{task_id}}","name":"{{item_name}}","value":"{{item_value}}"}'
+extracts:
+  - variable: task_id
+    path: data.taskId
+overrides:
+  dev:
+    headers:
+      - name: X-PostUI-Environment
+        value: dev

@@ -1,0 +1,7 @@
+name: 健康检查
+description: 代码块格式和 GET 请求。
+method: GET
+url: http://{{host}}/v1/health
+extracts:
+  - variable: health_service
+    path: service

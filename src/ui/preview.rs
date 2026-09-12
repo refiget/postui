@@ -68,11 +68,12 @@ pub(super) fn draw_preview_summary(
     let Some(request) = app.current_request() else {
         return;
     };
+    let method = app
+        .current_effective_request()
+        .map(|request| request.method)
+        .unwrap_or_else(|| request.method.clone());
     let mut url_line = vec![
-        Span::styled(
-            format!("[ {} ]", request.method),
-            method_style(&request.method, theme),
-        ),
+        Span::styled(format!("[ {} ]", method), method_style(&method, theme)),
         Span::raw("  "),
     ];
     url_line.push(Span::styled(
@@ -123,15 +124,15 @@ pub(super) fn draw_preview_summary(
         ));
         lines.push(Line::from(description_line));
     }
-    if !supports_method(&request.method) && area.height > 0 {
+    if !supports_method(&method) && area.height > 0 {
         lines[0] = Line::from(Span::styled(
-            text.unsupported_method(&request.method),
+            text.unsupported_method(&method),
             Style::default().fg(theme.warning),
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
     if let Some(editor) = &app.preview_state.url_editor {
-        let prefix = Line::from(format!("[ {} ]  {}  ", request.method, text.address())).width();
+        let prefix = Line::from(format!("[ {} ]  {}  ", method, text.address())).width();
         let position = prefix + editor.cursor_width();
         let width = usize::from(area.width.max(1));
         let row = (position / width).min(usize::from(area.height.saturating_sub(1)));
@@ -484,17 +485,21 @@ pub(super) fn inline_dialog_layout(area: Rect, row_count: usize) -> DialogLayout
 
 pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, dialog: &Dialog) {
     let row_count = match dialog {
+        Dialog::Environments(_) => 0,
         Dialog::Headers(dialog) => dialog.rows.len(),
         Dialog::Params(dialog) => dialog.rows.len(),
         Dialog::Variables(_) => 0,
     };
     let layout = inline_dialog_layout(area, row_count);
     match dialog {
+        Dialog::Environments(_) => {}
         Dialog::Headers(dialog) => draw_headers_dialog(frame, app, dialog, layout),
         Dialog::Params(dialog) => draw_params_dialog(frame, app, dialog, layout),
         Dialog::Variables(_) => {}
     }
-    if !layout.add_button.is_empty() && !matches!(dialog, Dialog::Variables(_)) {
+    if !layout.add_button.is_empty()
+        && !matches!(dialog, Dialog::Variables(_) | Dialog::Environments(_))
+    {
         let theme = &app.global_config.theme;
         frame.render_widget(
             Block::default()

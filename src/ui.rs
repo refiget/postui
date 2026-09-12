@@ -54,15 +54,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
         areas.send_button,
         app,
     );
-    draw_request_list(
-        frame,
-        areas.requests,
-        areas.workspace_label,
-        areas.variables_button,
-        areas.request_list,
-        areas.request_scrollbar,
-        app,
-    );
+    draw_request_list(frame, areas, app);
     draw_preview(
         frame,
         areas.preview,
@@ -80,8 +72,10 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
         );
     }
     draw_footer(frame, areas.footer, app);
-    if let Some(Dialog::Variables(dialog)) = &app.dialog {
-        draw_dialog(frame, app, dialog);
+    match &app.dialog {
+        Some(Dialog::Variables(dialog)) => draw_dialog(frame, app, dialog),
+        Some(Dialog::Environments(dialog)) => draw_environment_dialog(frame, app, dialog),
+        _ => {}
     }
     if app.prompt.is_some() {
         draw_app_prompt(frame, app);
@@ -89,7 +83,10 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
-    if matches!(app.dialog, Some(Dialog::Variables(_))) {
+    if matches!(
+        app.dialog,
+        Some(Dialog::Variables(_) | Dialog::Environments(_))
+    ) {
         handle_dialog_mouse(app, event, area);
         return;
     }
@@ -156,7 +153,10 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
         app.close_response_menu();
     }
 
-    if contains(areas.variables_button, column, row) {
+    if contains(areas.environment_button, column, row) {
+        app.focus = Focus::Environment;
+        app.open_environments();
+    } else if contains(areas.variables_button, column, row) {
         app.focus = Focus::Variables;
         app.open_variables();
     } else if contains(areas.request_list, column, row) {
@@ -164,7 +164,7 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
     } else if contains(areas.preview_summary, column, row) && app.has_current_request() {
         app.focus = Focus::Preview;
         let method_width = app
-            .current_request()
+            .current_effective_request()
             .map(|request| u16::try_from(request.method.len()).unwrap_or(u16::MAX) + 3)
             .unwrap_or_default();
         if column < areas.preview_summary.x.saturating_add(method_width) {
@@ -215,10 +215,14 @@ fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
     let Some(request) = app.current_request() else {
         return base;
     };
+    let method = app
+        .current_effective_request()
+        .map(|request| request.method)
+        .unwrap_or_else(|| request.method.clone());
     let url = app.resolved_url(request);
     let summary_height = preview_summary_height(
         base.preview_details.width,
-        &format!("[ {} ]", request.method),
+        &format!("[ {} ]", method),
         app.text().address(),
         &url,
     );

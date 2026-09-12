@@ -1,7 +1,0 @@
-# @name 查询参数
-# @description -G 与 --data-urlencode 应在变量展开后编码查询值。
-# @extract search_echo = data.query.q
-curl --get "http://{{host}}/v1/search" \
-  --data-urlencode "q={{search_term}}" \
-  --data-urlencode="page={{page}}" \
-  --header "X-Debug-Token: {{token}}"

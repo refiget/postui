@@ -1,4 +1,0 @@
-# @name 文件变量未设置
-# @description 验证空文件变量在发送前给出明确错误。
-curl --request POST "http://{{host}}/v1/upload" \
-  --form "file=@{{empty_file}}"

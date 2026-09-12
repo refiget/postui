@@ -1,0 +1,4 @@
+name: 请求超时
+description: mock 延迟超过配置的 1 秒超时时间。
+method: GET
+url: http://{{host}}/v1/delay/2

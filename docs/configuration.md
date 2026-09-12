@@ -12,9 +12,9 @@ project/
 │   ├── postui.yaml
 │   ├── cache/                  # 自动生成，不提交
 │   └── requests/
-│       ├── 01-health.http
+│       ├── 01-health.yaml
 │       └── users/
-│           └── 02-detail.http
+│           └── 02-detail.yaml
 ├── test_files/                 # 默认上传目录
 └── temp/                       # 默认下载目录
 ```
@@ -42,21 +42,34 @@ headers:
     value: application/json
 
 variables:
-  host: https://api.example.test
   token:
   item_id:
+
+environments:
+  dev:
+    variables:
+      host: https://dev-api.example.test
+  test:
+    variables:
+      host: https://test-api.example.test
+
+default_environment: dev
 ```
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `name` | 项目目录名 | 工作区显示名称 |
-| `timeout` | `30` | 默认请求超时秒数；请求文件中的 `@timeout` 可以覆盖 |
+| `timeout` | `30` | 默认请求超时秒数；请求文件中的 `timeout` 可以覆盖 |
 | `directories.uploads` | `test_files` | 相对上传目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
 | `headers` | `[]` | 所有请求继承的 Header 条目，按列表顺序发送 |
-| `variables` | `{}` | 工作区变量；空值表示启动后填写 |
+| `variables` | `{}` | 所有环境共享的默认变量；空值表示运行时填写 |
+| `environments` | `default` | 环境名到环境变量的映射；环境变量覆盖同名公共变量 |
+| `default_environment` | 第一个环境 | 启动时选中的环境 |
 
 目录相对路径始终以项目根目录为基准，也支持绝对路径。下载目录在保存响应时自动创建；上传目录或文件不存在时，发送操作会显示错误。
+
+未配置 `environments` 时，程序自动建立名为 `default` 的空环境；因此最简单的工作区只需要公共 `variables`，不需要额外填写环境字段。
 
 ## 用户界面配置
 
@@ -74,32 +87,62 @@ theme: ocean
 
 ## 请求文件
 
-请求文件位于 `.postui/requests/`，支持 `.http`、`.rest` 和 `.curl`，并使用静态 curl 文本：
+请求文件位于 `.postui/requests/`，支持 `.yaml` 和 `.yml`，使用结构化 YAML：
 
-~~~text
-# @name 查询用户
-# @description 查询指定用户
-# @timeout 10
-# @extract user_id = data.id
-curl --request GET "{{host}}/users/{{item_id}}"
+~~~yaml
+name: 查询用户
+description: 查询指定用户
+method: GET
+url: "{{host}}/users/{{item_id}}"
+timeout: 10
+headers:
+  - name: Accept
+    value: application/json
+params:
+  - name: include
+    value: profile
+extracts:
+  - variable: user_id
+    path: data.id
+overrides:
+  dev:
+    headers:
+      - name: X-Debug
+        value: "true"
 ~~~
 
 子目录用于组织请求。请求文件相对于 `.postui/requests/` 的路径是稳定 ID。
 
-支持常用的 curl 请求参数，包括 `--request`、`--url`、`--header`、`--data`、`--json`、`--data-urlencode`、`--form`、`--form-string` 和 `--get`。输出参数不会改变 PostUI 的行为，响应保存由 Response 的 Actions 菜单负责。
+请求文件支持以下字段：`name`、`description`、`method`、`url`、`timeout`、`headers`、`params`、`body`、`form`、`files`、`extracts` 和 `overrides`。`headers`、`params`、`form` 使用条目数组，保留书写顺序和重复名称；`body` 是原始请求体文本。
 
-文件上传使用 `--form` 的 `@` 写法。相对文件名以 `directories.uploads` 为基准：
+`overrides` 的键必须先在工作区 `environments` 中声明。每个环境覆盖只替换自己声明的字段，未声明字段继续使用请求公共配置。例如同一请求可以只在 `dev` 使用调试 Header，而不需要复制请求文件：
 
-~~~text
-curl --request POST "{{host}}/files" \
-  --form "file=@{{upload_file}};type=application/pdf"
+~~~yaml
+overrides:
+  dev:
+    headers:
+      - name: X-Debug
+        value: "true"
+  test:
+    url: "{{host}}/staging/users/{{item_id}}"
 ~~~
 
-`@extract` 只在 HTTP 状态码小于 400 时从 JSON 响应提取字段。支持点路径、数组下标和 JSON Pointer。
+文件上传使用 `files` 条目。相对文件名以 `directories.uploads` 为基准：
 
-URL query、`--get` 携带的 data 和 URL 编码请求体都按有序参数处理：保留重复名称和书写顺序，变量展开后统一进行 `application/x-www-form-urlencoded` 编码。URL 中的 `+`、百分号编码和空值会在参数编辑器中显示为可编辑的 name/value，保存或发送时重新编码；不带 `=` 的参数仍会保留为 key-only。
+~~~yaml
+method: POST
+url: "{{host}}/files"
+files:
+  - field: file
+    path: "{{upload_file}}"
+    content_type: application/pdf
+~~~
 
-`--data`、`--data-raw` 和 `--json` 的原始文本仍按请求体保存，不会被强行拆成参数。`--data-urlencode` 才会作为 URL 编码参数处理。使用 `--get` 时，原始 data 会按 `&` 拆成 query 条目；使用 multipart `--form` 或 `--form-string` 时，字段使用同一套参数结构，文件字段仍单独保留。
+`extracts` 只在 HTTP 状态码小于 400 时从 JSON 响应提取字段。支持点路径、数组下标和 JSON Pointer。
+
+URL query 和 `params` 都按有序参数处理：保留重复名称和书写顺序，变量展开后统一进行 `application/x-www-form-urlencoded` 编码。URL 中的 `+`、百分号编码和空值会在参数编辑器中显示为可编辑的 name/value，保存或发送时重新编码；不带 `=` 的参数仍会保留为 key-only。
+
+`body` 按原始文本发送，不会被强行拆成参数。需要 multipart 时使用 `form` 和 `files`，文件字段单独保留。
 
 Header 使用 `name`/`value` 条目数组，而不是 YAML 映射，因此可以保留重复名称和书写顺序：
 
@@ -119,4 +162,4 @@ headers:
 
 已加载请求可以在界面中编辑并直接发送，未保存修改以 `●` 标记。按 `Ctrl+S` 将修改写回当前请求文件。请求列表聚焦时按 `Delete` 会在确认后删除当前请求文件；存在未保存修改时退出会要求确认，避免误操作丢失内容。
 
-`.postui/cache/` 使用 `cacache` 持久化项目配置和请求文件的解析结果。源内容的 BLAKE3 指纹变化后缓存自动失效；缓存损坏或读写失败时会回退到重新解析，不影响工作区启动。Variables 的修改仍只在当前运行期间生效，不会回写 `postui.yaml`。
+`.postui/cache/` 使用 `cacache` 持久化项目配置和请求文件的解析结果。源内容的 BLAKE3 指纹变化后缓存自动失效；缓存损坏或读写失败时会回退到重新解析，不影响工作区启动。Variables 的修改只在当前环境和本次运行期间生效，不会回写 `postui.yaml`；接口草稿则通过 `Ctrl+S` 写回当前请求 YAML，并保留各环境的 `overrides`。

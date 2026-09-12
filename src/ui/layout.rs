@@ -17,6 +17,7 @@ pub(super) struct UiLayout {
     pub(super) header_content: Rect,
     pub(super) requests: Rect,
     pub(super) workspace_label: Rect,
+    pub(super) environment_button: Rect,
     pub(super) variables_button: Rect,
     pub(super) request_list: Rect,
     pub(super) request_scrollbar: Rect,
@@ -73,6 +74,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         header_content,
         requests: columns[0],
         workspace_label: sidebar.workspace_label,
+        environment_button: sidebar.environment_button,
         variables_button: sidebar.variables_button,
         request_list: sidebar.request_list.content,
         request_scrollbar: sidebar.request_list.scrollbar,
@@ -151,15 +153,17 @@ fn sidebar_width(width: u16) -> u16 {
 #[derive(Debug, Clone, Copy)]
 struct SidebarLayout {
     workspace_label: Rect,
+    environment_button: Rect,
     variables_button: Rect,
     request_list: ScrollAreas,
 }
 
 fn sidebar_parts(area: Rect) -> SidebarLayout {
     let inner = area.inner(Margin::new(1, 1));
-    if inner.height < 5 {
+    if inner.height < 4 {
         return SidebarLayout {
             workspace_label: Rect::default(),
+            environment_button: Rect::default(),
             variables_button: Rect::default(),
             request_list: panel_scroll_areas(area),
         };
@@ -183,13 +187,14 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
-    let (variables_button, request_list) = if inner.height >= 7 {
-        (parts[2], parts[4])
+    let (environment_button, variables_button, request_list) = if inner.height >= 7 {
+        (parts[1], parts[2], parts[4])
     } else {
-        (parts[1], parts[2])
+        (parts[1], parts[2], parts[3])
     };
     SidebarLayout {
         workspace_label: parts[0],
+        environment_button,
         variables_button,
         request_list: inner_scroll_areas(request_list),
     }

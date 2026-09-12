@@ -1,0 +1,11 @@
+name: URL 编码表单
+description: URL 编码请求体和变量展开。
+method: POST
+url: http://{{host}}/v1/form
+headers:
+  - name: Content-Type
+    value: application/x-www-form-urlencoded
+body: 'name={{item_name}}&note={{note}}'
+extracts:
+  - variable: header_echo
+    path: request.headers.content-type

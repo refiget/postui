@@ -1,5 +1,0 @@
-# @name 非 2xx 响应
-# @description 服务器返回 422 时客户端仍保留状态码和响应体。
-# @extract error_code = error.code
-curl --request POST "http://{{host}}/v1/error" \
-  --json '{"name":"{{item_name}}"}'

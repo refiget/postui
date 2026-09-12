@@ -13,7 +13,6 @@ headers:
 
 variables:
   collection_name: fastapi-mock
-  host: 127.0.0.1:18080
   token: mock-secret-token
   search_term: 文档审查 & edge
   page: "2"
@@ -28,3 +27,13 @@ variables:
   second_upload_file: second.txt
   missing_file: does-not-exist.txt
   session_id: session-001
+
+environments:
+  dev:
+    variables:
+      host: 127.0.0.1:18080
+  test:
+    variables:
+      host: 127.0.0.1:18080
+
+default_environment: test

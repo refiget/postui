@@ -1,6 +1,0 @@
-# @name 健康检查
-# @description 代码块格式和 GET 请求。
-# @extract health_service = service
-```bash
-curl --location "http://{{host}}/v1/health"
-```

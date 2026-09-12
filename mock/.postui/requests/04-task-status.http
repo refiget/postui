@@ -1,5 +1,0 @@
-# @name 查询任务状态
-# @description 路径变量、对象字段和数组下标提取。
-# @extract task_status = data.status
-# @extract first_item_id = data.items[0].id
-curl "http://{{host}}/v1/tasks/{{task_id}}"

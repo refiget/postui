@@ -25,6 +25,92 @@ pub(super) fn draw_dialog(frame: &mut Frame<'_>, app: &App, dialog: &crate::app:
     draw_variables_dialog(frame, app, dialog, layout);
 }
 
+pub(super) fn draw_environment_dialog(
+    frame: &mut Frame<'_>,
+    app: &App,
+    dialog: &crate::app::EnvironmentsDialog,
+) {
+    let layout = dialog_layout(frame.area(), dialog.rows.len().max(1));
+    if layout.area.is_empty() {
+        return;
+    }
+
+    let theme = &app.global_config.theme;
+    let text = app.text();
+    frame.render_widget(Clear, layout.area);
+    frame.render_widget(
+        dialog_block(
+            Line::from(format!(" {} ", text.environment())),
+            layout.area,
+            theme,
+        ),
+        layout.area,
+    );
+
+    let visible = usize::from(layout.rows.content.height);
+    let offset = request_list_offset(dialog.selected, dialog.rows.len(), visible);
+    frame.render_widget(
+        Table::new(Vec::<Row<'static>>::new(), [Constraint::Min(0)])
+            .header(Row::new(vec![Cell::from(text.environment())]).style(section_style(theme)))
+            .column_spacing(TABLE_COLUMN_SPACING)
+            .highlight_symbol("▸ ")
+            .highlight_spacing(HighlightSpacing::Always)
+            .style(Style::default().bg(theme.surface).fg(theme.text)),
+        layout.table_header,
+    );
+
+    if dialog.rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new(text.environment()).style(label_style(theme)),
+            layout.rows.content,
+        );
+    } else {
+        let rows = dialog
+            .rows
+            .iter()
+            .skip(offset)
+            .take(visible)
+            .map(|environment| {
+                let active = environment == app.active_environment();
+                let marker = if active { "● " } else { "  " };
+                let style = if active {
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                Row::new(vec![Cell::from(Span::styled(
+                    format!("{marker}{environment}"),
+                    style,
+                ))])
+                .style(style)
+            })
+            .collect::<Vec<_>>();
+        let table = Table::new(rows, [Constraint::Min(0)])
+            .column_spacing(TABLE_COLUMN_SPACING)
+            .row_highlight_style(dialog_row_highlight(
+                theme,
+                dialog.focus == DialogFocus::Content,
+            ))
+            .highlight_symbol("▸ ")
+            .highlight_spacing(HighlightSpacing::Always)
+            .style(Style::default().bg(theme.surface).fg(theme.text));
+        let mut state = TableState::default();
+        state.select(Some(dialog.selected.saturating_sub(offset)));
+        frame.render_stateful_widget(table, layout.rows.content, &mut state);
+    }
+    draw_scrollbar(
+        frame,
+        layout.rows.scrollbar,
+        dialog.rows.len(),
+        visible,
+        offset,
+        theme,
+    );
+    draw_dialog_footer(frame, app, dialog.focus, layout);
+}
+
 pub(super) fn dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
     let desired_height = 10_u16.saturating_add(u16::try_from(row_count.min(16)).unwrap_or(16));
     let dialog_area = centered_rect(
@@ -143,13 +229,7 @@ pub(super) fn draw_variables_dialog(
                 if editing {
                     value_cell = value_cell.style(active_editor_style(theme));
                 }
-                let default = app
-                    .config
-                    .variables
-                    .get(&row.name)
-                    .and_then(|definition| definition.default.as_ref())
-                    .map(crate::config::value_to_string)
-                    .unwrap_or_else(|| "—".to_string());
+                let default = app.variable_default_value(&row.name);
                 Row::new(vec![
                     Cell::from(row.name.clone()),
                     value_cell,
@@ -460,11 +540,11 @@ pub(super) fn draw_dialog_footer(
 }
 
 pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) {
-    let Some(Dialog::Variables(dialog)) = app.dialog.as_ref() else {
-        return;
+    let (row_count, selected, environment_dialog) = match app.dialog.as_ref() {
+        Some(Dialog::Variables(dialog)) => (dialog.rows.len(), dialog.selected, false),
+        Some(Dialog::Environments(dialog)) => (dialog.rows.len(), dialog.selected, true),
+        _ => return,
     };
-    let row_count = dialog.rows.len();
-    let selected = dialog.selected;
     let layout = dialog_layout(area, row_count);
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -484,6 +564,11 @@ pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) 
             let offset = request_list_offset(selected, row_count, visible);
             let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
             if index >= row_count {
+                return;
+            }
+
+            if environment_dialog {
+                app.click_environment_row(index);
                 return;
             }
 

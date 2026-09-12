@@ -4,7 +4,7 @@ use form_urlencoded::{Serializer, parse};
 use serde_json::Value;
 use url::Url;
 
-use crate::config::{ApiRequest, DataPart, NameValue, RequestParam};
+use crate::config::{ApiRequest, DataPart, NameValue, RequestOverride, RequestParam};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -76,30 +76,9 @@ pub(crate) fn display_url(request: &ApiRequest) -> String {
 
 pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
     let mut names = BTreeSet::new();
-    collect_text(&request.url, &mut names);
-    collect_text_values(&request.headers, &mut names);
-    collect_text_params(&request.form, &mut names);
-    for file in &request.files {
-        collect_text(&file.field, &mut names);
-        collect_text(&file.path, &mut names);
-        if let Some(filename) = &file.filename {
-            collect_text(filename, &mut names);
-        }
-        if let Some(content_type) = &file.content_type {
-            collect_text(content_type, &mut names);
-        }
-    }
-    for part in &request.body_parts {
-        collect_text_data_part(part, &mut names);
-    }
-    for part in &request.query_parts {
-        collect_text_data_part(part, &mut names);
-    }
-    for extract in &request.extracts {
-        let variable = strip_variable_delimiters(&extract.variable);
-        if !variable.is_empty() {
-            names.insert(variable.to_string());
-        }
+    collect_text_request(request, &mut names);
+    for request_override in request.overrides.values() {
+        collect_text_override(request_override, &mut names);
     }
     names.into_iter().collect()
 }
@@ -440,6 +419,73 @@ fn collect_text_values(values: &[NameValue], names: &mut BTreeSet<String>) {
     for value in values {
         collect_text(&value.name, names);
         collect_text(&value.value, names);
+    }
+}
+
+fn collect_text_request(request: &ApiRequest, names: &mut BTreeSet<String>) {
+    collect_text(&request.url, names);
+    collect_text_values(&request.headers, names);
+    collect_text_params(&request.form, names);
+    for file in &request.files {
+        collect_text(&file.field, names);
+        collect_text(&file.path, names);
+        if let Some(filename) = &file.filename {
+            collect_text(filename, names);
+        }
+        if let Some(content_type) = &file.content_type {
+            collect_text(content_type, names);
+        }
+    }
+    for part in request.body_parts.iter().chain(&request.query_parts) {
+        collect_text_data_part(part, names);
+    }
+    for extract in &request.extracts {
+        let variable = strip_variable_delimiters(&extract.variable);
+        if !variable.is_empty() {
+            names.insert(variable.to_string());
+        }
+    }
+}
+
+fn collect_text_override(request_override: &RequestOverride, names: &mut BTreeSet<String>) {
+    if let Some(url) = &request_override.url {
+        collect_text(url, names);
+    }
+    if let Some(headers) = &request_override.headers {
+        collect_text_values(headers, names);
+    }
+    if let Some(body_parts) = &request_override.body_parts {
+        for part in body_parts {
+            collect_text_data_part(part, names);
+        }
+    }
+    if let Some(query_parts) = &request_override.query_parts {
+        for part in query_parts {
+            collect_text_data_part(part, names);
+        }
+    }
+    if let Some(form) = &request_override.form {
+        collect_text_params(form, names);
+    }
+    if let Some(files) = &request_override.files {
+        for file in files {
+            collect_text(&file.field, names);
+            collect_text(&file.path, names);
+            if let Some(filename) = &file.filename {
+                collect_text(filename, names);
+            }
+            if let Some(content_type) = &file.content_type {
+                collect_text(content_type, names);
+            }
+        }
+    }
+    if let Some(extracts) = &request_override.extracts {
+        for extract in extracts {
+            let variable = strip_variable_delimiters(&extract.variable);
+            if !variable.is_empty() {
+                names.insert(variable.to_string());
+            }
+        }
     }
 }
 

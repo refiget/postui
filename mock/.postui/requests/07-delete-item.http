@@ -1,4 +1,0 @@
-# @name 删除项目
-# @description DELETE 请求和布尔值提取。
-# @extract deleted_item = data.deleted
-curl --request DELETE --url "http://{{host}}/v1/items/{{item_id}}"

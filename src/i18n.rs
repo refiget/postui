@@ -21,6 +21,10 @@ impl UiText {
         self.pick("Workspace", "工作区")
     }
 
+    pub(crate) fn environment(self) -> &'static str {
+        self.pick("Environment", "环境")
+    }
+
     pub(crate) fn variables(self) -> &'static str {
         self.pick("Variables", "变量")
     }
@@ -231,6 +235,13 @@ impl UiText {
 
     pub(crate) fn variables_applied(self) -> &'static str {
         self.pick("Variables saved", "变量已保存")
+    }
+
+    pub(crate) fn environment_switched(self, environment: &str) -> String {
+        match self.language {
+            Language::English => format!("Environment switched to {environment}"),
+            Language::Chinese => format!("已切换到环境 {environment}"),
+        }
     }
 
     pub(crate) fn headers_applied(self) -> &'static str {

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     config::{
-        ApiRequest, DataPart, FileUpload, NameValue, RequestParam, WorkspaceConfig, value_to_string,
+        ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam,
+        WorkspaceConfig, value_to_string,
     },
     http::{HttpError, ResponseData},
     i18n::UiText,
@@ -119,6 +120,10 @@ impl RequestRuntimeState {
         self.error = Some(error);
         self.message = Some(message);
     }
+
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[derive(Debug)]
@@ -127,24 +132,28 @@ pub(crate) struct RequestSession {
     pub(crate) draft: RequestDraft,
     pub(super) runtime: RequestRuntimeState,
     pub(crate) dirty: bool,
+    environment: String,
 }
 
 impl RequestSession {
-    pub(super) fn new(source: ApiRequest) -> Self {
-        let draft = RequestDraft::from(&source);
+    pub(super) fn new(source: ApiRequest, environment: &str) -> Self {
+        let draft = RequestDraft::from(&source.for_environment(environment));
         Self {
             source,
             draft,
             runtime: RequestRuntimeState::default(),
             dirty: false,
+            environment: environment.to_string(),
         }
     }
 
     pub(super) fn effective_request(&self, collection_headers: &[NameValue]) -> ApiRequest {
-        let mut effective = self.source.clone();
+        let mut effective = self.source.for_environment(&self.environment);
+        effective.method = self.draft.method.clone();
         if let Some(url) = &self.draft.url {
             effective.url = url.clone();
         }
+        effective.timeout_seconds = self.draft.timeout_seconds;
         let headers = collection_headers
             .iter()
             .filter(|header| {
@@ -173,35 +182,116 @@ impl RequestSession {
         effective.body_parts = self.draft.body_parts.clone();
         effective
     }
+
+    pub(super) fn activate_environment(&mut self, environment: &str) {
+        self.environment = environment.to_string();
+        self.draft = RequestDraft::from(&self.source.for_environment(environment));
+        self.runtime.reset();
+    }
+
+    pub(super) fn commit_draft(&mut self) -> bool {
+        let previous = self.source.overrides.get(&self.environment).cloned();
+        let existing = previous.clone().unwrap_or_default();
+        let next = RequestOverride {
+            method: (self.draft.method != self.source.method).then(|| self.draft.method.clone()),
+            url: self
+                .draft
+                .url
+                .as_deref()
+                .filter(|url| !url.trim().is_empty() && *url != self.source.url)
+                .map(str::to_string),
+            timeout_seconds: (self.draft.timeout_seconds != self.source.timeout_seconds)
+                .then_some(self.draft.timeout_seconds),
+            headers: (draft_headers(&self.draft) != self.source.headers)
+                .then(|| draft_headers(&self.draft)),
+            query_parts: (self.draft.query_parts != self.source.query_parts)
+                .then(|| self.draft.query_parts.clone()),
+            body_parts: (self.draft.body_parts != self.source.body_parts)
+                .then(|| self.draft.body_parts.clone()),
+            form: (self.draft.form != self.source.form).then(|| self.draft.form.clone()),
+            files: (self.draft.files != self.source.files).then(|| self.draft.files.clone()),
+            extracts: existing.extracts,
+        };
+        let next = (!next.is_empty()).then_some(next);
+        if previous == next {
+            return false;
+        }
+        if let Some(request_override) = next {
+            self.source
+                .overrides
+                .insert(self.environment.clone(), request_override);
+        } else {
+            self.source.overrides.remove(&self.environment);
+        }
+        self.dirty = true;
+        true
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct WorkspaceSession {
+    pub(crate) active_environment: String,
     pub(crate) variables: BTreeMap<String, String>,
     pub(crate) requests: Vec<RequestSession>,
     pub(crate) selected_request: Option<usize>,
+    environment_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl WorkspaceSession {
     pub(super) fn from_config(config: &WorkspaceConfig, requests: Vec<ApiRequest>) -> Self {
         let has_requests = !requests.is_empty();
-        let variables = config
-            .variables
-            .iter()
-            .map(|(key, definition)| {
-                let value = definition
-                    .default
-                    .as_ref()
-                    .map(value_to_string)
-                    .unwrap_or_default();
-                (key.clone(), value)
-            })
-            .collect();
+        let active_environment = config.default_environment.clone();
+        let environment_variables = config
+            .environments
+            .keys()
+            .map(|environment| (environment.clone(), initial_variables(config, environment)))
+            .collect::<BTreeMap<_, _>>();
+        let variables = environment_variables
+            .get(&active_environment)
+            .cloned()
+            .unwrap_or_default();
         Self {
+            active_environment: active_environment.clone(),
             variables,
-            requests: requests.into_iter().map(RequestSession::new).collect(),
+            requests: requests
+                .into_iter()
+                .map(|request| RequestSession::new(request, &active_environment))
+                .collect(),
             selected_request: has_requests.then_some(0),
+            environment_variables,
         }
+    }
+
+    pub(super) fn switch_environment(
+        &mut self,
+        config: &WorkspaceConfig,
+        environment: &str,
+    ) -> bool {
+        if environment == self.active_environment || !config.environments.contains_key(environment)
+        {
+            return false;
+        }
+        self.commit_environment();
+        for session in &mut self.requests {
+            session.activate_environment(environment);
+        }
+        self.active_environment = environment.to_string();
+        self.variables = self
+            .environment_variables
+            .entry(self.active_environment.clone())
+            .or_insert_with(|| initial_variables(config, environment))
+            .clone();
+        true
+    }
+
+    pub(super) fn commit_environment(&mut self) -> bool {
+        let mut changed = false;
+        for session in &mut self.requests {
+            changed |= session.commit_draft();
+        }
+        self.environment_variables
+            .insert(self.active_environment.clone(), self.variables.clone());
+        changed
     }
 
     pub(super) fn current(&self) -> Option<&RequestSession> {
@@ -227,8 +317,43 @@ impl WorkspaceSession {
     }
 }
 
+fn initial_variables(config: &WorkspaceConfig, environment: &str) -> BTreeMap<String, String> {
+    let environment_variables = config
+        .environments
+        .get(environment)
+        .map(|config| &config.variables);
+    config
+        .editable_variables
+        .iter()
+        .map(|name| {
+            let definition = environment_variables
+                .and_then(|variables| variables.get(name))
+                .or_else(|| config.variables.get(name));
+            let value = definition
+                .and_then(|definition| definition.default.as_ref())
+                .map(value_to_string)
+                .unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+fn draft_headers(draft: &RequestDraft) -> Vec<NameValue> {
+    draft
+        .headers
+        .iter()
+        .filter(|row| row.enabled && !row.name.trim().is_empty())
+        .map(|row| NameValue {
+            name: row.name.trim().to_string(),
+            value: row.value.clone(),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RequestDraft {
+    pub(crate) method: String,
+    pub(crate) timeout_seconds: u64,
     pub(crate) url: Option<String>,
     pub(crate) headers: Vec<HeaderRow>,
     pub(crate) query_parts: Vec<DataPart>,
@@ -240,7 +365,9 @@ pub(crate) struct RequestDraft {
 impl From<&ApiRequest> for RequestDraft {
     fn from(request: &ApiRequest) -> Self {
         Self {
-            url: None,
+            method: request.method.clone(),
+            timeout_seconds: request.timeout_seconds,
+            url: Some(request.url.clone()),
             headers: request
                 .headers
                 .iter()

@@ -51,8 +51,8 @@ Windows 发布包：
 .postui/
 ├── postui.yaml
 └── requests/
-    ├── 01-list.http
-    └── 02-detail.http
+    ├── 01-list.yaml
+    └── 02-detail.yaml
 test_files/
 temp/
 ```
@@ -72,9 +72,18 @@ headers:
     value: application/json
 
 variables:
-  host: https://api.example.test
   token:
   item_id:
+
+environments:
+  dev:
+    variables:
+      host: https://dev-api.example.test
+  test:
+    variables:
+      host: https://test-api.example.test
+
+default_environment: dev
 ```
 
 所有字段都可省略。相对上传和下载目录以项目根目录为基准。在项目目录或子目录运行 `postui` 会自动发现工作区，也可以运行 `postui /path/to/project`。
@@ -90,17 +99,34 @@ theme: ocean
 
 ### 请求文件
 
-支持 `.http`、`.rest` 和 `.curl` 文件。请求文件使用 curl 格式：
+请求文件使用结构化 YAML，支持 `.yaml` 和 `.yml`：
 
-```text
-# @name 查询用户
-# @description 查询指定用户
-# @timeout 10
-# @extract user_id = data.id
-curl --request GET "{{host}}/users/{{item_id}}"
+```yaml
+name: 查询用户
+description: 查询指定用户
+method: GET
+url: "{{host}}/users/{{item_id}}"
+headers:
+  - name: Accept
+    value: application/json
+params:
+  - name: include
+    value: profile
+extracts:
+  - variable: user_id
+    path: data.id
+
+# 只有 dev 环境需要的接口级差异；公共接口不需要复制
+overrides:
+  dev:
+    headers:
+      - name: X-Debug
+        value: "true"
 ```
 
 变量格式：`{{variable_name}}`。
+
+工作区 `variables` 是所有环境共享的默认变量；`environments.<name>.variables` 只声明该环境的变量或覆盖同名默认值。接口文件的 `overrides.<name>` 只放该环境不同的 method、url、timeout、headers、params、body、form、files 或 extracts。发送时按“公共配置 → 环境变量/接口覆盖 → 当前编辑草稿”的顺序合并，因此同一接口可以被多个环境复用。
 
 支持的 HTTP 方法：`GET`、`POST`。
 

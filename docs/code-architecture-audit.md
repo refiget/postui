@@ -10,7 +10,7 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段八已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理、输入基础设施收敛、参数语义统一和按钮渲染收敛：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段九已经完成依赖整理、请求状态收敛、第一轮职责拆分、请求字段模型整理、输入基础设施收敛、参数语义统一和按钮渲染收敛：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
@@ -19,9 +19,10 @@ cargo clippy --all-targets -- -D warnings
 5. [阶段 4 已完成第一轮] 按职责拆分 1980 行的 `App`。
 6. [阶段 5 已完成] 将 Header/Form 字段统一为有序、可重复的条目模型。
 7. [阶段 6 已完成] 收敛单行编辑器的 Unicode 边界，并使用正式剪贴板库。
-8. [阶段 7 已完成] 统一 URL query、curl data 和 form 的参数表示与编码路径。
+8. [阶段 7 已完成] 统一 URL query、URL 编码参数和 form 的参数表示与编码路径。
 9. [阶段 8 已完成] 删除仅用于 Button 渲染的 `ratatui-interact`，改用 Ratatui 原生组件。
 10. [阶段 9 已完成] 将请求会话模型和运行态状态转换移出 `App`，集中到会话模块。
+11. [阶段 10 已完成] 使用结构化请求 YAML 建模公共接口、环境变量和接口级环境覆盖。
 
 ## 值得使用现成库替换的实现
 
@@ -40,7 +41,7 @@ URL 能够正常解析时使用 `url::Url`，包含 `{{variable}}` 的原始模�
 - `Url` 的 URL 结构解析和 query 写回。
 - `form_urlencoded` 的参数组件编码与解码。
 
-阶段七将 URL 中的 query、`--get` 携带的 data 和 URL 编码 data 统一为 `RequestParam`；原始 data 仍由 `DataPart::Raw` 保留。参数编辑器现在使用同一套 name/value/等号语义，保存时集中编码，发送时集中展开变量并编码。
+阶段七将 URL 中的 query 和 URL 编码参数统一为 `RequestParam`；原始请求体仍由 `DataPart::Raw` 保留。参数编辑器现在使用同一套 name/value/等号语义，保存时集中编码，发送时集中展开变量并编码。
 
 `reqwest` 已间接依赖 `url`，增加直接依赖不会引入另一套 URL 实现。
 
@@ -50,7 +51,7 @@ URL 能够正常解析时使用 `url::Url`，包含 `{{variable}}` 的原始模�
 - 变量解析完成后再构造 `Url`。
 - UI 展示原始模板时不强制解析。
 
-阶段二和阶段七已完成。请求模型仍保持原始模板 URL 与已解析 URL 的边界，但不会再在 App、curl 解析器和编辑器之间重复拆分参数。
+阶段二和阶段七已完成。请求模型仍保持原始模板 URL 与已解析 URL 的边界，但不会再在 `App`、YAML 解析器和编辑器之间重复拆分参数。
 
 ### YAML 解析
 
@@ -65,7 +66,7 @@ serde_yaml = "0.9"
 - `src/config.rs`
 - `src/settings.rs`
 
-项目只需要将 YAML 反序列化到明确的数据结构，现已使用固定版本 `serde-saphyr = 1.1.0`，并关闭序列化 feature。固定 1.1.0 是因为项目仍声明支持 Rust 1.85，而 1.2.0 将最低 Rust 版本提高到 1.89。不迁移到 `serde_yml`，因为它也已经弃用。
+项目只需要将 YAML 反序列化到明确的数据结构，同时需要把界面保存的请求写回 YAML，现已使用固定版本 `serde-saphyr = 1.1.0` 并启用 deserialize/serialize feature。固定 1.1.0 是因为项目仍声明支持 Rust 1.85，而 1.2.0 将最低 Rust 版本提高到 1.89。不迁移到 `serde_yml`，因为它也已经弃用。
 
 阶段二已完成。
 
@@ -193,12 +194,14 @@ PostUI 仍只调用 `read_sync` 和 `write_sync`，不会启动 async-std runtim
 App
 ├── WorkspaceSession
 │   ├── requests
+│   ├── active_environment
+│   ├── environment_variables
 │   ├── variables
 │   └── selected_request
 ├── RequestFileStore
 │   ├── request path validation
 │   ├── save/delete
-│   └── curl serialization
+│   └── structured YAML serialization
 ├── RequestExecutor
 │   ├── reusable HttpClient
 │   ├── operation id
@@ -218,6 +221,8 @@ App
 
 这里需要的是职责划分，不是动态多态。不要先创建大量 trait。阶段四已经将 `RequestFileStore` 和 `RequestExecutor` 接入 `App`；结果如何写入 `RequestSession` 仍由 `App` 编排。
 
+阶段十在会话层增加了环境边界：`WorkspaceSession` 持有当前环境及各环境的运行时变量，`RequestSession` 持有当前环境草稿，并把草稿提交为请求的稀疏 `overrides.<environment>`。切换环境时先提交当前草稿和变量，再从同一份公共请求重新生成目标环境草稿；因此不会复制请求，也不会让不同环境的响应状态相互混淆。
+
 ### 请求状态由多个平行容器维护
 
 阶段 3 已完成。运行时现在由 `WorkspaceSession` 管理请求集合和选中索引，每个 `RequestSession` 同时持有源配置、草稿、运行态和 dirty 标记：
@@ -228,12 +233,15 @@ struct RequestSession {
     draft: RequestDraft,
     runtime: RequestRuntimeState,
     dirty: bool,
+    environment: String,
 }
 
 struct WorkspaceSession {
+    active_environment: String,
     requests: Vec<RequestSession>,
     selected_request: Option<usize>,
     variables: BTreeMap<String, String>,
+    environment_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 ```
 
@@ -264,7 +272,7 @@ UI 已有空列表分支，不再维护 Null Object。
 - 请求文件定位。
 - 写入请求文件。
 - 删除请求文件。
-- 序列化 curl 请求。
+- 序列化结构化 YAML 请求。
 
 具体实现位于：
 
@@ -384,7 +392,7 @@ struct CellSelection {
 
 1. [已完成] Header 改为有序、可重复结构。
 2. [已完成] Form 参数改为有序、可重复结构。
-3. [已完成] 统一 URL query、curl data 和 form 的数据语义。
+3. [已完成] 统一 URL query、URL 编码参数和 form 的数据语义。
 4. [已完成] 评估 `tui-input`，并接入 `unicode-segmentation` 和 `arboard`。
 
 ### 第四批：界面依赖收敛

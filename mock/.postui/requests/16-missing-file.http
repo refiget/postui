@@ -1,4 +1,0 @@
-# @name 文件不存在
-# @description 验证上传文件读取失败时的错误日志。
-curl --request POST "http://{{host}}/v1/upload" \
-  --form "file=@{{missing_file}}"

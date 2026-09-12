@@ -1,3 +1,0 @@
-# @name 空响应
-# @description 204 响应没有响应体。
-curl "http://{{host}}/v1/empty"

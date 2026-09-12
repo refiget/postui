@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{ApiRequest, DataPart};
+use crate::config::{ApiRequest, RequestDocument};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RequestFileStore {
@@ -31,7 +31,8 @@ impl RequestFileStore {
             .with_context(|| format!("无法创建请求目录: {}", parent.display()))?;
 
         let temporary = temporary_path(&path)?;
-        if let Err(error) = fs::write(&temporary, serialize_request(request)) {
+        let contents = serialize_request(request)?;
+        if let Err(error) = fs::write(&temporary, contents) {
             let _ = fs::remove_file(&temporary);
             return Err(error)
                 .with_context(|| format!("无法写入请求临时文件: {}", temporary.display()));
@@ -91,61 +92,6 @@ fn temporary_path(path: &Path) -> Result<PathBuf> {
     Ok(parent.join(temporary_name))
 }
 
-fn serialize_request(request: &ApiRequest) -> String {
-    let mut metadata = vec![format!("# @name {}", request.name)];
-    if !request.description.is_empty() {
-        metadata.push(format!("# @description {}", request.description));
-    }
-    let mut command = vec![format!(
-        "curl --request {} --url {}",
-        request.method,
-        shell_quote(&request.url)
-    )];
-    for header in &request.headers {
-        command.push(format!(
-            "  --header {}",
-            shell_quote(&format!("{}: {}", header.name, header.value))
-        ));
-    }
-    for part in &request.query_parts {
-        let option = match part {
-            DataPart::Raw(_) => "--data-raw",
-            DataPart::UrlEncoded(_) => "--data-urlencode",
-        };
-        command.push(format!(
-            "  {option} {}",
-            shell_quote(&crate::template::data_part_text(part))
-        ));
-    }
-    if !request.query_parts.is_empty() {
-        command.push("  --get".to_string());
-    }
-    for part in &request.body_parts {
-        let option = match part {
-            DataPart::Raw(_) => "--data-raw",
-            DataPart::UrlEncoded(_) => "--data-urlencode",
-        };
-        command.push(format!(
-            "  {option} {}",
-            shell_quote(&crate::template::data_part_text(part))
-        ));
-    }
-    for field in &request.form {
-        command.push(format!("  --form-string {}", shell_quote(&field.to_text())));
-    }
-    for file in &request.files {
-        let mut value = format!("{}=@{}", file.field, file.path);
-        if let Some(content_type) = &file.content_type {
-            value.push_str(&format!(";type={content_type}"));
-        }
-        if let Some(filename) = &file.filename {
-            value.push_str(&format!(";filename={filename}"));
-        }
-        command.push(format!("  --form {}", shell_quote(&value)));
-    }
-    format!("{}\n{}\n", metadata.join("\n"), command.join(" \\\n"))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
+fn serialize_request(request: &ApiRequest) -> Result<String> {
+    serde_saphyr::to_string(&RequestDocument::from(request)).context("序列化请求 YAML 失败")
 }

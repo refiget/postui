@@ -9,10 +9,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-mod curl;
-
-use curl::parse_curl;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RequestConfig {
     pub(crate) name: String,
@@ -20,6 +16,8 @@ pub(crate) struct RequestConfig {
     pub(crate) download_directory: PathBuf,
     pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
+    pub(crate) environments: BTreeMap<String, EnvironmentConfig>,
+    pub(crate) default_environment: String,
     #[serde(default)]
     pub(crate) editable_variables: BTreeSet<String>,
     pub(crate) requests: Vec<ApiRequest>,
@@ -33,6 +31,8 @@ pub(crate) struct WorkspaceConfig {
     pub(crate) download_directory: PathBuf,
     pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
+    pub(crate) environments: BTreeMap<String, EnvironmentConfig>,
+    pub(crate) default_environment: String,
     pub(crate) editable_variables: BTreeSet<String>,
     pub(crate) timeout_seconds: u64,
 }
@@ -45,6 +45,8 @@ impl RequestConfig {
             download_directory,
             headers,
             variables,
+            environments,
+            default_environment,
             editable_variables,
             requests,
             timeout_seconds,
@@ -56,6 +58,8 @@ impl RequestConfig {
                 download_directory,
                 headers,
                 variables,
+                environments,
+                default_environment,
                 editable_variables,
                 timeout_seconds,
             },
@@ -128,24 +132,226 @@ pub(crate) struct ApiRequest {
     pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) extracts: Vec<ResponseExtract>,
+    pub(crate) overrides: BTreeMap<String, RequestOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EnvironmentConfig {
+    pub(crate) variables: BTreeMap<String, VariableDefinition>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RequestOverride {
+    pub(crate) method: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) timeout_seconds: Option<u64>,
+    pub(crate) headers: Option<Vec<NameValue>>,
+    pub(crate) query_parts: Option<Vec<DataPart>>,
+    pub(crate) body_parts: Option<Vec<DataPart>>,
+    pub(crate) form: Option<Vec<RequestParam>>,
+    pub(crate) files: Option<Vec<FileUpload>>,
+    pub(crate) extracts: Option<Vec<ResponseExtract>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestDocument {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) description: String,
+    #[serde(default = "default_method")]
+    pub(crate) method: String,
+    #[serde(default)]
+    pub(crate) url: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) timeout: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) headers: Vec<NameValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) params: Vec<RequestParam>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) body: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) form: Vec<RequestParam>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) files: Vec<FileUpload>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) extracts: Vec<ResponseExtract>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) overrides: BTreeMap<String, RequestOverrideDocument>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestOverrideDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) headers: Option<Vec<NameValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) params: Option<Vec<RequestParam>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) form: Option<Vec<RequestParam>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) files: Option<Vec<FileUpload>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) extracts: Option<Vec<ResponseExtract>>,
+}
+
+impl ApiRequest {
+    pub(crate) fn for_environment(&self, environment: &str) -> Self {
+        let mut request = self.clone();
+        if let Some(request_override) = self.overrides.get(environment) {
+            request_override.apply_to(&mut request);
+        }
+        request.overrides.clear();
+        request
+    }
+}
+
+impl RequestOverride {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.method.is_none()
+            && self.url.is_none()
+            && self.timeout_seconds.is_none()
+            && self.headers.is_none()
+            && self.query_parts.is_none()
+            && self.body_parts.is_none()
+            && self.form.is_none()
+            && self.files.is_none()
+            && self.extracts.is_none()
+    }
+
+    fn apply_to(&self, request: &mut ApiRequest) {
+        if let Some(method) = &self.method {
+            request.method = method.clone();
+        }
+        if let Some(url) = &self.url {
+            request.url = url.clone();
+        }
+        if let Some(timeout_seconds) = self.timeout_seconds {
+            request.timeout_seconds = timeout_seconds;
+        }
+        if let Some(headers) = &self.headers {
+            request.headers = headers.clone();
+        }
+        if let Some(query_parts) = &self.query_parts {
+            request.query_parts = query_parts.clone();
+        }
+        if let Some(body_parts) = &self.body_parts {
+            request.body_parts = body_parts.clone();
+        }
+        if let Some(form) = &self.form {
+            request.form = form.clone();
+        }
+        if let Some(files) = &self.files {
+            request.files = files.clone();
+        }
+        if let Some(extracts) = &self.extracts {
+            request.extracts = extracts.clone();
+        }
+    }
+}
+
+impl From<&ApiRequest> for RequestDocument {
+    fn from(request: &ApiRequest) -> Self {
+        Self {
+            name: request.name.clone(),
+            description: request.description.clone(),
+            method: request.method.clone(),
+            url: request.url.clone(),
+            timeout: request.timeout_seconds,
+            headers: request.headers.clone(),
+            params: request
+                .query_parts
+                .iter()
+                .map(request_param_from_part)
+                .collect(),
+            body: body_text(&request.body_parts),
+            form: request.form.clone(),
+            files: request.files.clone(),
+            extracts: request.extracts.clone(),
+            overrides: request
+                .overrides
+                .iter()
+                .map(|(environment, request_override)| {
+                    (
+                        environment.clone(),
+                        RequestOverrideDocument::from(request_override),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&RequestOverride> for RequestOverrideDocument {
+    fn from(request_override: &RequestOverride) -> Self {
+        Self {
+            method: request_override.method.clone(),
+            url: request_override.url.clone(),
+            timeout: request_override.timeout_seconds,
+            headers: request_override.headers.clone(),
+            params: request_override
+                .query_parts
+                .as_ref()
+                .map(|parts| parts.iter().map(request_param_from_part).collect()),
+            body: request_override
+                .body_parts
+                .as_ref()
+                .map(|parts| body_text(parts).unwrap_or_default()),
+            form: request_override.form.clone(),
+            files: request_override.files.clone(),
+            extracts: request_override.extracts.clone(),
+        }
+    }
+}
+
+fn request_param_from_part(part: &DataPart) -> RequestParam {
+    match part {
+        DataPart::Raw(value) => RequestParam::from_text(value),
+        DataPart::UrlEncoded(parameter) => parameter.clone(),
+    }
+}
+
+fn body_text(parts: &[DataPart]) -> Option<String> {
+    (!parts.is_empty()).then(|| {
+        parts
+            .iter()
+            .map(|part| match part {
+                DataPart::Raw(value) => value.clone(),
+                DataPart::UrlEncoded(parameter) => parameter.to_text(),
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// curl data 的一个片段；URL 编码片段保存逻辑参数，发送时再编码。
+/// 请求体或 URL 编码参数的一个片段；URL 编码片段保存逻辑参数，发送时再编码。
 pub(crate) enum DataPart {
     Raw(String),
     UrlEncoded(RequestParam),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FileUpload {
     pub(crate) field: String,
     pub(crate) path: String,
+    #[serde(default)]
     pub(crate) filename: Option<String>,
+    #[serde(default)]
     pub(crate) content_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ResponseExtract {
     pub(crate) variable: String,
     pub(crate) path: String,
@@ -161,9 +367,20 @@ struct RawWorkspaceConfig {
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
+    environments: BTreeMap<String, RawEnvironmentConfig>,
+    #[serde(default)]
+    default_environment: Option<String>,
+    #[serde(default)]
     headers: Vec<NameValue>,
     #[serde(default = "default_timeout_seconds")]
     timeout: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEnvironmentConfig {
+    #[serde(default)]
+    variables: BTreeMap<String, Option<Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +407,8 @@ impl Default for RawWorkspaceConfig {
             name: None,
             directories: RawDirectories::default(),
             variables: BTreeMap::new(),
+            environments: BTreeMap::new(),
+            default_environment: None,
             headers: Vec::new(),
             timeout: default_timeout_seconds(),
         }
@@ -204,24 +423,8 @@ struct RequestFile {
 
 #[derive(Debug)]
 struct ParsedRequest {
-    name: String,
     id: String,
-    timeout_seconds: Option<u64>,
-    description: String,
-    request: String,
-    extract: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default)]
-struct ParsedCommand {
-    method: Option<String>,
-    url: Option<String>,
-    headers: Vec<NameValue>,
-    data: Vec<DataPart>,
-    query_data: Vec<DataPart>,
-    form: Vec<RequestParam>,
-    files: Vec<FileUpload>,
-    get_mode: bool,
+    document: RequestDocument,
 }
 
 fn default_method() -> String {
@@ -238,6 +441,10 @@ fn default_upload_directory() -> PathBuf {
 
 fn default_download_directory() -> PathBuf {
     PathBuf::from("temp")
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
@@ -282,7 +489,8 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
     tracing::debug!(
         name = %config.name,
         request_count = config.requests.len(),
-        variable_count = config.variables.len(),
+        variable_count = config.editable_variables.len(),
+        environment_count = config.environments.len(),
         workspace_header_count = config.headers.len(),
         timeout_seconds = config.timeout_seconds,
         file_directory = %config.file_directory.display(),
@@ -312,23 +520,31 @@ fn normalize_config(
     workspace_path: &Path,
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
-    let mut variables = normalize_variables(raw.variables)?;
-    let editable_variables = variables.keys().cloned().collect();
-    let headers = normalize_headers(raw.headers)?;
-    let timeout_seconds = if raw.timeout == 0 {
+    let RawWorkspaceConfig {
+        name,
+        directories,
+        variables: raw_variables,
+        environments: raw_environments,
+        default_environment: raw_default_environment,
+        headers: raw_headers,
+        timeout,
+    } = raw;
+    let variables = normalize_variables(raw_variables)?;
+    let headers = normalize_headers(raw_headers)?;
+    let environments = normalize_environments(raw_environments)?;
+    let default_environment =
+        normalize_default_environment(raw_default_environment, &environments)?;
+    let timeout_seconds = if timeout == 0 {
         default_timeout_seconds()
     } else {
-        raw.timeout
+        timeout
     };
 
-    let file_directory = resolve_directory(
-        workspace_path,
-        &raw.directories.uploads,
-        "directories.uploads",
-    )?;
+    let file_directory =
+        resolve_directory(workspace_path, &directories.uploads, "directories.uploads")?;
     let download_directory = resolve_directory(
         workspace_path,
-        &raw.directories.downloads,
+        &directories.downloads,
         "directories.downloads",
     )?;
 
@@ -336,7 +552,7 @@ fn normalize_config(
     let mut requests = Vec::with_capacity(request_files.len());
     for file in request_files {
         let raw_request = parse_request_file(file, workspace_path)?;
-        let request = normalize_request(raw_request, timeout_seconds)?;
+        let request = normalize_request(raw_request, timeout_seconds, &environments)?;
         if !request_ids.insert(request.id.clone()) {
             bail!("接口 id 重复: {}", request.id)
         }
@@ -356,27 +572,23 @@ fn normalize_config(
         requests.push(request);
     }
 
+    let mut editable_variables = variables.keys().cloned().collect::<BTreeSet<_>>();
+    for environment in environments.values() {
+        editable_variables.extend(environment.variables.keys().cloned());
+    }
     for request in &requests {
-        for name in crate::template::variable_names(request) {
-            variables
-                .entry(name)
-                .or_insert_with(|| VariableDefinition { default: None });
-        }
+        editable_variables.extend(crate::template::variable_names(request));
     }
     for header in &headers {
-        for variable in crate::template::variable_names_in_text(&header.name)
-            .into_iter()
-            .chain(crate::template::variable_names_in_text(&header.value))
-        {
-            variables
-                .entry(variable)
-                .or_insert_with(|| VariableDefinition { default: None });
-        }
+        editable_variables.extend(
+            crate::template::variable_names_in_text(&header.name)
+                .into_iter()
+                .chain(crate::template::variable_names_in_text(&header.value)),
+        );
     }
 
     let config = RequestConfig {
-        name: raw
-            .name
+        name: name
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -392,11 +604,63 @@ fn normalize_config(
         download_directory,
         headers,
         variables,
+        environments,
+        default_environment,
         editable_variables,
         requests,
         timeout_seconds,
     };
     Ok(config)
+}
+
+fn normalize_environments(
+    raw_environments: BTreeMap<String, RawEnvironmentConfig>,
+) -> Result<BTreeMap<String, EnvironmentConfig>> {
+    if raw_environments.is_empty() {
+        return Ok(BTreeMap::from([(
+            "default".to_string(),
+            EnvironmentConfig {
+                variables: BTreeMap::new(),
+            },
+        )]));
+    }
+
+    let mut environments = BTreeMap::new();
+    for (raw_name, raw_environment) in raw_environments {
+        let Some(name) = normalize_environment_name(&raw_name) else {
+            bail!("环境名称无效: {raw_name}")
+        };
+        let variables = normalize_variables(raw_environment.variables)
+            .with_context(|| format!("环境 {name} 的变量配置无效"))?;
+        if environments
+            .insert(name.clone(), EnvironmentConfig { variables })
+            .is_some()
+        {
+            bail!("环境名称重复: {name}")
+        }
+    }
+    Ok(environments)
+}
+
+fn normalize_default_environment(
+    raw_name: Option<String>,
+    environments: &BTreeMap<String, EnvironmentConfig>,
+) -> Result<String> {
+    if let Some(raw_name) = raw_name {
+        let Some(name) = normalize_environment_name(&raw_name) else {
+            bail!("默认环境名称无效: {raw_name}")
+        };
+        if !environments.contains_key(&name) {
+            bail!("默认环境不存在: {name}")
+        }
+        return Ok(name);
+    }
+
+    environments
+        .keys()
+        .next()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("工作区没有可用环境"))
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<String>> {
@@ -450,12 +714,7 @@ fn collect_request_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(
 fn is_request_file(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "http" | "rest" | "curl"
-            )
-        })
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "yaml" | "yml"))
 }
 
 fn workspace_fingerprint(
@@ -494,86 +753,9 @@ fn parse_request_file(file: &RequestFile, workspace_path: &Path) -> Result<Parse
         .unwrap_or(&file.path)
         .to_string_lossy()
         .replace('\\', "/");
-    let mut name = None;
-    let mut description = None;
-    let mut timeout_seconds = None;
-    let mut extract = BTreeMap::new();
-
-    for (line_number, line) in file.text.lines().enumerate() {
-        let Some((directive, value)) = request_directive(line) else {
-            continue;
-        };
-        match directive {
-            "name" => {
-                if name.replace(value.to_string()).is_some() {
-                    bail!("请求 {} 重复声明 @name (第 {} 行)", id, line_number + 1)
-                }
-            }
-            "description" => {
-                if description.replace(value.to_string()).is_some() {
-                    bail!(
-                        "请求 {} 重复声明 @description (第 {} 行)",
-                        id,
-                        line_number + 1
-                    )
-                }
-            }
-            "timeout" => {
-                let timeout = value
-                    .parse::<u64>()
-                    .with_context(|| format!("请求 {} 的 @timeout 无效: {}", id, value))?;
-                if timeout_seconds.replace(timeout).is_some() {
-                    bail!("请求 {} 重复声明 @timeout (第 {} 行)", id, line_number + 1)
-                }
-            }
-            "extract" => {
-                let Some((variable, path)) =
-                    value.split_once('=').or_else(|| value.split_once(':'))
-                else {
-                    bail!(
-                        "请求 {} 的 @extract 格式应为 variable = response.path (第 {} 行)",
-                        id,
-                        line_number + 1
-                    )
-                };
-                let variable = variable.trim().to_string();
-                let path = path.trim().to_string();
-                if variable.is_empty() || path.is_empty() {
-                    bail!(
-                        "请求 {} 的 @extract 不能为空 (第 {} 行)",
-                        id,
-                        line_number + 1
-                    )
-                }
-                if extract.insert(variable, path).is_some() {
-                    bail!("请求 {} 重复声明 @extract (第 {} 行)", id, line_number + 1)
-                }
-            }
-            other => bail!("请求 {} 使用了未知指令: @{}", id, other),
-        }
-    }
-
-    let name = name
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| request_display_name(&file.path));
-    let description = description.unwrap_or_default();
-    Ok(ParsedRequest {
-        name,
-        id,
-        timeout_seconds,
-        description,
-        request: file.text.clone(),
-        extract,
-    })
-}
-
-fn request_directive(line: &str) -> Option<(&str, &str)> {
-    let trimmed = line.trim();
-    let directive = trimmed
-        .strip_prefix("# @")
-        .or_else(|| trimmed.strip_prefix("// @"))?;
-    let (name, value) = directive.split_once(char::is_whitespace)?;
-    Some((name, value.trim()))
+    let document: RequestDocument = serde_saphyr::from_str(&file.text)
+        .with_context(|| format!("请求 {} 的 YAML 配置无效", id))?;
+    Ok(ParsedRequest { id, document })
 }
 
 fn request_display_name(path: &Path) -> String {
@@ -694,61 +876,198 @@ fn normalize_headers(raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
     Ok(headers)
 }
 
-fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result<ApiRequest> {
+fn normalize_request(
+    raw: ParsedRequest,
+    default_timeout_seconds: u64,
+    environments: &BTreeMap<String, EnvironmentConfig>,
+) -> Result<ApiRequest> {
     let id = raw.id;
-    let name = if raw.name.trim().is_empty() {
-        id.clone()
+    let document = raw.document;
+    let name = if document.name.trim().is_empty() {
+        request_display_name(Path::new(&id))
     } else {
-        raw.name.trim().to_string()
+        document.name.trim().to_string()
     };
-    let parsed = parse_curl(&raw.request, &id)?;
-    let method = parsed
-        .method
-        .unwrap_or_else(default_method)
-        .trim()
-        .to_ascii_uppercase();
-    let url = parsed
-        .url
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("接口 {} 的 curl 命令缺少 URL", id))?;
-    let mut request = ApiRequest {
+    let method = normalize_method(&document.method, &id)?;
+    let url = document.url.trim().to_string();
+    if url.is_empty() {
+        bail!("接口 {} 缺少 url", id)
+    }
+    let headers = normalize_headers(document.headers)
+        .with_context(|| format!("接口 {id} 的 headers 配置无效"))?;
+    let query_parts = normalize_params(document.params, &id, "params")?
+        .into_iter()
+        .map(DataPart::UrlEncoded)
+        .collect();
+    let body_parts = document
+        .body
+        .filter(|body| !body.is_empty())
+        .map(DataPart::Raw)
+        .into_iter()
+        .collect();
+    let form = normalize_params(document.form, &id, "form")?;
+    let files = normalize_files(document.files, &id)?;
+    let extracts = normalize_extracts(document.extracts, &id)?;
+    let mut overrides = BTreeMap::new();
+    for (raw_environment, raw_override) in document.overrides {
+        let Some(environment) = normalize_environment_name(&raw_environment) else {
+            bail!("接口 {id} 的环境名称无效: {raw_environment}")
+        };
+        if !environments.contains_key(&environment) {
+            bail!("接口 {id} 使用了未配置的环境: {environment}")
+        }
+        let request_override = normalize_override(raw_override, &id, &environment)?;
+        if overrides
+            .insert(environment.clone(), request_override)
+            .is_some()
+        {
+            bail!("接口 {id} 重复声明环境覆盖: {environment}")
+        }
+    }
+
+    Ok(ApiRequest {
         id,
         name,
         method,
         url,
-        timeout_seconds: raw
-            .timeout_seconds
-            .filter(|timeout| *timeout > 0)
-            .unwrap_or(default_timeout_seconds),
-        description: raw.description.trim().to_string(),
-        headers: parsed.headers,
-        body_parts: parsed.data,
-        query_parts: parsed.query_data,
-        form: parsed.form,
-        files: parsed.files,
-        extracts: raw
-            .extract
-            .into_iter()
-            .map(|(variable, path)| ResponseExtract { variable, path })
-            .collect(),
-    };
+        timeout_seconds: if document.timeout == 0 {
+            default_timeout_seconds
+        } else {
+            document.timeout
+        },
+        description: document.description.trim().to_string(),
+        headers,
+        body_parts,
+        query_parts,
+        form,
+        files,
+        extracts,
+        overrides,
+    })
+}
 
-    for file in &request.files {
-        validate_file(&request.id, file)?;
+fn normalize_override(
+    raw: RequestOverrideDocument,
+    request_id: &str,
+    environment: &str,
+) -> Result<RequestOverride> {
+    let method = raw
+        .method
+        .map(|method| normalize_method(&method, request_id))
+        .transpose()?;
+    let url = raw.url.map(|url| url.trim().to_string());
+    if url.as_deref().is_some_and(str::is_empty) {
+        bail!("接口 {request_id} 的环境 {environment} 覆盖 url 不能为空")
     }
-    let mut extract_variables = BTreeSet::new();
-    for extract in &mut request.extracts {
-        normalize_extract(&request.id, extract)?;
-        if !extract_variables.insert(extract.variable.clone()) {
+    let headers = raw
+        .headers
+        .map(normalize_headers)
+        .transpose()
+        .with_context(|| format!("接口 {request_id} 的环境 {environment} headers 配置无效"))?;
+    let query_parts = raw
+        .params
+        .map(|params| normalize_params(params, request_id, "params"))
+        .transpose()?
+        .map(|params| params.into_iter().map(DataPart::UrlEncoded).collect());
+    let body_parts = raw.body.map(|body| {
+        if body.is_empty() {
+            Vec::new()
+        } else {
+            vec![DataPart::Raw(body)]
+        }
+    });
+    let form = raw
+        .form
+        .map(|form| normalize_params(form, request_id, "form"))
+        .transpose()?;
+    let files = raw
+        .files
+        .map(|files| normalize_files(files, request_id))
+        .transpose()?;
+    let extracts = raw
+        .extracts
+        .map(|extracts| normalize_extracts(extracts, request_id))
+        .transpose()?;
+    let timeout_seconds = raw.timeout.filter(|timeout| *timeout > 0);
+    if method.is_none()
+        && url.is_none()
+        && timeout_seconds.is_none()
+        && headers.is_none()
+        && query_parts.is_none()
+        && body_parts.is_none()
+        && form.is_none()
+        && files.is_none()
+        && extracts.is_none()
+    {
+        bail!("接口 {request_id} 的环境 {environment} 覆盖不能为空")
+    }
+    Ok(RequestOverride {
+        method,
+        url,
+        timeout_seconds,
+        headers,
+        query_parts,
+        body_parts,
+        form,
+        files,
+        extracts,
+    })
+}
+
+fn normalize_method(value: &str, request_id: &str) -> Result<String> {
+    let method = value.trim().to_ascii_uppercase();
+    if method.is_empty() {
+        bail!("接口 {request_id} 的 method 不能为空")
+    }
+    if !method.chars().all(|character| {
+        character.is_ascii_uppercase() || character.is_ascii_digit() || character == '-'
+    }) {
+        bail!("接口 {request_id} 的 method 无效: {value}")
+    }
+    Ok(method)
+}
+
+fn normalize_params(
+    params: Vec<RequestParam>,
+    request_id: &str,
+    field: &str,
+) -> Result<Vec<RequestParam>> {
+    let mut normalized = Vec::with_capacity(params.len());
+    for mut parameter in params {
+        parameter.name = parameter.name.trim().to_string();
+        if parameter.name.is_empty() {
+            bail!("接口 {request_id} 的 {field} 参数名称不能为空")
+        }
+        normalized.push(parameter);
+    }
+    Ok(normalized)
+}
+
+fn normalize_files(files: Vec<FileUpload>, request_id: &str) -> Result<Vec<FileUpload>> {
+    for file in &files {
+        validate_file(request_id, file)?;
+    }
+    Ok(files)
+}
+
+fn normalize_extracts(
+    extracts: Vec<ResponseExtract>,
+    request_id: &str,
+) -> Result<Vec<ResponseExtract>> {
+    let mut normalized = Vec::with_capacity(extracts.len());
+    let mut names = BTreeSet::new();
+    for mut extract in extracts {
+        normalize_extract(request_id, &mut extract)?;
+        if !names.insert(extract.variable.clone()) {
             bail!(
                 "接口 {} 重复声明响应提取变量: {}",
-                request.id,
+                request_id,
                 extract.variable
             )
         }
+        normalized.push(extract);
     }
-    Ok(request)
+    Ok(normalized)
 }
 
 fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
@@ -790,6 +1109,15 @@ fn normalize_variable_name(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+fn normalize_environment_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        }))
+    .then(|| value.to_string())
 }
 
 pub(crate) fn value_to_string(value: &Value) -> String {

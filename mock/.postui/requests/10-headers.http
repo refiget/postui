@@ -1,8 +1,0 @@
-# @name 请求头与 Cookie
-# @description cookie、User-Agent、Referer 和敏感头日志脱敏。
-# @extract header_echo = data.token
-curl --location "http://{{host}}/v1/headers" \
-  --cookie "session={{session_id}}" \
-  --user-agent "postui-test/1.0" \
-  --referer "http://example.test/source" \
-  --header "X-Debug-Token: {{token}}"
