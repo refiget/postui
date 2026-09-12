@@ -10,13 +10,13 @@
 cargo clippy --all-targets -- -D warnings
 ```
 
-核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一和阶段二已经完成低风险依赖整理，后续重点是请求状态模型和职责拆分：
+核心问题不在基本可用性，而在请求模型、HTTP 客户端生命周期和 `App` 状态组织。阶段一至阶段四已经完成依赖整理、请求状态收敛和第一轮职责拆分，后续重点是请求字段模型和输入组件评估：
 
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
 3. [已完成] 用 `serde-saphyr` 替换已经停止维护的 `serde_yaml`。
 4. [已完成] 合并请求配置、编辑态和运行态，消除平行状态容器。
-5. 按职责拆分 2077 行的 `App`。
+5. [阶段 4 已完成第一轮] 按职责拆分 1980 行的 `App`。
 6. 最后评估剪贴板和文本编辑器库。
 
 ## 值得使用现成库替换的实现
@@ -107,16 +107,28 @@ serde_yaml = "0.9"
 
 ### 复用 reqwest Client
 
-`src/http.rs` 的 `send` 每次请求都会执行 `Client::builder().build()`。`reqwest::Client` 内部维护连接池，官方建议创建后复用。
+`src/http.rs` 的 `HttpClient` 长期持有普通代理和 no-proxy 两个 `reqwest::blocking::Client`。`RequestExecutor` 持有这个客户端，并将它的 clone 交给后台请求线程。`reqwest::Client` 内部维护连接池，因而可以复用：
 
-当前实现无法充分利用：
+请求超时继续通过 `RequestBuilder::timeout()` 设置，不需要为不同 timeout 重建 Client。本地地址使用 no-proxy Client，其他地址使用普通 Client。
+
+阶段一和阶段四已完成。现在仍然保留两个客户端，是因为本地 mock/API 与普通外部 API 的代理策略不同。这样可以继续利用：
 
 - TCP keep-alive。
 - TLS 会话和连接复用。
 - 连接池。
 - 部分 DNS 和代理相关资源复用。
 
-建议建立具体类型：
+```text
+App
+└── RequestExecutor
+    ├── HttpClient
+    ├── operation id
+    └── result channel
+```
+
+当前实现不再需要让 `App` 直接管理线程和 channel。
+
+历史上的建议类型如下，已经落地为 `src/http.rs` 中的具体实现：
 
 ```rust
 struct HttpClient {
@@ -125,18 +137,16 @@ struct HttpClient {
 }
 ```
 
-请求超时通过 `RequestBuilder::timeout()` 设置，不需要为不同 timeout 重建 Client。本地地址使用 `no_proxy` Client，其他地址使用普通 Client。
+该类型由独立请求执行器长期持有。当前没有多种传输实现，不需要额外创建 `HttpTransport` trait。
 
-该类型应由 `App` 或独立请求执行器长期持有。当前没有多种传输实现，不需要额外创建 `HttpTransport` trait。
-
-优先级：最高。
+优先级：最高，已完成。
 
 ### cacache feature 和 fingerprint
 
 当前配置为：
 
 ```toml
-cacache = { version = "13.1", default-features = false, features = ["tokio-runtime"] }
+cacache = { version = "13.1", default-features = false, features = ["async-std", "mmap"] }
 ```
 
 `src/cache.rs` 实际只使用：
@@ -173,21 +183,18 @@ PostUI 仍只调用 `read_sync` 和 `write_sync`，不会启动 async-std runtim
 
 ### App 承担过多职责
 
-`src/app.rs` 共 2077 行，当前同时负责：
+`src/app.rs` 当前约 1980 行，仍负责：
 
 - 当前请求选择。
 - 编辑器生命周期。
 - dialog 行为。
 - dirty 状态。
-- 文件保存和删除。
-- HTTP 请求调度。
-- 后台线程消息。
 - response extract。
 - 下载与复制。
 - 键盘快捷键。
-- 请求序列化。
+- 请求发送前的校验与结果应用。
 
-建议逐步形成以下结构：
+阶段四完成后的职责边界如下：
 
 ```text
 App
@@ -195,21 +202,21 @@ App
 │   ├── requests
 │   ├── variables
 │   └── selected_request
-├── EditorState
-│   ├── inline editors
-│   └── dialogs
+├── RequestFileStore
+│   ├── request path validation
+│   ├── save/delete
+│   └── curl serialization
 ├── RequestExecutor
 │   ├── reusable HttpClient
-│   ├── active operations
+│   ├── operation id
 │   └── result channel
-└── UiState
-    ├── focus
-    ├── tabs
-    ├── scroll
-    └── response menu
+└── UI and business state
+    ├── editors and dialogs
+    ├── response state
+    └── keyboard/mouse orchestration
 ```
 
-这里需要的是职责划分，不是动态多态。不要先创建大量 trait。
+这里需要的是职责划分，不是动态多态。不要先创建大量 trait。阶段四已经将 `RequestFileStore` 和 `RequestExecutor` 接入 `App`；结果如何写入 `RequestSession` 仍由 `App` 编排。
 
 ### 请求状态由多个平行容器维护
 
@@ -252,30 +259,38 @@ UI 已有空列表分支，不再维护 Null Object。
 
 ### 持久化逻辑位于 App
 
-以下行为不应由 `App` 直接承担：
+以下行为不应由 `App` 直接承担，阶段四已完成：
 
 - 请求文件定位。
 - 写入请求文件。
 - 删除请求文件。
 - 序列化 curl 请求。
 
-建议建立具体模块：
+具体实现位于：
 
 ```text
-src/workspace.rs
 src/request_file.rs
 ```
 
-对外提供：
+`RequestFileStore` 负责：
 
 ```rust
-load_workspace(...)
-save_request(...)
-delete_request(...)
-serialize_request(...)
+RequestFileStore::save(...)
+RequestFileStore::delete(...)
 ```
 
-当前没有多种存储实现，不需要 Repository trait。
+保存使用临时文件再替换目标文件，并对请求 ID 做相对路径校验；Windows 下会先移除目标文件，保证已有请求可以再次保存。序列化函数保持在该模块内部，不向 `App` 暴露格式细节。当前没有多种存储实现，不需要 Repository trait。
+
+### 请求执行职责位于 RequestExecutor
+
+阶段四已将以下内容移到 `src/request_executor.rs`：
+
+- HTTP 客户端生命周期。
+- 操作 ID 生成。
+- 后台线程创建。
+- 请求结果 channel。
+
+`App` 只准备已解析请求、更新 `RequestSession.runtime`，并在主循环中消费 `RequestResult`。过期结果校验、response extract 和状态消息仍属于界面业务流程，因此保留在 `App`。
 
 ### Header 和 Form 模型不能表达重复字段
 
@@ -360,8 +375,8 @@ struct CellSelection {
 1. [已完成] 建立 `RequestSession`。
 2. [已完成] 消除三张 `HashMap`/`HashSet` 平行状态。
 3. [已完成] 删除 `empty_request`。
-4. 将请求文件读写和序列化移出 `App`。
-5. 将请求执行器移出 `App`。
+4. [已完成] 将请求文件读写和序列化移出 `App`。
+5. [已完成] 将请求执行器移出 `App`。
 
 ### 第三批：模型完善
 

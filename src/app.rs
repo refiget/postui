@@ -1,10 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
 };
 
 use crate::{
@@ -13,8 +9,10 @@ use crate::{
         BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
         merge_json_edit, terminal_width, text_position,
     },
-    http::{self, HttpClient, HttpError, ResponseData},
+    http::{HttpError, ResponseData},
     i18n::UiText,
+    request_executor::{RequestExecutor, RequestResult},
+    request_file::RequestFileStore,
     settings::GlobalConfig,
     template::{self, ResolvedRequest},
 };
@@ -115,17 +113,6 @@ impl PreviewTab {
         }
     }
 }
-
-#[derive(Debug)]
-enum AppMessage {
-    RequestFinished {
-        request_id: String,
-        operation_id: String,
-        result: Result<ResponseData, HttpError>,
-    },
-}
-
-static NEXT_REQUEST_OPERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Default)]
 pub(crate) struct ScrollState {
@@ -374,7 +361,6 @@ impl From<&ApiRequest> for RequestDraft {
 
 pub(crate) struct App {
     pub(crate) config: WorkspaceConfig,
-    pub(crate) config_path: PathBuf,
     pub(crate) global_config: GlobalConfig,
     pub(crate) focus: Focus,
     pub(crate) preview_state: PreviewContentState,
@@ -385,24 +371,24 @@ pub(crate) struct App {
     pub(crate) status: String,
     pub(crate) animation_frame: usize,
     pub(crate) should_quit: bool,
-    http_client: HttpClient,
-    sender: Sender<AppMessage>,
-    receiver: Receiver<AppMessage>,
+    request_files: RequestFileStore,
+    request_executor: RequestExecutor,
 }
 
 impl App {
     pub(crate) fn new(
         config: RequestConfig,
-        config_path: PathBuf,
+        workspace_path: PathBuf,
         global_config: GlobalConfig,
-        http_client: HttpClient,
+        request_executor: RequestExecutor,
     ) -> Self {
         let request_count = config.requests.len();
         let configured_variable_count = config.editable_variables.len();
         let (config, requests) = config.into_workspace();
+        let request_files = RequestFileStore::new(workspace_path);
         let text = UiText::new(global_config.language);
         tracing::debug!(
-            config_path = %config_path.display(),
+            config_path = %request_files.workspace_path().display(),
             global_config_path = global_config
                 .path
                 .as_deref()
@@ -415,10 +401,8 @@ impl App {
         );
         let workspace_state = WorkspaceSession::from_config(&config, requests);
 
-        let (sender, receiver) = mpsc::channel();
         Self {
             config,
-            config_path,
             global_config,
             focus: Focus::Requests,
             preview_state: PreviewContentState {
@@ -436,10 +420,13 @@ impl App {
             status: text.ready().to_string(),
             animation_frame: 0,
             should_quit: false,
-            http_client,
-            sender,
-            receiver,
+            request_files,
+            request_executor,
         }
+    }
+
+    pub(crate) fn workspace_path(&self) -> &Path {
+        self.request_files.workspace_path()
     }
 
     pub(crate) fn current_request(&self) -> Option<&ApiRequest> {
@@ -528,10 +515,11 @@ impl App {
 
     pub(crate) fn save_current_request(&mut self) {
         self.commit_active_editors();
-        let Some(id) = self.current_request().map(|request| request.id.clone()) else {
+        let Some(request) = self.current_effective_request() else {
             return;
         };
-        match self.write_request_file(&id) {
+        let id = request.id.clone();
+        match self.request_files.save(&request) {
             Ok(path) => {
                 if let Some(session) = self.workspace_state.request_mut(&id) {
                     session.dirty = false;
@@ -540,32 +528,6 @@ impl App {
             }
             Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
         }
-    }
-
-    fn write_request_file(&self, request_id: &str) -> anyhow::Result<PathBuf> {
-        let relative = request_id
-            .strip_prefix("requests/")
-            .ok_or_else(|| anyhow::anyhow!("请求没有可写入的源文件"))?;
-        let path = self.config_path.join("requests").join(relative);
-        let session = self
-            .workspace_state
-            .request(request_id)
-            .ok_or_else(|| anyhow::anyhow!("请求会话不存在"))?;
-        self.write_request_to_path(&path, session)?;
-        Ok(path)
-    }
-
-    fn write_request_to_path(&self, path: &Path, session: &RequestSession) -> anyhow::Result<()> {
-        let request = session.effective_request(&self.config.headers);
-        let text = serialize_request(&request);
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("请求路径缺少父目录"))?;
-        fs::create_dir_all(parent)?;
-        let temporary = path.with_extension("http.tmp");
-        fs::write(&temporary, text)?;
-        fs::rename(&temporary, path)?;
-        Ok(())
     }
 
     fn request_quit(&mut self) {
@@ -604,12 +566,7 @@ impl App {
             self.prompt = None;
             return;
         };
-        let Some(relative) = request_id.strip_prefix("requests/") else {
-            self.status = self.text().request_delete_failed("请求源路径无效");
-            return;
-        };
-        let path = self.config_path.join("requests").join(relative);
-        if let Err(error) = fs::remove_file(&path) {
+        if let Err(error) = self.request_files.delete(request_id) {
             self.status = self.text().request_delete_failed(&error.to_string());
             return;
         }
@@ -1559,111 +1516,106 @@ impl App {
     }
 
     pub(crate) fn poll_messages(&mut self) {
-        while let Ok(message) = self.receiver.try_recv() {
-            match message {
-                AppMessage::RequestFinished {
-                    request_id,
-                    operation_id,
-                    result,
-                } => {
+        while let Ok(RequestResult {
+            request_id,
+            operation_id,
+            result,
+        }) = self.request_executor.try_recv()
+        {
+            tracing::debug!(
+                request_id = %request_id,
+                operation_id = %operation_id,
+                "收到后台请求结果"
+            );
+            let is_current = self
+                .current_request()
+                .is_some_and(|request| request.id == request_id);
+            let text = self.text();
+            let Some(active_operation_id) = self
+                .workspace_state
+                .request(&request_id)
+                .map(|session| session.runtime.operation_id.clone())
+            else {
+                tracing::debug!(
+                    request_id = %request_id,
+                    operation_id = %operation_id,
+                    "收到未知接口的后台请求结果"
+                );
+                continue;
+            };
+            if active_operation_id.as_deref() != Some(operation_id.as_str()) {
+                tracing::debug!(
+                    request_id = %request_id,
+                    operation_id = %operation_id,
+                    active_operation_id = ?active_operation_id,
+                    "忽略过期的后台请求结果"
+                );
+                continue;
+            }
+            let status_message = match result {
+                Ok(response) => {
+                    let status = response.status;
+                    let elapsed = response.elapsed_ms;
+                    let request_status = RequestStatus::from_http_status(status);
                     tracing::debug!(
                         request_id = %request_id,
                         operation_id = %operation_id,
-                        "收到后台请求结果"
+                        status,
+                        request_status = ?request_status,
+                        elapsed_ms = elapsed,
+                        header_count = response.headers.len(),
+                        body_bytes = response.body_bytes.len(),
+                        "后台请求成功"
                     );
-                    let is_current = self
-                        .current_request()
-                        .is_some_and(|request| request.id == request_id);
-                    let text = self.text();
-                    let Some(active_operation_id) = self
-                        .workspace_state
-                        .request(&request_id)
-                        .map(|session| session.runtime.operation_id.clone())
-                    else {
-                        tracing::debug!(
-                            request_id = %request_id,
-                            operation_id = %operation_id,
-                            "收到未知接口的后台请求结果"
-                        );
+                    let extract_failures = if request_status == RequestStatus::Success {
+                        self.apply_response_extracts(&request_id, &response.body)
+                    } else {
+                        0
+                    };
+                    let complete = text.request_complete(status, elapsed);
+                    let message = if extract_failures == 0 {
+                        complete
+                    } else {
+                        format!(
+                            "{complete} · {}",
+                            text.response_extract_failures(extract_failures)
+                        )
+                    };
+                    let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
                     };
-                    if active_operation_id.as_deref() != Some(operation_id.as_str()) {
-                        tracing::debug!(
-                            request_id = %request_id,
-                            operation_id = %operation_id,
-                            active_operation_id = ?active_operation_id,
-                            "忽略过期的后台请求结果"
-                        );
-                        continue;
-                    }
-                    let status_message = match result {
-                        Ok(response) => {
-                            let status = response.status;
-                            let elapsed = response.elapsed_ms;
-                            let request_status = RequestStatus::from_http_status(status);
-                            tracing::debug!(
-                                request_id = %request_id,
-                                operation_id = %operation_id,
-                                status,
-                                request_status = ?request_status,
-                                elapsed_ms = elapsed,
-                                header_count = response.headers.len(),
-                                body_bytes = response.body_bytes.len(),
-                                "后台请求成功"
-                            );
-                            let extract_failures = if request_status == RequestStatus::Success {
-                                self.apply_response_extracts(&request_id, &response.body)
-                            } else {
-                                0
-                            };
-                            let complete = text.request_complete(status, elapsed);
-                            let message = if extract_failures == 0 {
-                                complete
-                            } else {
-                                format!(
-                                    "{complete} · {}",
-                                    text.response_extract_failures(extract_failures)
-                                )
-                            };
-                            let Some(session) = self.workspace_state.request_mut(&request_id)
-                            else {
-                                continue;
-                            };
-                            session.runtime.operation_id = None;
-                            session.runtime.status = request_status;
-                            session.runtime.response = Some(response);
-                            session.runtime.error = None;
-                            session.runtime.message = Some(message.clone());
-                            is_current.then_some(message)
-                        }
-                        Err(error) => {
-                            let request_status = RequestStatus::from_error(&error);
-                            let error_message = error.to_string();
-                            tracing::error!(
-                                request_id = %request_id,
-                                operation_id = %operation_id,
-                                request_status = ?request_status,
-                                error = %error_message,
-                                "后台请求失败"
-                            );
-                            let message = request_status.error_message(text, &error_message);
-                            let Some(session) = self.workspace_state.request_mut(&request_id)
-                            else {
-                                continue;
-                            };
-                            session.runtime.operation_id = None;
-                            session.runtime.status = request_status;
-                            session.runtime.response = None;
-                            session.runtime.error = Some(error_message.clone());
-                            session.runtime.message = Some(message.clone());
-                            is_current.then_some(message)
-                        }
-                    };
-                    if let Some(status) = status_message {
-                        self.response_state.scroll.reset();
-                        self.status = status;
-                    }
+                    session.runtime.operation_id = None;
+                    session.runtime.status = request_status;
+                    session.runtime.response = Some(response);
+                    session.runtime.error = None;
+                    session.runtime.message = Some(message.clone());
+                    is_current.then_some(message)
                 }
+                Err(error) => {
+                    let request_status = RequestStatus::from_error(&error);
+                    let error_message = error.to_string();
+                    tracing::error!(
+                        request_id = %request_id,
+                        operation_id = %operation_id,
+                        request_status = ?request_status,
+                        error = %error_message,
+                        "后台请求失败"
+                    );
+                    let message = request_status.error_message(text, &error_message);
+                    let Some(session) = self.workspace_state.request_mut(&request_id) else {
+                        continue;
+                    };
+                    session.runtime.operation_id = None;
+                    session.runtime.status = request_status;
+                    session.runtime.response = None;
+                    session.runtime.error = Some(error_message.clone());
+                    session.runtime.message = Some(message.clone());
+                    is_current.then_some(message)
+                }
+            };
+            if let Some(status) = status_message {
+                self.response_state.scroll.reset();
+                self.status = status;
             }
         }
     }
@@ -1959,23 +1911,18 @@ impl App {
             return;
         }
 
-        let operation_id = format!(
-            "{}-{}",
-            request_id,
-            NEXT_REQUEST_OPERATION.fetch_add(1, Ordering::Relaxed)
-        );
         let Some(resolved) = self.current_resolved_request() else {
             self.status = self.text().request_url_required().to_string();
             return;
         };
+        let operation = self.request_executor.prepare(&request_id);
+        let operation_id = operation.operation_id.clone();
         let display_url = resolved.url.clone();
         let timeout = self
             .current_request()
             .map(|request| request.timeout_seconds)
             .unwrap_or(self.config.timeout_seconds);
         let file_directory = self.config.file_directory.clone();
-        let http_client = self.http_client.clone();
-        let sender = self.sender.clone();
         tracing::debug!(
             request_id = %request_id,
             operation_id = %operation_id,
@@ -1996,41 +1943,8 @@ impl App {
             return;
         }
         self.status = message;
-
-        thread::spawn(move || {
-            tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
-            let result = http::send(
-                &http_client,
-                &resolved,
-                timeout,
-                &file_directory,
-                &operation_id,
-            );
-            match &result {
-                Ok(response) => tracing::debug!(
-                    operation_id = %operation_id,
-                    status = response.status,
-                    elapsed_ms = response.elapsed_ms,
-                    body_bytes = response.body_bytes.len(),
-                    "HTTP 工作线程完成"
-                ),
-                Err(error) => tracing::error!(
-                    operation_id = %operation_id,
-                    error = %error,
-                    "HTTP 工作线程失败"
-                ),
-            }
-            if sender
-                .send(AppMessage::RequestFinished {
-                    request_id,
-                    operation_id,
-                    result,
-                })
-                .is_err()
-            {
-                tracing::debug!("TUI 已退出，丢弃后台请求结果");
-            }
-        });
+        self.request_executor
+            .start(operation, resolved, timeout, file_directory);
     }
 }
 
@@ -2049,68 +1963,6 @@ fn join_param_row(key: &str, value: &str, has_equals: bool) -> String {
     } else {
         key.to_string()
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn serialize_request(request: &ApiRequest) -> String {
-    let mut metadata = vec![format!("# @name {}", request.name)];
-    if !request.description.is_empty() {
-        metadata.push(format!("# @description {}", request.description));
-    }
-    let mut command = vec![format!(
-        "curl --request {} --url {}",
-        request.method,
-        shell_quote(&request.url)
-    )];
-    for (name, value) in &request.headers {
-        command.push(format!(
-            "  --header {}",
-            shell_quote(&format!("{name}: {value}"))
-        ));
-    }
-    for part in &request.query_parts {
-        let option = match part {
-            BodyPart::Raw(_) => "--data-raw",
-            BodyPart::UrlEncoded(_) => "--data-urlencode",
-        };
-        command.push(format!(
-            "  {option} {}",
-            shell_quote(crate::template::body_part_value(part))
-        ));
-    }
-    if !request.query_parts.is_empty() {
-        command.push("  --get".to_string());
-    }
-    for part in &request.body_parts {
-        let option = match part {
-            BodyPart::Raw(_) => "--data-raw",
-            BodyPart::UrlEncoded(_) => "--data-urlencode",
-        };
-        command.push(format!(
-            "  {option} {}",
-            shell_quote(crate::template::body_part_value(part))
-        ));
-    }
-    for (name, value) in &request.form {
-        command.push(format!(
-            "  --form-string {}",
-            shell_quote(&format!("{name}={value}"))
-        ));
-    }
-    for file in &request.files {
-        let mut value = format!("{}=@{}", file.field, file.path);
-        if let Some(content_type) = &file.content_type {
-            value.push_str(&format!(";type={content_type}"));
-        }
-        if let Some(filename) = &file.filename {
-            value.push_str(&format!(";filename={filename}"));
-        }
-        command.push(format!("  --form {}", shell_quote(&value)));
-    }
-    format!("{}\n{}\n", metadata.join("\n"), command.join(" \\\n"))
 }
 
 pub(crate) fn key_kind(code: KeyCode) -> &'static str {

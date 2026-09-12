@@ -13,6 +13,8 @@ mod highlight;
 mod http;
 mod i18n;
 mod logging;
+mod request_executor;
+mod request_file;
 mod response_output;
 mod settings;
 mod template;
@@ -38,7 +40,10 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::{app::App, config::load as load_request_config, http::HttpClient};
+use crate::{
+    app::App, config::load as load_request_config, http::HttpClient,
+    request_executor::RequestExecutor,
+};
 
 #[cfg(not(windows))]
 const INIT_BLOCK_START: &str = "# >>> postui init >>>";
@@ -118,7 +123,13 @@ fn run_app(options: CliOptions) -> Result<()> {
         }
     };
     let http_client = HttpClient::new().context("初始化 HTTP 客户端失败")?;
-    let mut app = App::new(request_config, workspace_path, global_config, http_client);
+    let request_executor = RequestExecutor::new(http_client);
+    let mut app = App::new(
+        request_config,
+        workspace_path,
+        global_config,
+        request_executor,
+    );
 
     let terminal_session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());

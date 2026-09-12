@@ -75,7 +75,7 @@ pub(super) fn draw_header(
     ];
     if area.width >= 72 {
         line.push(Span::styled(
-            format!("  │  {}", app.config_path.display()),
+            format!("  │  {}", app.workspace_path().display()),
             Style::default().fg(theme.muted),
         ));
     }
