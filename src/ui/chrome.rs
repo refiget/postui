@@ -112,7 +112,7 @@ pub(super) fn draw_header(
                 app.text().send_button(true)
             )
         } else {
-            format!("[ {} ]", app.text().send_button(false))
+            format!("▶ {}", app.text().send_button(false))
         };
         draw_send_button(
             frame,

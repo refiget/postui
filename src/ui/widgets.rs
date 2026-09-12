@@ -200,20 +200,31 @@ pub(super) fn draw_send_button(
     focused: bool,
     theme: &crate::settings::UiTheme,
 ) {
-    draw_single_line_button(
-        frame,
-        area,
-        label,
-        enabled,
-        focused,
-        ButtonPalette::new(
-            theme.text,
-            theme.selection,
-            theme.accent,
-            theme.surface,
-            theme.muted,
-        ),
-    );
+    let line = if enabled {
+        let edge = if focused {
+            theme.secondary
+        } else {
+            theme.accent
+        };
+        Line::from(vec![
+            Span::styled("▐", Style::default().fg(edge)),
+            Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("▌", Style::default().fg(edge)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("│", Style::default().fg(theme.muted)),
+            Span::styled(format!(" {label} "), Style::default().fg(theme.muted)),
+            Span::styled("│", Style::default().fg(theme.muted)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
 pub(super) fn draw_primary_button(
