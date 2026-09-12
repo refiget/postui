@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 1. [已完成] 复用 `reqwest::blocking::Client`，并整理缓存 feature 与指纹计算。
 2. [已完成] 使用 `url` 和 `form_urlencoded` 处理 query、fragment 与表单编码。
 3. [已完成] 用 `serde-saphyr` 替换已经停止维护的 `serde_yaml`。
-4. 合并请求配置、编辑态和运行态，消除平行状态容器。
+4. [已完成] 合并请求配置、编辑态和运行态，消除平行状态容器。
 5. 按职责拆分 2077 行的 `App`。
 6. 最后评估剪贴板和文本编辑器库。
 
@@ -213,17 +213,7 @@ App
 
 ### 请求状态由多个平行容器维护
 
-当前 `WorkspaceState` 同时包含：
-
-```rust
-request_edits: HashMap<String, RequestEdits>
-request_states: HashMap<String, RequestRuntimeState>
-dirty_requests: HashSet<String>
-```
-
-请求配置本体又位于 `App.config.requests`。这依赖隐含不变量：所有容器必须永远与请求列表同步。代码中多处 `expect("every configured request...")` 是该问题的表现。
-
-建议改为：
+阶段 3 已完成。运行时现在由 `WorkspaceSession` 管理请求集合和选中索引，每个 `RequestSession` 同时持有源配置、草稿、运行态和 dirty 标记：
 
 ```rust
 struct RequestSession {
@@ -235,12 +225,12 @@ struct RequestSession {
 
 struct WorkspaceSession {
     requests: Vec<RequestSession>,
-    selected: Option<usize>,
+    selected_request: Option<usize>,
     variables: BTreeMap<String, String>,
 }
 ```
 
-这样可以消除：
+这样已经消除了：
 
 - 大量 ID 查找和 clone。
 - 多个容器的同步风险。
@@ -248,19 +238,17 @@ struct WorkspaceSession {
 - 多处不变量 `expect`。
 - 到处临时拼装 effective request。
 
-优先级：最高。
+优先级：最高，已完成。
 
 ### 使用空请求 sentinel
 
-`App` 保存 ID 为 `__empty__` 的 `empty_request`，无请求时 `current_request()` 返回该伪对象。调用方必须同时记住先调用 `has_current_request()`，否则伪请求可能进入编辑、状态查询或发送流程。
-
-建议改为：
+阶段 3 已移除 ID 为 `__empty__` 的 `empty_request`。当前请求返回 `Option`，无请求时由 UI 空列表分支处理，编辑、发送、响应状态和下载操作都会安全退出。
 
 ```rust
-fn current_request(&self) -> Option<&RequestSession>
+fn current_request(&self) -> Option<&ApiRequest>
 ```
 
-UI 已有空列表分支，没有继续维护 Null Object 的必要。
+UI 已有空列表分支，不再维护 Null Object。
 
 ### 持久化逻辑位于 App
 
@@ -369,9 +357,9 @@ struct CellSelection {
 
 ### 第二批：核心结构调整
 
-1. 建立 `RequestSession`。
-2. 消除三张 `HashMap`/`HashSet` 平行状态。
-3. 删除 `empty_request`。
+1. [已完成] 建立 `RequestSession`。
+2. [已完成] 消除三张 `HashMap`/`HashSet` 平行状态。
+3. [已完成] 删除 `empty_request`。
 4. 将请求文件读写和序列化移出 `App`。
 5. 将请求执行器移出 `App`。
 

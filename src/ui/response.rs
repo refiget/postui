@@ -55,7 +55,9 @@ pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, menu_button: Rect
         return;
     }
     draw_response_menu_button(frame, menu_button, app);
-    let request = app.current_request();
+    let Some(request) = app.current_request() else {
+        return;
+    };
     let request_status = app.request_status(&request.id);
     let loading = request_status == RequestStatus::Sending;
     let response = app.current_response();

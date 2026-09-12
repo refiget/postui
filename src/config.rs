@@ -26,6 +26,44 @@ pub(crate) struct RequestConfig {
     pub(crate) timeout_seconds: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceConfig {
+    pub(crate) name: String,
+    pub(crate) file_directory: PathBuf,
+    pub(crate) download_directory: PathBuf,
+    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) variables: BTreeMap<String, VariableDefinition>,
+    pub(crate) editable_variables: BTreeSet<String>,
+    pub(crate) timeout_seconds: u64,
+}
+
+impl RequestConfig {
+    pub(crate) fn into_workspace(self) -> (WorkspaceConfig, Vec<ApiRequest>) {
+        let Self {
+            name,
+            file_directory,
+            download_directory,
+            headers,
+            variables,
+            editable_variables,
+            requests,
+            timeout_seconds,
+        } = self;
+        (
+            WorkspaceConfig {
+                name,
+                file_directory,
+                download_directory,
+                headers,
+                variables,
+                editable_variables,
+                timeout_seconds,
+            },
+            requests,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VariableDefinition {
     pub(crate) default: Option<Value>,

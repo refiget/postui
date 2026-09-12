@@ -96,7 +96,10 @@ pub(super) fn draw_header(
     );
 
     if !send_button.is_empty() && app.has_current_request() {
-        let request_status = app.request_status(&app.current_request().id);
+        let Some(request) = app.current_request() else {
+            return;
+        };
+        let request_status = app.request_status(&request.id);
         let loading = request_status == RequestStatus::Sending;
         let label = if loading {
             format!(
@@ -174,17 +177,17 @@ pub(super) fn draw_request_list(
 
     let request_list_area = list_area;
     let items = app
-        .config
+        .workspace_state
         .requests
         .iter()
-        .map(|request| {
-            let mut item = request_item(request, theme, request_list_area.width);
-            if app.is_request_dirty(&request.id) {
+        .map(|session| {
+            let mut item = request_item(&session.source, theme, request_list_area.width);
+            if session.dirty {
                 item = ListItem::new(Line::from(vec![
                     Span::styled("● ", Style::default().fg(theme.warning)),
                     Span::styled(
                         truncate(
-                            &request.name,
+                            &session.source.name,
                             usize::from(request_list_area.width).saturating_sub(4),
                         ),
                         Style::default().fg(theme.text),
@@ -203,14 +206,14 @@ pub(super) fn draw_request_list(
         )
         .highlight_symbol("› ");
     let mut state = ListState::default();
-    if app.has_current_request() {
-        state.select(Some(app.requests_state.selected_request));
+    if let Some(selected) = app.workspace_state.selected_request {
+        state.select(Some(selected));
     }
     frame.render_stateful_widget(list, request_list_area, &mut state);
     draw_scrollbar(
         frame,
         scrollbar_area,
-        app.config.requests.len(),
+        app.workspace_state.requests.len(),
         usize::from(request_list_area.height),
         state.offset(),
         theme,

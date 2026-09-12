@@ -165,8 +165,10 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
         click_request_list(app, column, row, areas.request_list);
     } else if contains(areas.preview_summary, column, row) && app.has_current_request() {
         app.focus = Focus::Preview;
-        let method_width =
-            u16::try_from(app.current_request().method.len()).unwrap_or(u16::MAX) + 3;
+        let method_width = app
+            .current_request()
+            .map(|request| u16::try_from(request.method.len()).unwrap_or(u16::MAX) + 3)
+            .unwrap_or_default();
         if column < areas.preview_summary.x.saturating_add(method_width) {
             app.cycle_method();
         } else {
@@ -212,7 +214,9 @@ fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
     if !app.has_current_request() {
         return base;
     }
-    let request = app.current_request();
+    let Some(request) = app.current_request() else {
+        return base;
+    };
     let url = app.resolved_url(request);
     let summary_height = preview_summary_height(
         base.preview_details.width,
@@ -229,12 +233,12 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
     }
     let visible = usize::from(area.height);
     let offset = request_list_offset(
-        app.requests_state.selected_request,
-        app.config.requests.len(),
+        app.workspace_state.selected_request.unwrap_or_default(),
+        app.workspace_state.requests.len(),
         visible,
     );
     let index = offset.saturating_add(usize::from(row - area.y));
-    if index >= app.config.requests.len() {
+    if index >= app.workspace_state.requests.len() {
         return;
     }
     app.select_request(index);

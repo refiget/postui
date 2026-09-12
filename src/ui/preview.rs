@@ -20,7 +20,9 @@ pub(super) fn draw_preview(
         );
         return;
     }
-    let request = app.current_request();
+    let Some(request) = app.current_request() else {
+        return;
+    };
     let request_status = app.request_status(&request.id);
     let mut title = Line::from(vec![
         Span::styled(
@@ -63,7 +65,9 @@ pub(super) fn draw_preview_summary(
     }
     let theme = &app.global_config.theme;
     let text = app.text();
-    let request = app.current_request();
+    let Some(request) = app.current_request() else {
+        return;
+    };
     let mut url_line = vec![
         Span::styled(
             format!("[ {} ]", request.method),
@@ -215,7 +219,9 @@ pub(super) fn draw_preview_content(frame: &mut Frame<'_>, area: Rect, app: &App)
 
 pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.global_config.theme;
-    let resolved = app.current_resolved_request();
+    let Some(resolved) = app.current_resolved_request() else {
+        return;
+    };
     let has_body = resolved.raw_body.is_some();
     let lines = if has_body || app.body_editor().is_some() {
         let value = app
@@ -402,7 +408,10 @@ pub(super) fn request_variable_at(area: Rect, column: u16, row: u16, app: &App) 
     if area.is_empty() || !contains(area, column, row) {
         return None;
     }
-    if app.current_resolved_request().raw_body.is_some() {
+    if app
+        .current_resolved_request()
+        .is_some_and(|request| request.raw_body.is_some())
+    {
         return None;
     }
     let line = usize::from(row.saturating_sub(area.y))
@@ -584,7 +593,11 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
 pub(super) fn preview_tab_label(tab: PreviewTab, app: &App) -> String {
     let text = app.text();
     match tab {
-        PreviewTab::Body if app.current_resolved_request().raw_body.is_none() => {
+        PreviewTab::Body
+            if app
+                .current_resolved_request()
+                .is_none_or(|request| request.raw_body.is_none()) =>
+        {
             format!(" {} ", text.content())
         }
         PreviewTab::Body => format!(" {} ", tab.label(text)),
