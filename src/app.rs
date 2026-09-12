@@ -13,7 +13,7 @@ use crate::{
         BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
         merge_json_edit, terminal_width, text_position,
     },
-    http::{self, HttpError, ResponseData},
+    http::{self, HttpClient, HttpError, ResponseData},
     i18n::UiText,
     settings::GlobalConfig,
     template::{self, ResolvedRequest},
@@ -355,6 +355,7 @@ pub(crate) struct App {
     pub(crate) animation_frame: usize,
     pub(crate) should_quit: bool,
     empty_request: ApiRequest,
+    http_client: HttpClient,
     sender: Sender<AppMessage>,
     receiver: Receiver<AppMessage>,
 }
@@ -364,6 +365,7 @@ impl App {
         config: RequestConfig,
         config_path: PathBuf,
         global_config: GlobalConfig,
+        http_client: HttpClient,
     ) -> Self {
         let text = UiText::new(global_config.language);
         tracing::debug!(
@@ -406,6 +408,7 @@ impl App {
             animation_frame: 0,
             should_quit: false,
             empty_request,
+            http_client,
             sender,
             receiver,
         }
@@ -1907,6 +1910,7 @@ impl App {
         let display_url = resolved.url.clone();
         let timeout = self.current_request().timeout_seconds;
         let file_directory = self.config.file_directory.clone();
+        let http_client = self.http_client.clone();
         let sender = self.sender.clone();
         tracing::debug!(
             request_id = %request_id,
@@ -1931,7 +1935,13 @@ impl App {
 
         thread::spawn(move || {
             tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
-            let result = http::send(&resolved, timeout, &file_directory, &operation_id);
+            let result = http::send(
+                &http_client,
+                &resolved,
+                timeout,
+                &file_directory,
+                &operation_id,
+            );
             match &result {
                 Ok(response) => tracing::debug!(
                     operation_id = %operation_id,

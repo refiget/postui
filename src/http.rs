@@ -60,6 +60,29 @@ impl From<String> for HttpError {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct HttpClient {
+    regular: Client,
+    no_proxy: Client,
+}
+
+impl HttpClient {
+    pub(crate) fn new() -> Result<Self, HttpError> {
+        let regular = build_client(false)?;
+        let no_proxy = build_client(true)?;
+        tracing::debug!("HTTP 客户端池初始化完成");
+        Ok(Self { regular, no_proxy })
+    }
+
+    fn client(&self, loopback: bool) -> &Client {
+        if loopback {
+            &self.no_proxy
+        } else {
+            &self.regular
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ResponseData {
     pub(crate) status: u16,
     pub(crate) reason: String,
@@ -70,6 +93,7 @@ pub(crate) struct ResponseData {
 }
 
 pub(crate) fn send(
+    client: &HttpClient,
     request: &ResolvedRequest,
     timeout_seconds: u64,
     file_directory: &Path,
@@ -99,20 +123,15 @@ pub(crate) fn send(
         tracing::error!(error = %error, method = %request.method, "HTTP 方法无效");
         HttpError::failed(format!("HTTP 方法无效: {error}"))
     })?;
-    let mut client_builder = Client::builder()
-        .timeout(Duration::from_secs(timeout_seconds.max(1)))
-        .user_agent("postui/0.1");
+    let mut builder = client
+        .client(loopback)
+        .request(method, &request.url)
+        .timeout(Duration::from_secs(timeout_seconds.max(1)));
     if loopback {
-        client_builder = client_builder.no_proxy();
-        tracing::debug!("检测到本地地址，关闭代理");
+        tracing::debug!("检测到本地地址，使用无代理 HTTP 客户端");
+    } else {
+        tracing::debug!("使用复用的 HTTP 客户端");
     }
-    let client = client_builder.build().map_err(|error| {
-        tracing::error!(error = %error, error_debug = ?error, "创建 HTTP 客户端失败");
-        HttpError::failed(format!("创建 HTTP 客户端失败: {error}"))
-    })?;
-    tracing::debug!("HTTP 客户端创建完成");
-
-    let mut builder = client.request(method, &request.url);
     let request_headers = request
         .headers
         .iter()
@@ -251,6 +270,23 @@ pub(crate) fn send(
         body,
         body_bytes: body_bytes.to_vec(),
         elapsed_ms,
+    })
+}
+
+fn build_client(no_proxy: bool) -> Result<Client, HttpError> {
+    let client_kind = if no_proxy { "no_proxy" } else { "regular" };
+    let mut builder = Client::builder().user_agent("postui/0.1");
+    if no_proxy {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|error| {
+        tracing::error!(
+            client = client_kind,
+            error = %error,
+            error_debug = ?error,
+            "创建 HTTP 客户端失败"
+        );
+        HttpError::failed(format!("创建 HTTP 客户端失败: {error}"))
     })
 }
 

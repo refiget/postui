@@ -16,7 +16,7 @@ struct CacheEnvelope {
     config: RequestConfig,
 }
 
-pub(crate) fn load(workspace_path: &Path, fingerprint: &[u8]) -> Option<RequestConfig> {
+pub(crate) fn load(workspace_path: &Path, fingerprint: &blake3::Hash) -> Option<RequestConfig> {
     let cache_directory = cache_directory(workspace_path);
     let bytes = match cacache::read_sync(&cache_directory, WORKSPACE_CACHE_KEY) {
         Ok(bytes) => bytes,
@@ -79,7 +79,7 @@ pub(crate) fn load(workspace_path: &Path, fingerprint: &[u8]) -> Option<RequestC
 
 pub(crate) fn store(
     workspace_path: &Path,
-    fingerprint: &[u8],
+    fingerprint: &blake3::Hash,
     config: &RequestConfig,
 ) -> Result<()> {
     let cache_directory = cache_directory(workspace_path);
@@ -106,6 +106,6 @@ fn cache_directory(workspace_path: &Path) -> PathBuf {
     workspace_path.join(CACHE_DIRECTORY_NAME)
 }
 
-fn source_digest(fingerprint: &[u8]) -> String {
-    blake3::hash(fingerprint).to_hex().to_string()
+fn source_digest(fingerprint: &blake3::Hash) -> String {
+    fingerprint.to_hex().to_string()
 }

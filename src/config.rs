@@ -378,8 +378,8 @@ fn workspace_fingerprint(
     workspace_path: &Path,
     workspace_config: Option<&str>,
     request_files: &[RequestFile],
-) -> Vec<u8> {
-    let mut fingerprint = Vec::new();
+) -> blake3::Hash {
+    let mut fingerprint = blake3::Hasher::new();
     append_fingerprint_part(&mut fingerprint, b"postui.yaml");
     append_fingerprint_part(
         &mut fingerprint,
@@ -395,12 +395,12 @@ fn workspace_fingerprint(
         append_fingerprint_part(&mut fingerprint, relative.as_bytes());
         append_fingerprint_part(&mut fingerprint, file.text.as_bytes());
     }
-    fingerprint
+    fingerprint.finalize()
 }
 
-fn append_fingerprint_part(fingerprint: &mut Vec<u8>, part: &[u8]) {
-    fingerprint.extend_from_slice(&(part.len() as u64).to_le_bytes());
-    fingerprint.extend_from_slice(part);
+fn append_fingerprint_part(fingerprint: &mut blake3::Hasher, part: &[u8]) {
+    fingerprint.update(&(part.len() as u64).to_le_bytes());
+    fingerprint.update(part);
 }
 
 fn parse_request_file(file: &RequestFile, workspace_path: &Path) -> Result<ParsedRequest> {
