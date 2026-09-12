@@ -6,10 +6,8 @@ directories:
   downloads: temp
 
 headers:
-  - name: Accept
-    value: application/json
-  - name: X-PostUI-Collection
-    value: "{{collection_name}}"
+  Accept: application/json
+  X-PostUI-Collection: "{{collection_name}}"
 
 variables:
   collection_name: fastapi-mock
@@ -28,4 +26,4 @@ variables:
   missing_file: does-not-exist.txt
   session_id: session-001
 
-default_configuration: test
+default_scenario: test

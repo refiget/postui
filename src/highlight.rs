@@ -20,10 +20,12 @@ pub(crate) fn plain_style(theme: &UiTheme) -> Style {
     Style::default().fg(theme.text)
 }
 
-pub(crate) fn variable_style(theme: &UiTheme) -> Style {
-    Style::default()
-        .fg(theme.variable)
-        .add_modifier(Modifier::BOLD)
+pub(crate) fn variable_style(base: Style, theme: &UiTheme) -> Style {
+    base.patch(
+        Style::default()
+            .fg(theme.variable)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 pub(crate) fn template_line(value: &str, base_style: Style, theme: &UiTheme) -> Line<'static> {
@@ -44,7 +46,7 @@ pub(crate) fn template_spans(
         }
         spans.push(Span::styled(
             rest[start..end].to_string(),
-            variable_style(theme),
+            variable_style(base_style, theme),
         ));
         rest = &rest[end..];
     }
@@ -55,30 +57,48 @@ pub(crate) fn template_spans(
     spans
 }
 
-pub(crate) fn json_text_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {
+pub(crate) fn json_text_lines_window(
+    value: &str,
+    offset: usize,
+    count: usize,
+    theme: &UiTheme,
+) -> Vec<Line<'static>> {
+    if count == 0 {
+        return Vec::new();
+    }
     let syntax_set = JSON_SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
     let Some(syntax) = syntax_set.find_syntax_by_extension("json") else {
-        return plain_lines(value, theme);
+        return plain_lines(value, theme)
+            .into_iter()
+            .skip(offset)
+            .take(count)
+            .collect();
     };
     let mut highlighter = HighlightLines::new(syntax, json_theme(&theme.syntax_theme));
 
     LinesWithEndings::from(value)
-        .map(|line| {
+        .enumerate()
+        .filter_map(|(index, line)| {
             let line = trim_line_ending(line);
-            match highlighter.highlight_line(line, syntax_set) {
+            let highlighted = highlighter.highlight_line(line, syntax_set);
+            if index < offset {
+                return None;
+            }
+            match highlighted {
                 Ok(regions) => {
                     let mut spans = Vec::new();
                     for (style, text) in regions {
                         spans.extend(template_spans(text, syntect_style(style), theme));
                     }
-                    Line::from(spans)
+                    Some(Line::from(spans))
                 }
                 Err(error) => {
                     tracing::debug!(error = %error, "JSON 语法高亮失败，使用普通文本");
-                    template_line(line, plain_style(theme), theme)
+                    Some(template_line(line, plain_style(theme), theme))
                 }
             }
         })
+        .take(count)
         .collect()
 }
 

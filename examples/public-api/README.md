@@ -4,8 +4,8 @@
 
 ## 场景
 
-- `dev`：读取 `.postui/configs/dev.yaml`，使用 `https://httpbin.org`
-- `test`：读取 `.postui/configs/test.yaml`，使用 `https://postman-echo.com`
+- `dev`：读取 `.postui/scenarios/dev.yaml`，使用 `https://httpbin.org`
+- `test`：读取 `.postui/scenarios/test.yaml`，使用 `https://postman-echo.com`
 
 两个场景都提供 `/get` 和 `/post` Echo 接口，因此请求文件不需要复制。场景只改变 `api_base`、`scenario` 等变量；`02-json-echo.yaml` 还演示了 `test` 专属的接口级 Header 覆盖。
 
@@ -15,6 +15,7 @@
 
 ```bash
 cargo run -- examples/public-api
+cargo run -- examples/public-api --scenario test
 ```
 
 也可以进入本目录后直接启动已安装的 `postui`：

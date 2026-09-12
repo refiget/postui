@@ -14,7 +14,7 @@ pub(crate) fn save_response(
 
     let filename = response_filename(body, headers, request_id);
     let path = directory.join(filename);
-    fs::write(&path, body).map_err(|error| format!("保存响应失败 {}: {error}", path.display()))?;
+    fs::write(&path, body).map_err(|error| format!("无法写入文件 {}: {error}", path.display()))?;
     Ok(path)
 }
 

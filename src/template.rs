@@ -28,12 +28,6 @@ pub(crate) struct ResolvedFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DisplayTextPart {
-    pub(crate) text: String,
-    pub(crate) variable: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UrlParts {
     pub(crate) base: String,
     pub(crate) query: String,
@@ -96,12 +90,6 @@ pub(crate) fn variable_names_in_text(input: &str) -> Vec<String> {
     names.into_iter().collect()
 }
 
-pub(crate) fn url_variable_names(input: &str) -> Vec<String> {
-    let mut names = BTreeSet::new();
-    collect_text(&input[url_path_start(input)..], &mut names);
-    names.into_iter().collect()
-}
-
 pub(crate) fn extract_json_value(root: &Value, path: &str) -> Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
@@ -161,42 +149,6 @@ pub(crate) fn resolve_text(input: &str, variables: &BTreeMap<String, String>) ->
 
     output.push_str(rest);
     output
-}
-
-pub(crate) fn display_text_parts(
-    input: &str,
-    variables: &BTreeMap<String, String>,
-) -> Vec<DisplayTextPart> {
-    let mut parts = Vec::new();
-    let mut rest = input;
-
-    while let Some((start, end, name)) = find_placeholder(rest) {
-        if start > 0 {
-            parts.push(DisplayTextPart {
-                text: rest[..start].to_string(),
-                variable: None,
-            });
-        }
-        let token = &rest[start..end];
-        let text = variables
-            .get(name)
-            .filter(|value| !value.is_empty())
-            .cloned()
-            .unwrap_or_else(|| token.to_string());
-        parts.push(DisplayTextPart {
-            text,
-            variable: (!name.is_empty()).then(|| name.to_string()),
-        });
-        rest = &rest[end..];
-    }
-
-    if !rest.is_empty() {
-        parts.push(DisplayTextPart {
-            text: rest.to_string(),
-            variable: None,
-        });
-    }
-    parts
 }
 
 fn resolve_url(request: &ApiRequest, variables: &BTreeMap<String, String>) -> String {
@@ -265,14 +217,6 @@ fn encode_parameter(parameter: &RequestParam) -> String {
         serializer.append_key_only(&parameter.name);
     }
     serializer.finish()
-}
-
-pub(crate) fn decode_urlencoded_data(value: &str) -> String {
-    parse_query_params(value)
-        .into_iter()
-        .next()
-        .map(|parameter| parameter.to_text())
-        .unwrap_or_default()
 }
 
 fn decode_component(value: &str) -> String {
@@ -519,13 +463,6 @@ fn collect_text(input: &str, names: &mut BTreeSet<String>) {
         }
         rest = &rest[end..];
     }
-}
-
-fn url_path_start(input: &str) -> usize {
-    let authority_start = input.find("://").map_or(0, |index| index.saturating_add(3));
-    input[authority_start..]
-        .find(['/', '?', '#'])
-        .map_or(input.len(), |index| authority_start + index)
 }
 
 fn strip_variable_delimiters(value: &str) -> &str {

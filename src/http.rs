@@ -19,23 +19,28 @@ use crate::template::ResolvedRequest;
 
 const MAX_LOG_VALUE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum HttpError {
-    Timeout(String),
-    Failed(String),
+    InvalidRequest(String),
+    Upload(String),
+    Timeout(reqwest::Error),
+    Connection(reqwest::Error),
+    Transport(reqwest::Error),
+    ResponseRead(reqwest::Error),
+    ClientInitialization(reqwest::Error),
 }
 
 impl HttpError {
-    fn failed(message: impl Into<String>) -> Self {
-        Self::Failed(message.into())
-    }
-
-    fn from_reqwest(context: &str, error: reqwest::Error) -> Self {
-        let message = format!("{context}: {error}");
+    fn from_reqwest(error: reqwest::Error) -> Self {
+        let error = error.without_url();
         if error.is_timeout() {
-            Self::Timeout(message)
+            Self::Timeout(error)
+        } else if error.is_connect() {
+            Self::Connection(error)
+        } else if error.is_builder() {
+            Self::InvalidRequest(error.to_string())
         } else {
-            Self::Failed(message)
+            Self::Transport(error)
         }
     }
 
@@ -47,16 +52,28 @@ impl HttpError {
 impl fmt::Display for HttpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Timeout(message) | Self::Failed(message) => formatter.write_str(message),
+            Self::InvalidRequest(message) | Self::Upload(message) => formatter.write_str(message),
+            Self::Timeout(_) => formatter.write_str("HTTP request timed out"),
+            Self::Connection(_) => formatter.write_str("HTTP connection failed"),
+            Self::Transport(_) => formatter.write_str("HTTP transport failed"),
+            Self::ResponseRead(_) => formatter.write_str("Response body read failed"),
+            Self::ClientInitialization(_) => {
+                formatter.write_str("HTTP client initialization failed")
+            }
         }
     }
 }
 
-impl Error for HttpError {}
-
-impl From<String> for HttpError {
-    fn from(message: String) -> Self {
-        Self::failed(message)
+impl Error for HttpError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Timeout(error)
+            | Self::Connection(error)
+            | Self::Transport(error)
+            | Self::ResponseRead(error)
+            | Self::ClientInitialization(error) => Some(error),
+            Self::InvalidRequest(_) | Self::Upload(_) => None,
+        }
     }
 }
 
@@ -120,8 +137,8 @@ pub(crate) fn send(
     );
 
     let method = Method::from_bytes(request.method.as_bytes()).map_err(|error| {
-        tracing::error!(error = %error, method = %request.method, "HTTP 方法无效");
-        HttpError::failed(format!("HTTP 方法无效: {error}"))
+        tracing::debug!(error = %error, method = %request.method, "HTTP 方法无效");
+        HttpError::InvalidRequest(format!("Invalid HTTP method: {error}"))
     })?;
     let mut builder = client
         .client(loopback)
@@ -145,8 +162,8 @@ pub(crate) fn send(
     tracing::debug!(headers = ?request_headers, "准备请求头");
     for header in &request.headers {
         let header_name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
-            tracing::error!(header = %header.name, error = %error, "请求头名称无效");
-            HttpError::failed(format!("请求头名称无效 {}: {error}", header.name))
+            tracing::debug!(header = %header.name, error = %error, "请求头名称无效");
+            HttpError::InvalidRequest(format!("Invalid header name '{}': {error}", header.name))
         })?;
         builder = builder.header(header_name, &header.value);
     }
@@ -168,11 +185,11 @@ pub(crate) fn send(
         }
         for file in &request.files {
             if file.path.trim().is_empty() {
-                let error = format!("上传文件路径为空: 字段 {}", file.field);
-                tracing::error!(field = %file.field, "上传文件路径为空");
-                return Err(HttpError::failed(error));
+                let error = format!("Upload field '{}': file path is empty", file.field);
+                tracing::debug!(field = %file.field, "上传文件路径为空");
+                return Err(HttpError::Upload(error));
             }
-            let path = upload_path(file_directory, &file.path).map_err(HttpError::failed)?;
+            let path = upload_path(file_directory, &file.path).map_err(HttpError::Upload)?;
             tracing::debug!(
                 field = %file.field,
                 path = %path.display(),
@@ -180,8 +197,12 @@ pub(crate) fn send(
                 "读取上传文件"
             );
             let mut part = Part::file(&path).map_err(|error| {
-                tracing::error!(path = %path.display(), error = %error, "读取上传文件失败");
-                HttpError::failed(error.to_string())
+                tracing::debug!(path = %path.display(), error = %error, "读取上传文件失败");
+                HttpError::Upload(format!(
+                    "Upload field '{}', file '{}': {error}",
+                    file.field,
+                    path.display()
+                ))
             })?;
             let filename = file
                 .filename
@@ -204,12 +225,14 @@ pub(crate) fn send(
             part = part.file_name(filename);
             if let Some(content_type) = &file.content_type {
                 part = part.mime_str(content_type).map_err(|error| {
-                    tracing::error!(
+                    tracing::debug!(
                         content_type = %content_type,
                         error = %error,
                         "上传文件类型无效"
                     );
-                    HttpError::failed(format!("上传文件类型无效 {content_type}: {error}"))
+                    HttpError::InvalidRequest(format!(
+                        "Invalid upload content type '{content_type}': {error}"
+                    ))
                 })?;
             }
             form = form.part(file.field.clone(), part);
@@ -224,13 +247,8 @@ pub(crate) fn send(
 
     tracing::debug!("发出 HTTP 请求");
     let response = builder.send().map_err(|error| {
-        tracing::error!(
-            elapsed_ms = started.elapsed().as_millis(),
-            error = %error,
-            error_debug = ?error,
-            "HTTP 请求失败"
-        );
-        HttpError::from_reqwest("请求失败", error)
+        tracing::debug!(elapsed_ms = started.elapsed().as_millis(), "HTTP 请求失败");
+        HttpError::from_reqwest(error)
     })?;
     let status = response.status();
     let headers: Vec<(String, String)> = response
@@ -254,14 +272,16 @@ pub(crate) fn send(
         "收到 HTTP 响应头"
     );
     let body_bytes = response.bytes().map_err(|error| {
-        tracing::error!(
+        tracing::debug!(
             status = status.as_u16(),
             elapsed_ms = started.elapsed().as_millis(),
-            error = %error,
-            error_debug = ?error,
             "读取响应失败"
         );
-        HttpError::from_reqwest("读取响应失败", error)
+        if error.is_timeout() {
+            HttpError::Timeout(error.without_url())
+        } else {
+            HttpError::ResponseRead(error.without_url())
+        }
     })?;
     let elapsed_ms = started.elapsed().as_millis();
     tracing::debug!(
@@ -288,13 +308,13 @@ fn build_client(no_proxy: bool) -> Result<Client, HttpError> {
         builder = builder.no_proxy();
     }
     builder.build().map_err(|error| {
-        tracing::error!(
+        tracing::debug!(
             client = client_kind,
             error = %error,
             error_debug = ?error,
             "创建 HTTP 客户端失败"
         );
-        HttpError::failed(format!("创建 HTTP 客户端失败: {error}"))
+        HttpError::ClientInitialization(error.without_url())
     })
 }
 

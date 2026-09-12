@@ -10,7 +10,7 @@ pub(super) fn draw_preview(
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
-    let focus = FocusStyles::new(app.focus, theme);
+    let focus = FocusStyles::new(app.view.focus, theme);
     if !app.has_current_request() {
         frame.render_widget(
             panel_block(text.request_editor(), area, theme).border_style(focus.preview_border()),
@@ -27,7 +27,6 @@ pub(super) fn draw_preview(
     let Some(request) = app.current_request() else {
         return;
     };
-    let request_status = app.request_status(&request.id);
     let mut title = Line::from(vec![
         Span::styled(
             format!("{}  ", text.request_editor()),
@@ -41,27 +40,27 @@ pub(super) fn draw_preview(
         ),
         Span::raw("  "),
     ]);
-    title.extend(request_status_spans(
-        request_status,
-        text,
-        theme,
-        app.animation_frame,
-    ));
+    if app
+        .workspace_state
+        .requests
+        .iter()
+        .any(|session| session.source.id == request.id && session.dirty)
+    {
+        title.spans.push(Span::styled(
+            format!("* {}", text.unsaved_changes()),
+            request_dirty_style(theme),
+        ));
+    }
     frame.render_widget(
         panel_block(title, area, theme).border_style(focus.preview_border()),
         area,
     );
-    draw_preview_summary(frame, summary, app, request_status);
+    draw_preview_summary(frame, summary, app);
     draw_preview_tabs(frame, tabs, app);
     draw_preview_content(frame, content, app);
 }
 
-pub(super) fn draw_preview_summary(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &App,
-    request_status: RequestStatus,
-) {
+pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.is_empty() {
         return;
     }
@@ -82,27 +81,17 @@ pub(super) fn draw_preview_summary(
         format!("{}  ", text.address()),
         label_style(theme),
     ));
-    if let Some(editor) = &app.preview_state.url_editor {
+    let url = app.display_url(request);
+    if url.is_empty() {
         url_line.push(Span::styled(
-            if editor.value().is_empty() {
-                " ".to_string()
-            } else {
-                editor.value().to_string()
-            },
-            Style::default()
-                .fg(theme.text)
-                .bg(theme.selection)
-                .add_modifier(Modifier::UNDERLINED),
+            text.enter_url(),
+            highlight::plain_style(theme),
         ));
     } else {
-        let url = app.resolved_url(request);
-        url_line.push(Span::styled(
-            if url.is_empty() {
-                text.enter_url().to_string()
-            } else {
-                url
-            },
+        url_line.extend(highlight::template_spans(
+            &url,
             highlight::plain_style(theme),
+            theme,
         ));
     }
     let mut lines = wrap_spans(url_line, area.width);
@@ -112,13 +101,10 @@ pub(super) fn draw_preview_summary(
         } else {
             request.description.as_str()
         };
-        let mut description_line =
-            request_status_spans(request_status, text, theme, app.animation_frame);
-        description_line.push(Span::styled("  ·  ", label_style(theme)));
-        description_line.push(Span::styled(
+        let mut description_line = vec![Span::styled(
             format!("{}  ", text.description()),
             label_style(theme),
-        ));
+        )];
         description_line.extend(highlight::template_spans(
             description,
             highlight::plain_style(theme),
@@ -133,19 +119,6 @@ pub(super) fn draw_preview_summary(
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
-    if let Some(editor) = &app.preview_state.url_editor {
-        let prefix = Line::from(format!("[ {} ]  {}  ", method, text.address())).width();
-        let position = prefix + editor.cursor_width();
-        let width = usize::from(area.width.max(1));
-        let row = (position / width).min(usize::from(area.height.saturating_sub(1)));
-        let column = position % width;
-        frame.set_cursor_position((
-            area.x
-                .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
-            area.y
-                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
-        ));
-    }
 }
 
 fn wrap_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {
@@ -183,7 +156,7 @@ pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
         if index > 0 {
             line.push(Span::raw(" "));
         }
-        let active = app.preview_state.active_tab == tab;
+        let active = app.view.preview.active_tab == tab;
         let style = if active {
             Style::default()
                 .fg(theme.background)
@@ -201,10 +174,11 @@ pub(super) fn draw_preview_content(frame: &mut Frame<'_>, area: Rect, app: &App)
     if area.is_empty() {
         return;
     }
-    match app.preview_state.active_tab {
+    match app.view.preview.active_tab {
         PreviewTab::Body => draw_body_editor(frame, area, app),
         tab @ (PreviewTab::Params | PreviewTab::Headers) => {
             if let Some(dialog) = app
+                .view
                 .dialog
                 .as_ref()
                 .filter(|dialog| dialog.preview_tab() == Some(tab))
@@ -219,26 +193,28 @@ pub(super) fn draw_preview_content(frame: &mut Frame<'_>, area: Rect, app: &App)
 
 pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.global_config.theme;
-    let Some(resolved) = app.current_resolved_request() else {
+    let Some(request) = app.current_effective_request() else {
         return;
     };
-    let has_body = resolved.raw_body.is_some();
+    let has_body = !request.body_parts.is_empty();
+    let offset = usize::from(app.view.preview.scroll.offset());
     let lines = if has_body || app.body_editor().is_some() {
         let value = app
             .body_editor()
             .map_or_else(|| app.body_preview(), |editor| editor.display_document());
-        highlight::json_text_lines(&value, theme)
+        highlight::json_text_lines_window(&value, offset, usize::from(area.height), theme)
     } else {
-        request_content_lines(app, &resolved)
+        request_content_lines(app, &request)
+            .into_iter()
+            .skip(offset)
+            .take(usize::from(area.height))
+            .collect()
     };
 
-    frame.render_widget(
-        Paragraph::new(lines).scroll((app.preview_state.scroll.offset(), 0)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines), area);
     if let Some(editor) = app.body_editor() {
         let (editor_line, editor_column) = editor.position();
-        let scroll = usize::from(app.preview_state.scroll.offset());
+        let scroll = usize::from(app.view.preview.scroll.offset());
         if editor_line >= scroll && editor_line < scroll + usize::from(area.height) {
             let input_area = Rect::new(
                 area.x.saturating_add(editor_column as u16),
@@ -248,24 +224,26 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 1,
             );
             frame.render_widget(
-                Paragraph::new(editor.input.value()).style(
-                    Style::default()
-                        .fg(theme.text)
-                        .bg(theme.selection)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
+                Paragraph::new(editor.input.value()).style(edit_input_style(
+                    &editor.input,
+                    theme,
+                    theme.text,
+                    theme.background,
+                )),
                 input_area,
             );
-            frame.set_cursor_position((
-                input_area
-                    .x
-                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
-                input_area.y,
-            ));
+            if editor.input.mode() == crate::editor::EditMode::Insert {
+                frame.set_cursor_position((
+                    input_area.x.saturating_add(
+                        u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
+                    ),
+                    input_area.y,
+                ));
+            }
         }
     }
     if let Some(editor) = app.file_editor() {
-        let scroll = usize::from(app.preview_state.scroll.offset());
+        let scroll = usize::from(app.view.preview.scroll.offset());
         if editor.line >= scroll && editor.line < scroll + usize::from(area.height) {
             let input_area = Rect::new(
                 area.x.saturating_add(editor.column as u16),
@@ -274,72 +252,30 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 1,
             );
             frame.render_widget(
-                Paragraph::new(editor.input.value()).style(
-                    Style::default()
-                        .fg(theme.text)
-                        .bg(theme.selection)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
+                Paragraph::new(editor.input.value()).style(edit_input_style(
+                    &editor.input,
+                    theme,
+                    theme.text,
+                    theme.background,
+                )),
                 input_area,
             );
-            frame.set_cursor_position((
-                input_area
-                    .x
-                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
-                input_area.y,
-            ));
-        }
-    }
-    if let Some(editor) = app.variable_editor() {
-        let scroll = usize::from(app.preview_state.scroll.offset());
-        if editor.line >= scroll && editor.line < scroll + usize::from(area.height) {
-            let input_area = Rect::new(
-                area.x.saturating_add(editor.column as u16),
-                area.y.saturating_add((editor.line - scroll) as u16),
-                area.width.saturating_sub(editor.column as u16).max(1),
-                1,
-            );
-            let input = if editor.input.value().is_empty() {
-                " "
-            } else {
-                editor.input.value()
-            };
-            frame.render_widget(
-                Paragraph::new(input).style(
-                    Style::default()
-                        .fg(theme.text)
-                        .bg(theme.selection)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-                input_area,
-            );
-            frame.set_cursor_position((
-                input_area
-                    .x
-                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
-                input_area.y,
-            ));
+            if editor.input.mode() == crate::editor::EditMode::Insert {
+                frame.set_cursor_position((
+                    input_area.x.saturating_add(
+                        u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
+                    ),
+                    input_area.y,
+                ));
+            }
         }
     }
 }
 
-fn request_content_lines(
-    app: &App,
-    request: &crate::template::ResolvedRequest,
-) -> Vec<Line<'static>> {
+fn request_content_lines(app: &App, request: &crate::config::ApiRequest) -> Vec<Line<'static>> {
     let theme = &app.global_config.theme;
     let text = app.text();
     let mut lines = Vec::new();
-    let variables = app.current_url_variables();
-    let has_content = !request.form.is_empty() || !request.files.is_empty();
-
-    for variable in variables {
-        lines.push(request_variable_line(app, &variable, theme));
-    }
-    if !lines.is_empty() && has_content {
-        lines.push(Line::default());
-    }
-
     if !request.form.is_empty() {
         lines.push(Line::from(Span::styled(text.form(), section_style(theme))));
         for field in &request.form {
@@ -376,77 +312,19 @@ fn request_content_lines(
     lines
 }
 
-pub(super) fn request_variable_line(
-    app: &App,
-    variable: &str,
-    theme: &crate::settings::UiTheme,
-) -> Line<'static> {
-    let editing_value = app
-        .variable_editor()
-        .filter(|editor| editor.variable == variable)
-        .map(|editor| editor.input.value().to_string());
-    let value = editing_value.unwrap_or_else(|| app.request_variable_value(variable));
-    let display = if value.is_empty() {
-        "__".to_string()
-    } else {
-        value
-    };
-    Line::from(vec![
-        Span::styled(format!("{variable}: "), highlight::variable_style(theme)),
-        Span::styled(
-            display,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::UNDERLINED),
-        ),
-    ])
-}
-
-pub(super) fn request_variable_at(area: Rect, column: u16, row: u16, app: &App) -> Option<String> {
-    if area.is_empty() || !contains(area, column, row) {
-        return None;
-    }
-    if app
-        .current_resolved_request()
-        .is_some_and(|request| request.raw_body.is_some())
-    {
-        return None;
-    }
-    let line = usize::from(row.saturating_sub(area.y))
-        .saturating_add(usize::from(app.preview_state.scroll.offset()));
-    let column = usize::from(column.saturating_sub(area.x));
-    app.current_url_variables()
-        .into_iter()
-        .enumerate()
-        .find_map(|(index, variable)| {
-            if index != line {
-                return None;
-            }
-            let value = app.request_variable_value(&variable);
-            let value_width = Line::from(if value.is_empty() {
-                "__".to_string()
-            } else {
-                value
-            })
-            .width()
-            .max(1);
-            let value_column = crate::editor::terminal_width(&variable).saturating_add(2);
-            (value_column..value_column.saturating_add(value_width))
-                .contains(&column)
-                .then_some(variable)
-        })
-}
-
 fn content_value_line(
     name: &str,
     value: &str,
     value_color: ratatui::style::Color,
     theme: &crate::settings::UiTheme,
 ) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{name}  "), label_style(theme)),
-        Span::styled(value.to_string(), Style::default().fg(value_color)),
-    ])
+    let mut line = Line::from(Span::styled(format!("{name}  "), label_style(theme)));
+    line.spans.extend(highlight::template_spans(
+        value,
+        Style::default().fg(value_color),
+        theme,
+    ));
+    line
 }
 
 pub(super) fn inline_dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
@@ -487,18 +365,14 @@ pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, d
         Dialog::Configurations(_) => 0,
         Dialog::Headers(dialog) => dialog.rows.len(),
         Dialog::Params(dialog) => dialog.rows.len(),
-        Dialog::Variables(_) => 0,
     };
     let layout = inline_dialog_layout(area, row_count);
     match dialog {
         Dialog::Configurations(_) => {}
         Dialog::Headers(dialog) => draw_headers_dialog(frame, app, dialog, layout),
         Dialog::Params(dialog) => draw_params_dialog(frame, app, dialog, layout),
-        Dialog::Variables(_) => {}
     }
-    if !layout.add_button.is_empty()
-        && !matches!(dialog, Dialog::Variables(_) | Dialog::Configurations(_))
-    {
+    if !layout.add_button.is_empty() && !matches!(dialog, Dialog::Configurations(_)) {
         let theme = &app.global_config.theme;
         frame.render_widget(
             Block::default()
@@ -519,21 +393,27 @@ pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, d
     }
 }
 
-pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, area: Rect) {
-    let row_count = match app.dialog.as_ref() {
+pub(super) fn handle_inline_editor_click(
+    app: &mut App,
+    column: u16,
+    row: u16,
+    area: Rect,
+    is_double: bool,
+) {
+    let row_count = match app.view.dialog.as_ref() {
         Some(Dialog::Headers(dialog)) => dialog.rows.len(),
         Some(Dialog::Params(dialog)) => dialog.rows.len(),
         _ => return,
     };
     let layout = inline_dialog_layout(area, row_count);
     if contains(layout.add_button, column, row) {
-        app.add_preview_row(app.preview_state.active_tab);
+        app.add_preview_row(app.view.preview.active_tab);
         return;
     }
     if !contains(layout.rows.content, column, row) {
         return;
     }
-    let (row_count, selected) = match app.dialog.as_ref() {
+    let (row_count, selected) = match app.view.dialog.as_ref() {
         Some(Dialog::Headers(dialog)) => (dialog.rows.len(), dialog.selected),
         Some(Dialog::Params(dialog)) => (dialog.rows.len(), dialog.selected),
         _ => return,
@@ -544,9 +424,10 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
     if index >= row_count {
         return;
     }
-    match app.dialog.as_ref() {
+    match app.view.dialog.as_ref() {
         Some(Dialog::Headers(_)) => {
             let request_row = app
+                .view
                 .dialog
                 .as_ref()
                 .and_then(|dialog| match dialog {
@@ -562,14 +443,17 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
                 .saturating_add(TABLE_HIGHLIGHT_WIDTH)
                 .saturating_add(constraint_length(widths[0]))
                 .saturating_add(TABLE_COLUMN_SPACING);
+            let name_start = layout.rows.content.x.saturating_add(TABLE_HIGHLIGHT_WIDTH);
             if column < value_start {
                 if request_row {
-                    app.click_header_row(index, KeyValueField::Name, true);
+                    let cursor = is_double.then(|| usize::from(column.saturating_sub(name_start)));
+                    app.click_header_row(index, KeyValueField::Name, true, cursor);
                 } else {
                     app.toggle_header_row(index);
                 }
             } else {
-                app.click_header_row(index, KeyValueField::Value, true);
+                let cursor = is_double.then(|| usize::from(column.saturating_sub(value_start)));
+                app.click_header_row(index, KeyValueField::Value, true, cursor);
             }
         }
         Some(Dialog::Params(_)) => {
@@ -586,7 +470,13 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
             } else {
                 KeyValueField::Value
             };
-            app.click_param_row(index, field, true);
+            let field_start = if field == KeyValueField::Name {
+                layout.rows.content.x.saturating_add(TABLE_HIGHLIGHT_WIDTH)
+            } else {
+                value_start
+            };
+            let cursor = is_double.then(|| usize::from(column.saturating_sub(field_start)));
+            app.click_param_row(index, field, true, cursor);
         }
         _ => {}
     }

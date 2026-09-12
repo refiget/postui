@@ -1,16 +1,11 @@
 name: 请求头与 Cookie
 description: cookie、User-Agent、Referer 和敏感头。
-method: GET
 url: http://{{host}}/v1/headers
 headers:
-  - name: Cookie
-    value: "session={{session_id}}"
-  - name: User-Agent
-    value: postui-test/1.0
-  - name: Referer
-    value: http://example.test/source
-  - name: X-Debug-Token
-    value: "{{token}}"
+  Cookie: "session={{session_id}}"
+  User-Agent: postui-test/1.0
+  Referer: http://example.test/source
+  X-Debug-Token: "{{token}}"
 extracts:
   - variable: header_echo
     path: data.token

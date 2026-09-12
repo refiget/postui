@@ -3,10 +3,8 @@ description: PUT 请求和 JSON body。
 method: PUT
 url: http://{{host}}/v1/items/{{item_id}}
 headers:
-  - name: Content-Type
-    value: application/json
-  - name: X-Debug-Token
-    value: "{{token}}"
+  Content-Type: application/json
+  X-Debug-Token: "{{token}}"
 body: '{"name":"{{item_name}}","value":"{{item_value}}"}'
 extracts:
   - variable: updated_method

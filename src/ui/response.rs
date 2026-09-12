@@ -12,6 +12,117 @@ pub(super) struct ScrollAreas {
     pub(super) scrollbar: Rect,
 }
 
+struct ResponseScrollbar {
+    area: Rect,
+    track_top: u16,
+    track_length: usize,
+    thumb_start: usize,
+    thumb_length: usize,
+    travel: usize,
+    max_offset: usize,
+    offset: usize,
+}
+
+fn response_scrollbar(app: &App, areas: UiLayout) -> Option<ResponseScrollbar> {
+    let body = response_sections(areas.response, areas.response_menu_button).body;
+    let viewport = usize::from(body.content.height);
+    let length = if let Some(response) = app.current_response() {
+        if response.body_bytes.is_empty() {
+            wrapped_line_count(
+                &[
+                    Line::from(app.text().response_body()),
+                    Line::from(app.text().empty_response()),
+                ],
+                body.content.width,
+            )
+        } else {
+            let document = app.current_response_document()?;
+            1 + document.line_count() + usize::from(document.limited())
+        }
+    } else {
+        let lines = app
+            .current_error()?
+            .lines()
+            .map(Line::from)
+            .collect::<Vec<_>>();
+        wrapped_line_count(&lines, body.content.width)
+    };
+    if body.scrollbar.is_empty() || viewport == 0 || length <= viewport {
+        return None;
+    }
+    let arrows = u16::from(body.scrollbar.height >= 4);
+    let track_length = usize::from(body.scrollbar.height - arrows * 2);
+    let max_offset = length - viewport;
+    let offset = app.view.response.scroll.offset().min(max_offset);
+    let position = scrollbar_position(offset, length, viewport);
+    // 与 Ratatui 的圆整方式保持一致，按住滑块时才不会发生位置跳变。
+    let scale = track_length as f64 / (length - 1 + viewport) as f64;
+    let thumb_start = ((position as f64 * scale).round() as usize).min(track_length - 1);
+    let thumb_end = (((position + viewport) as f64 * scale).round() as usize).min(track_length);
+    let travel = (((length - 1) as f64 * scale).round() as usize)
+        .min(track_length - 1)
+        .max(1);
+    Some(ResponseScrollbar {
+        area: body.scrollbar,
+        track_top: body.scrollbar.y + arrows,
+        track_length,
+        thumb_start,
+        thumb_length: thumb_end.saturating_sub(thumb_start).max(1),
+        travel,
+        max_offset,
+        offset,
+    })
+}
+
+pub(super) fn click_response_scrollbar(app: &mut App, column: u16, row: u16, areas: UiLayout) {
+    let Some(bar) = response_scrollbar(app, areas) else {
+        return;
+    };
+    if !contains(bar.area, column, row) {
+        return;
+    }
+    if row < bar.track_top {
+        app.view
+            .response
+            .scroll
+            .set_offset(bar.offset.saturating_sub(1));
+        return;
+    }
+    let track_row = usize::from(row - bar.track_top);
+    if track_row >= bar.track_length {
+        app.view
+            .response
+            .scroll
+            .set_offset((bar.offset + 1).min(bar.max_offset));
+        return;
+    }
+    let offset = if (bar.thumb_start..bar.thumb_start + bar.thumb_length).contains(&track_row) {
+        bar.offset
+    } else {
+        track_row
+            .saturating_sub(bar.thumb_length / 2)
+            .min(bar.travel)
+            * bar.max_offset
+            / bar.travel
+    };
+    app.view.response.scroll.set_offset(offset);
+    app.view.response.scroll.drag_anchor = Some((row, offset));
+}
+
+pub(super) fn drag_response_scrollbar(app: &mut App, row: u16, areas: UiLayout) {
+    let Some((anchor_row, anchor_offset)) = app.view.response.scroll.drag_anchor else {
+        return;
+    };
+    let Some(bar) = response_scrollbar(app, areas) else {
+        app.view.response.scroll.drag_anchor = None;
+        return;
+    };
+    let delta = i128::from(row) - i128::from(anchor_row);
+    let offset = (anchor_offset as i128 + delta * bar.max_offset as i128 / bar.travel as i128)
+        .clamp(0, bar.max_offset as i128) as usize;
+    app.view.response.scroll.set_offset(offset);
+}
+
 pub(super) fn response_sections(area: Rect, menu_button: Rect) -> ResponseLayout {
     let inner = area.inner(Margin::new(1, 1));
     if inner.is_empty() {
@@ -50,7 +161,7 @@ pub(super) fn draw_response(
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
-    let focus = FocusStyles::new(app.focus, theme);
+    let focus = FocusStyles::new(app.view.focus, theme);
     frame.render_widget(
         panel_block(text.response(), area, theme).border_style(focus.response_border()),
         area,
@@ -80,7 +191,7 @@ pub(super) fn draw_response(
             Span::styled(
                 format!(
                     "{} ",
-                    request_status_symbol(request_status, app.animation_frame)
+                    request_status_symbol(request_status, app.view.animation_frame)
                 ),
                 request_status_style(request_status, theme),
             ),
@@ -100,7 +211,7 @@ pub(super) fn draw_response(
                 Span::styled(
                     format!(
                         "{} ",
-                        request_status_symbol(request_status, app.animation_frame)
+                        request_status_symbol(request_status, app.view.animation_frame)
                     ),
                     status_style,
                 ),
@@ -111,24 +222,21 @@ pub(super) fn draw_response(
                 ),
             ])
         }
-        (false, None, Some(error)) => {
-            let message = request_status.error_message(text, error);
-            Line::from(vec![
-                Span::styled(
-                    format!(
-                        "{} ",
-                        request_status_symbol(request_status, app.animation_frame)
-                    ),
-                    request_status_style(request_status, theme),
+        (false, None, Some(_)) => Line::from(vec![
+            Span::styled(
+                format!(
+                    "{} ",
+                    request_status_symbol(request_status, app.view.animation_frame)
                 ),
-                Span::styled(message, Style::default().fg(theme.error)),
-            ])
-        }
+                request_status_style(request_status, theme),
+            ),
+            Span::styled(request_status.label(text), Style::default().fg(theme.error)),
+        ]),
         (false, None, None) => Line::from(vec![
             Span::styled(
                 format!(
                     "{} ",
-                    request_status_symbol(request_status, app.animation_frame)
+                    request_status_symbol(request_status, app.view.animation_frame)
                 ),
                 request_status_style(request_status, theme),
             ),
@@ -175,10 +283,15 @@ pub(super) fn draw_response(
             frame,
             sections.body,
             app,
-            vec![Line::from(Span::styled(
-                request_status.error_message(text, error),
-                Style::default().fg(theme.error),
-            ))],
+            error
+                .lines()
+                .map(|line| {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(theme.error),
+                    ))
+                })
+                .collect(),
             theme,
         );
     }
@@ -199,7 +312,7 @@ fn render_response_document(
         .saturating_add(usize::from(limited_line.is_some()));
     let viewport_length = usize::from(areas.content.height);
     let offset = scroll_offset(
-        app.response_state.scroll.offset(),
+        app.view.response.scroll.offset(),
         content_length,
         viewport_length,
     );
@@ -248,7 +361,7 @@ fn render_response_lines(
     let content_length = wrapped_line_count(&lines, areas.content.width);
     let viewport_length = usize::from(areas.content.height);
     let offset = scroll_offset(
-        app.response_state.scroll.offset(),
+        app.view.response.scroll.offset(),
         content_length,
         viewport_length,
     );
@@ -295,25 +408,13 @@ pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: 
     if area.is_empty() {
         return;
     }
-    let theme = &app.global_config.theme;
-    let text = app.text();
-    let focused = app.focus == Focus::ResponseActions;
-    let style = if focused {
-        Style::default()
-            .fg(theme.background)
-            .bg(theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(theme.background)
-            .bg(theme.secondary)
-            .add_modifier(Modifier::BOLD)
-    };
-    frame.render_widget(
-        Paragraph::new(format!("{} ▾", text.response_menu()))
-            .alignment(Alignment::Center)
-            .style(style),
+    draw_send_button(
+        frame,
         area,
+        &format!("{} ▾", app.text().response_menu()),
+        true,
+        app.view.focus == Focus::ResponseActions,
+        &app.global_config.theme,
     );
 }
 
@@ -321,24 +422,18 @@ pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: 
     if area.is_empty() {
         return;
     }
-    let theme = &app.global_config.theme;
-    let focused = app.focus == Focus::ResponseZoom;
-    let style = Style::default().fg(theme.background).bg(theme.primary);
-    let style = if focused {
-        style.add_modifier(Modifier::BOLD)
-    } else {
-        style
-    };
     let (symbol, label) = if app.response_zoomed() {
         ("↙", app.text().response_restore())
     } else {
         ("↗", app.text().response_zoom())
     };
-    frame.render_widget(
-        Paragraph::new(format!("{symbol} {label}"))
-            .alignment(Alignment::Center)
-            .style(style),
+    draw_send_button(
+        frame,
         area,
+        &format!("{symbol} {label}"),
+        true,
+        app.view.focus == Focus::ResponseZoom,
+        &app.global_config.theme,
     );
 }
 
@@ -373,8 +468,10 @@ pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
     let mut state = ListState::default().with_selected(Some(
-        app.response_state
-            .menu_selected
+        app.view
+            .response
+            .menu_selection
+            .unwrap_or_default()
             .min(ResponseMenuAction::all().len().saturating_sub(1)),
     ));
     let list = List::new(items).highlight_style(

@@ -9,6 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod headers;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RequestConfig {
     pub(crate) name: String,
@@ -72,6 +74,7 @@ pub(crate) struct VariableDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct NameValue {
     pub(crate) name: String,
     pub(crate) value: String,
@@ -79,10 +82,11 @@ pub(crate) struct NameValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 一个有序的请求参数。`has_equals` 用于区分 `flag` 和 `flag=`。
+#[serde(deny_unknown_fields)]
 pub(crate) struct RequestParam {
     pub(crate) name: String,
     pub(crate) value: String,
-    #[serde(default = "default_has_equals")]
+    #[serde(default = "default_has_equals", skip_serializing_if = "has_equals")]
     pub(crate) has_equals: bool,
 }
 
@@ -114,6 +118,10 @@ impl RequestParam {
 
 fn default_has_equals() -> bool {
     true
+}
+
+fn has_equals(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,13 +170,13 @@ pub(crate) struct RequestDocument {
     pub(crate) name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) description: String,
-    #[serde(default = "default_method")]
+    #[serde(default = "default_method", skip_serializing_if = "is_default_method")]
     pub(crate) method: String,
     #[serde(default)]
     pub(crate) url: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub(crate) timeout: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "headers")]
     pub(crate) headers: Vec<NameValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) params: Vec<RequestParam>,
@@ -182,12 +190,12 @@ pub(crate) struct RequestDocument {
     pub(crate) extracts: Vec<ResponseExtract>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConfigurationDocument {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) variables: BTreeMap<String, Option<Value>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "headers")]
     pub(crate) headers: Vec<NameValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) timeout: Option<u64>,
@@ -204,7 +212,11 @@ pub(crate) struct RequestOverrideDocument {
     pub(crate) url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) timeout: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "headers::optional"
+    )]
     pub(crate) headers: Option<Vec<NameValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) params: Option<Vec<RequestParam>>,
@@ -282,7 +294,7 @@ impl From<&ApiRequest> for RequestDocument {
             description: request.description.clone(),
             method: request.method.clone(),
             url: request.url.clone(),
-            timeout: request.timeout_seconds,
+            timeout: Some(request.timeout_seconds),
             headers: request.headers.clone(),
             params: request
                 .query_parts
@@ -312,7 +324,10 @@ impl From<&WorkspaceConfiguration> for ConfigurationDocument {
                 .iter()
                 .map(|(request_id, request_override)| {
                     (
-                        request_id.clone(),
+                        request_id
+                            .strip_prefix("requests/")
+                            .expect("request IDs are rooted in requests/")
+                            .to_string(),
                         RequestOverrideDocument::from(request_override),
                     )
                 })
@@ -371,16 +386,18 @@ pub(crate) enum DataPart {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FileUpload {
     pub(crate) field: String,
     pub(crate) path: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) filename: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ResponseExtract {
     pub(crate) variable: String,
     pub(crate) path: String,
@@ -396,24 +413,11 @@ struct RawWorkspaceConfig {
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
-    default_configuration: Option<String>,
-    #[serde(default)]
+    default_scenario: Option<String>,
+    #[serde(default, deserialize_with = "headers::deserialize")]
     headers: Vec<NameValue>,
     #[serde(default = "default_timeout_seconds")]
     timeout: u64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawConfiguration {
-    #[serde(default)]
-    variables: BTreeMap<String, Option<Value>>,
-    #[serde(default)]
-    headers: Vec<NameValue>,
-    #[serde(default)]
-    timeout: Option<u64>,
-    #[serde(default)]
-    overrides: BTreeMap<String, RequestOverrideDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -440,7 +444,7 @@ impl Default for RawWorkspaceConfig {
             name: None,
             directories: RawDirectories::default(),
             variables: BTreeMap::new(),
-            default_configuration: None,
+            default_scenario: None,
             headers: Vec::new(),
             timeout: default_timeout_seconds(),
         }
@@ -470,6 +474,10 @@ fn default_method() -> String {
     "GET".to_string()
 }
 
+fn is_default_method(method: &str) -> bool {
+    method == "GET"
+}
+
 fn default_timeout_seconds() -> u64 {
     30
 }
@@ -482,10 +490,6 @@ fn default_download_directory() -> PathBuf {
     PathBuf::from("temp")
 }
 
-fn is_zero(value: &u64) -> bool {
-    *value == 0
-}
-
 pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
     if !workspace_path.is_dir() {
         bail!("PostUI 工作区必须是目录: {}", workspace_path.display())
@@ -493,7 +497,7 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
 
     let workspace_config_path = workspace_path.join("postui.yaml");
     let workspace_config = read_optional_file(&workspace_config_path)?;
-    let configuration_files = read_configuration_files(&workspace_path.join("configs"))?;
+    let configuration_files = read_configuration_files(&workspace_path.join("scenarios"))?;
     let request_files = read_request_files(&workspace_path.join("requests"))?;
     let fingerprint = workspace_fingerprint(
         workspace_path,
@@ -555,11 +559,13 @@ fn parse_workspace_config(
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let raw = match text {
-        Some(text) => serde_saphyr::from_str(text)
-            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?,
+        Some(text) => serde_saphyr::from_str::<Option<RawWorkspaceConfig>>(text)
+            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?
+            .unwrap_or_default(),
         None => RawWorkspaceConfig::default(),
     };
     normalize_config(raw, workspace_path, configuration_files, request_files)
+        .with_context(|| format!("工作区配置无效: {}", path.display()))
 }
 
 fn normalize_config(
@@ -572,17 +578,13 @@ fn normalize_config(
         name,
         directories,
         variables: raw_variables,
-        default_configuration: raw_default_configuration,
+        default_scenario: raw_default_configuration,
         headers: raw_headers,
         timeout,
     } = raw;
     let variables = normalize_variables(raw_variables)?;
     let headers = normalize_headers(raw_headers)?;
-    let timeout_seconds = if timeout == 0 {
-        default_timeout_seconds()
-    } else {
-        timeout
-    };
+    let timeout_seconds = validate_timeout(timeout)?;
 
     let file_directory =
         resolve_directory(workspace_path, &directories.uploads, "directories.uploads")?;
@@ -692,17 +694,18 @@ fn normalize_configurations(
 
     let mut configurations = BTreeMap::new();
     for file in configuration_files {
-        let raw = if file.text.trim().is_empty() {
-            RawConfiguration::default()
-        } else {
-            serde_saphyr::from_str(&file.text)
-                .with_context(|| format!("配置 {} 的 YAML 格式无效", file.name))?
-        };
+        let raw = serde_saphyr::from_str::<Option<ConfigurationDocument>>(&file.text)
+            .with_context(|| format!("场景配置 YAML 格式无效: {}", file.path.display()))?
+            .unwrap_or_default();
         let variables = normalize_variables(raw.variables)
             .with_context(|| format!("配置 {} 的变量配置无效", file.name))?;
         let headers = normalize_headers(raw.headers)
             .with_context(|| format!("配置 {} 的 headers 配置无效", file.name))?;
-        let timeout_seconds = raw.timeout.filter(|timeout| *timeout > 0);
+        let timeout_seconds = raw
+            .timeout
+            .map(validate_timeout)
+            .transpose()
+            .with_context(|| format!("场景配置无效: {}", file.path.display()))?;
         let mut request_overrides = BTreeMap::new();
         for (raw_request_id, raw_override) in raw.overrides {
             let request_id = normalize_request_id(&raw_request_id)?;
@@ -766,7 +769,7 @@ fn read_optional_file(path: &Path) -> Result<Option<String>> {
 }
 
 fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
-    if !requests_directory.is_dir() {
+    if !optional_directory_exists(requests_directory)? {
         return Ok(Vec::new());
     }
 
@@ -785,7 +788,7 @@ fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
 }
 
 fn read_configuration_files(configurations_directory: &Path) -> Result<Vec<ConfigurationFile>> {
-    if !configurations_directory.is_dir() {
+    if !optional_directory_exists(configurations_directory)? {
         return Ok(Vec::new());
     }
 
@@ -838,6 +841,15 @@ fn collect_request_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(
         }
     }
     Ok(())
+}
+
+fn optional_directory_exists(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => bail!("配置路径必须是目录: {}", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("无法读取配置目录: {}", path.display())),
+    }
 }
 
 fn is_request_file(path: &Path) -> bool {
@@ -1012,7 +1024,7 @@ fn normalize_headers(raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
     for mut header in raw_headers {
         let name = header.name.trim().to_string();
         if name.is_empty() {
-            bail!("工作区 Header 名称不能为空")
+            bail!("Header 名称不能为空")
         }
         header.name = name;
         headers.push(header);
@@ -1048,17 +1060,19 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
     let form = normalize_params(document.form, &id, "form")?;
     let files = normalize_files(document.files, &id)?;
     let extracts = normalize_extracts(document.extracts, &id)?;
+    let timeout_seconds = document
+        .timeout
+        .map(validate_timeout)
+        .transpose()
+        .with_context(|| format!("请求 {id} 的 timeout 配置无效"))?
+        .unwrap_or(default_timeout_seconds);
 
     Ok(ApiRequest {
         id,
         name,
         method,
         url,
-        timeout_seconds: if document.timeout == 0 {
-            default_timeout_seconds
-        } else {
-            document.timeout
-        },
+        timeout_seconds,
         description: document.description.trim().to_string(),
         headers,
         body_parts,
@@ -1111,7 +1125,11 @@ fn normalize_override(
         .extracts
         .map(|extracts| normalize_extracts(extracts, request_id))
         .transpose()?;
-    let timeout_seconds = raw.timeout.filter(|timeout| *timeout > 0);
+    let timeout_seconds = raw
+        .timeout
+        .map(validate_timeout)
+        .transpose()
+        .with_context(|| format!("场景 {configuration} 的请求 {request_id} timeout 配置无效"))?;
     if method.is_none()
         && url.is_none()
         && timeout_seconds.is_none()
@@ -1148,6 +1166,13 @@ fn normalize_method(value: &str, request_id: &str) -> Result<String> {
         bail!("接口 {request_id} 的 method 无效: {value}")
     }
     Ok(method)
+}
+
+fn validate_timeout(seconds: u64) -> Result<u64> {
+    if seconds == 0 {
+        bail!("timeout 必须是大于 0 的整数（秒）；使用默认值请省略此字段")
+    }
+    Ok(seconds)
 }
 
 fn normalize_params(
@@ -1236,8 +1261,7 @@ fn normalize_variable_name(value: &str) -> Option<String> {
 
 fn normalize_request_id(value: &str) -> Result<String> {
     let value = value.trim().replace('\\', "/");
-    let value = value.strip_prefix("requests/").unwrap_or(&value);
-    let path = Path::new(value);
+    let path = Path::new(&value);
     if value.is_empty()
         || path.is_absolute()
         || path.components().any(|component| {

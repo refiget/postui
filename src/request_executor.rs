@@ -20,26 +20,29 @@ pub(crate) struct RequestOperation {
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestResult {
+pub(crate) struct FinishedRequest {
     pub(crate) request_id: String,
     pub(crate) operation_id: String,
-    pub(crate) result: Result<CompletedResponse, HttpError>,
-    pub(crate) extracted_variables: Vec<(String, String)>,
-    pub(crate) extract_failures: usize,
+    pub(crate) outcome: RequestOutcome,
 }
 
 #[derive(Debug)]
-pub(crate) struct CompletedResponse {
-    pub(crate) response: ResponseData,
-    pub(crate) document: ResponseDocument,
+pub(crate) enum RequestOutcome {
+    Response {
+        response: ResponseData,
+        document: ResponseDocument,
+        extracted_variables: Vec<(String, String)>,
+        extraction_failure_count: usize,
+    },
+    Failed(HttpError),
 }
 
 #[derive(Debug)]
 pub(crate) struct RequestExecutor {
     http_client: HttpClient,
-    sender: Sender<RequestResult>,
-    receiver: Receiver<RequestResult>,
-    next_operation: AtomicU64,
+    sender: Sender<FinishedRequest>,
+    receiver: Receiver<FinishedRequest>,
+    next_operation_sequence: AtomicU64,
 }
 
 impl RequestExecutor {
@@ -49,12 +52,12 @@ impl RequestExecutor {
             http_client,
             sender,
             receiver,
-            next_operation: AtomicU64::new(1),
+            next_operation_sequence: AtomicU64::new(1),
         }
     }
 
     pub(crate) fn prepare(&self, request_id: &str) -> RequestOperation {
-        let sequence = self.next_operation.fetch_add(1, Ordering::Relaxed);
+        let sequence = self.next_operation_sequence.fetch_add(1, Ordering::Relaxed);
         RequestOperation {
             request_id: request_id.to_string(),
             operation_id: format!("{request_id}-{sequence}"),
@@ -77,51 +80,35 @@ impl RequestExecutor {
                 operation_id,
             } = operation;
             tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
-            let result = http::send(
+            let outcome = match http::send(
                 &http_client,
                 &request,
                 timeout_seconds,
                 &file_directory,
                 &operation_id,
-            );
-            let (result, extracted_variables, extract_failures) = match result {
+            ) {
                 Ok(response) => {
-                    let (extracted_variables, extract_failures) =
+                    let (extracted_variables, extraction_failure_count) =
                         extract_response_variables(&request, &response);
                     let document = ResponseDocument::new(
                         response.body_bytes.clone(),
                         &response.headers,
                         max_display_bytes,
                     );
-                    (
-                        Ok(CompletedResponse { response, document }),
+                    RequestOutcome::Response {
+                        response,
+                        document,
                         extracted_variables,
-                        extract_failures,
-                    )
+                        extraction_failure_count,
+                    }
                 }
-                Err(error) => (Err(error), Vec::new(), 0),
+                Err(error) => RequestOutcome::Failed(error),
             };
-            match &result {
-                Ok(completed) => tracing::debug!(
-                    operation_id = %operation_id,
-                    status = completed.response.status,
-                    elapsed_ms = completed.response.elapsed_ms,
-                    body_bytes = completed.response.body_bytes.len(),
-                    "HTTP 工作线程完成"
-                ),
-                Err(error) => tracing::error!(
-                    operation_id = %operation_id,
-                    error = %error,
-                    "HTTP 工作线程失败"
-                ),
-            }
             if sender
-                .send(RequestResult {
+                .send(FinishedRequest {
                     request_id,
                     operation_id,
-                    result,
-                    extracted_variables,
-                    extract_failures,
+                    outcome,
                 })
                 .is_err()
             {
@@ -130,7 +117,7 @@ impl RequestExecutor {
         });
     }
 
-    pub(crate) fn try_recv(&self) -> Result<RequestResult, TryRecvError> {
+    pub(crate) fn try_recv(&self) -> Result<FinishedRequest, TryRecvError> {
         self.receiver.try_recv()
     }
 }
@@ -151,7 +138,7 @@ fn extract_response_variables(
         }
     };
     let mut values = Vec::new();
-    let mut failures = 0;
+    let mut failure_count = 0;
     for extract in &request.extracts {
         match crate::template::extract_json_value(&root, &extract.path) {
             Ok(value) => {
@@ -163,7 +150,7 @@ fn extract_response_variables(
                 values.push((extract.variable.clone(), value));
             }
             Err(error) => {
-                failures += 1;
+                failure_count += 1;
                 tracing::debug!(
                     variable = %extract.variable,
                     path = %extract.path,
@@ -173,5 +160,5 @@ fn extract_response_variables(
             }
         }
     }
-    (values, failures)
+    (values, failure_count)
 }

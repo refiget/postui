@@ -4,7 +4,7 @@ use ratatui::{
 };
 
 const SIDEBAR_WIDE: u16 = 30;
-const SIDEBAR_MEDIUM: u16 = 26;
+const SIDEBAR_MEDIUM: u16 = 22;
 const SIDEBAR_NARROW: u16 = 22;
 pub(super) const PREVIEW_ACTION_WIDTH: u16 = 14;
 pub(super) const SEND_BUTTON_HEIGHT: u16 = 1;
@@ -14,6 +14,7 @@ use super::{ScrollAreas, inner_scroll_areas, panel_scroll_areas};
 #[derive(Debug, Clone, Copy)]
 pub(super) struct UiLayout {
     pub(super) header: Rect,
+    pub(super) footer: Rect,
     pub(super) header_content: Rect,
     pub(super) requests: Rect,
     pub(super) workspace_selector: Rect,
@@ -48,12 +49,14 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
         .constraints([
             Constraint::Length(header_height(area.height)),
             Constraint::Min(0),
+            Constraint::Length(2),
         ])
         .split(area);
     let (header_content, send_button) = header_parts(sections[0]);
     let response = sections[1];
     UiLayout {
         header: sections[0],
+        footer: sections[2],
         header_content,
         requests: Rect::default(),
         workspace_selector: Rect::default(),
@@ -72,12 +75,21 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
     }
 }
 
+pub(super) fn variables_page(area: Rect) -> UiLayout {
+    let mut layout = response_zoom(area);
+    layout.send_button = Rect::default();
+    layout.response_menu_button = Rect::default();
+    layout.response_zoom_button = Rect::default();
+    layout
+}
+
 pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height(area.height)),
             Constraint::Min(0),
+            Constraint::Length(2),
         ])
         .split(area);
     let columns = Layout::default()
@@ -88,8 +100,12 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         ])
         .split(sections[1]);
     let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .direction(if area.width < 110 {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(columns[1]);
     let sidebar = sidebar_parts(columns[0]);
     let (header_content, send_button) = header_parts(sections[0]);
@@ -99,6 +115,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
 
     UiLayout {
         header: sections[0],
+        footer: sections[2],
         header_content,
         requests: columns[0],
         workspace_selector: sidebar.workspace_selector,
@@ -158,8 +175,7 @@ pub(super) fn preview_sections(area: Rect, requested_summary_height: u16) -> Pre
 
 fn header_height(height: u16) -> u16 {
     match height {
-        18.. => 4,
-        4..=17 => 3,
+        4.. => 3,
         _ => 0,
     }
 }
@@ -228,7 +244,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
 
 fn header_parts(area: Rect) -> (Rect, Rect) {
     let inner = area.inner(Margin::new(1, 1));
-    if inner.is_empty() {
+    if inner.width == 0 || inner.height < 3 {
         return (Rect::default(), Rect::default());
     }
     let columns = Layout::default()
@@ -259,6 +275,6 @@ fn response_action_buttons(area: Rect) -> (Rect, Rect) {
     let x = inner.right().saturating_sub(width);
     (
         Rect::new(x, inner.y, width, 1),
-        Rect::new(x, inner.y.saturating_add(1), width, 1),
+        Rect::new(x, inner.y.saturating_add(2), width, 1),
     )
 }

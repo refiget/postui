@@ -14,7 +14,6 @@ files:
     content_type: text/plain
   - field: second
     path: "{{second_upload_file}}"
-    filename: null
     content_type: text/plain
 extracts:
   - variable: upload_size

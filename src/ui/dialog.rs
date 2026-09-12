@@ -10,19 +10,23 @@ pub(super) struct DialogLayout {
     pub(super) close_button: Rect,
 }
 
-pub(super) fn draw_dialog(frame: &mut Frame<'_>, app: &App, dialog: &crate::app::VariablesDialog) {
-    let layout = dialog_layout(frame.area(), dialog.rows.len());
+pub(super) fn draw_variables_page(
+    frame: &mut Frame<'_>,
+    app: &App,
+    page: &crate::app::VariablesPage,
+    area: Rect,
+) {
+    let layout = variables_page_layout(area);
     if layout.area.is_empty() {
         return;
     }
 
     let theme = &app.global_config.theme;
     let text = app.text();
-    frame.render_widget(Clear, layout.area);
     let title = Line::from(format!(" {} ", text.variables()));
-    frame.render_widget(dialog_block(title, layout.area, theme), layout.area);
+    frame.render_widget(panel_block(title, layout.area, theme), layout.area);
 
-    draw_variables_dialog(frame, app, dialog, layout);
+    draw_variables_table(frame, app, page, layout);
 }
 
 pub(super) fn draw_configuration_dropdown(
@@ -90,14 +94,8 @@ pub(super) fn configuration_menu_area(screen: Rect, selector: Rect, row_count: u
     Rect::new(x, y.max(screen.y), width, height)
 }
 
-pub(super) fn dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
-    let desired_height = 10_u16.saturating_add(u16::try_from(row_count.min(16)).unwrap_or(16));
-    let dialog_area = centered_rect(
-        area,
-        area.width.saturating_sub(2).min(96),
-        area.height.saturating_sub(2).min(desired_height),
-    );
-    let inner = dialog_area.inner(Margin::new(u16::from(dialog_area.width >= 48) + 1, 1));
+pub(super) fn variables_page_layout(area: Rect) -> DialogLayout {
+    let inner = area.inner(Margin::new(u16::from(area.width >= 48) + 1, 1));
     let footer_height = inner.height.min(3);
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -109,25 +107,13 @@ pub(super) fn dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
         .split(inner);
     let (apply_button, close_button) = dialog_buttons(sections[2]);
     DialogLayout {
-        area: dialog_area,
+        area,
         table_header: sections[0],
         rows: inner_scroll_areas(sections[1]),
         add_button: Rect::default(),
         apply_button,
         close_button,
     }
-}
-
-pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect::new(
-        area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        area.y
-            .saturating_add(area.height.saturating_sub(height) / 2),
-        width,
-        height,
-    )
 }
 
 pub(super) fn dialog_buttons(area: Rect) -> (Rect, Rect) {
@@ -153,21 +139,21 @@ pub(super) fn dialog_buttons(area: Rect) -> (Rect, Rect) {
     (buttons[0], buttons[1])
 }
 
-pub(super) fn draw_variables_dialog(
+pub(super) fn draw_variables_table(
     frame: &mut Frame<'_>,
     app: &App,
-    dialog: &crate::app::VariablesDialog,
+    page: &crate::app::VariablesPage,
     layout: DialogLayout,
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
     let visible = usize::from(layout.rows.content.height);
-    let offset = request_list_offset(dialog.selected, dialog.rows.len(), visible);
+    let offset = request_list_offset(page.selected, page.rows.len(), visible);
     let widths = variable_table_widths(layout.rows.content.width);
     let header = Row::new(vec![
-        Cell::from(text.variables()),
-        Cell::from(text.current_value()),
-        Cell::from(text.default_value()),
+        Cell::from(text.variables()).style(highlight::variable_style(Style::default(), theme)),
+        Cell::from(text.current_value()).style(Style::default().fg(theme.accent)),
+        Cell::from(text.default_value()).style(Style::default().fg(theme.secondary)),
     ])
     .style(section_style(theme));
     frame.render_widget(
@@ -180,65 +166,76 @@ pub(super) fn draw_variables_dialog(
         layout.table_header,
     );
 
-    if dialog.rows.is_empty() {
+    if page.rows.is_empty() {
         frame.render_widget(
             Paragraph::new(text.no_variables()).style(label_style(theme)),
             layout.rows.content,
         );
     } else {
-        let rows = dialog
+        let rows = page
             .rows
             .iter()
             .enumerate()
             .skip(offset)
             .take(visible)
             .map(|(index, row)| {
-                let editing = dialog.editor.is_some() && dialog.selected == index;
-                let value = dialog
+                let editing = page.editor.is_some() && page.selected == index;
+                let value = page
                     .editor
                     .as_ref()
                     .filter(|_| editing)
-                    .map(|editor| editor.value().to_string())
+                    .map(|editor| editor_view(editor, usize::from(constraint_length(widths[1]))))
                     .unwrap_or_else(|| row.value.clone());
-                let mut value_cell = Cell::from(highlight::template_line(
-                    &value,
-                    highlight::plain_style(theme),
-                    theme,
-                ));
+                let value_style = if value.is_empty() {
+                    Style::default().fg(theme.muted)
+                } else {
+                    Style::default().fg(theme.accent)
+                };
+                let name_style = highlight::variable_style(Style::default(), theme);
+                let default_style = Style::default().fg(theme.secondary);
+                let mut value_cell =
+                    Cell::from(highlight::template_line(&value, value_style, theme));
                 if editing {
-                    value_cell = value_cell.style(active_editor_style(theme));
+                    value_cell = value_cell.style(edit_input_text_style(theme.accent));
                 }
                 let default = app.variable_default_value(&row.name);
                 Row::new(vec![
-                    Cell::from(row.name.clone()),
+                    Cell::from(row.name.clone()).style(name_style),
                     value_cell,
-                    Cell::from(default),
+                    Cell::from(default).style(default_style),
                 ])
                 .style(Style::default().fg(theme.text))
             })
             .collect::<Vec<_>>();
         let table = Table::new(rows, widths.as_slice())
             .column_spacing(TABLE_COLUMN_SPACING)
-            .row_highlight_style(dialog_row_highlight(
+            .cell_highlight_style(super::focus::selection_style(
                 theme,
-                dialog.focus == DialogFocus::Content,
+                page.focus == VariablePageFocus::Content,
             ))
             .highlight_symbol("▸ ")
             .highlight_spacing(HighlightSpacing::Always)
             .style(Style::default().bg(theme.surface).fg(theme.text));
         let mut state = TableState::default();
-        state.select(Some(dialog.selected.saturating_sub(offset)));
+        state.select(Some(page.selected.saturating_sub(offset)));
+        if page
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.mode() == crate::editor::EditMode::Replace)
+        {
+            state.select_column(Some(1));
+        }
         frame.render_stateful_widget(table, layout.rows.content, &mut state);
     }
     draw_scrollbar(
         frame,
         layout.rows.scrollbar,
-        dialog.rows.len(),
+        page.rows.len(),
         visible,
         offset,
         theme,
     );
-    draw_dialog_footer(frame, app, dialog.focus, layout);
+    draw_variables_footer(frame, app, page.focus, layout);
 }
 
 pub(super) fn draw_headers_dialog(
@@ -283,12 +280,12 @@ pub(super) fn draw_headers_dialog(
                 let name = if editing && dialog.field == KeyValueField::Name {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(name_width))
                 } else {
-                    crate::template::resolve_text(&row.name, &app.workspace_state.variables)
+                    row.name.clone()
                 };
                 let value = if editing && dialog.field == KeyValueField::Value {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(value_width))
                 } else {
-                    crate::template::resolve_text(&row.value, &app.workspace_state.variables)
+                    row.value.clone()
                 };
                 let name = if editing && dialog.field == KeyValueField::Name {
                     name
@@ -314,12 +311,23 @@ pub(super) fn draw_headers_dialog(
                 let mut value_cell =
                     Cell::from(highlight::template_line(&value, value_style, theme));
                 if editing {
+                    let editor = dialog.editor.as_ref().unwrap();
                     match dialog.field {
                         KeyValueField::Name => {
-                            name_cell = name_cell.style(active_editor_style(theme))
+                            name_cell = name_cell.style(edit_input_style(
+                                editor,
+                                theme,
+                                theme.accent,
+                                theme.surface,
+                            ))
                         }
                         KeyValueField::Value => {
-                            value_cell = value_cell.style(active_editor_style(theme));
+                            value_cell = value_cell.style(edit_input_style(
+                                editor,
+                                theme,
+                                theme.accent,
+                                theme.surface,
+                            ));
                         }
                     }
                 }
@@ -385,10 +393,8 @@ pub(super) fn draw_params_dialog(
             .take(visible)
             .map(|(index, row)| {
                 let is_selected = dialog.selected == index;
-                let mut key =
-                    crate::template::resolve_text(&row.key, &app.workspace_state.variables);
-                let mut value =
-                    crate::template::resolve_text(&row.value, &app.workspace_state.variables);
+                let mut key = row.key.clone();
+                let mut value = row.value.clone();
                 if is_selected {
                     if let Some(editor) = dialog.editor.as_ref() {
                         match dialog.field {
@@ -412,13 +418,23 @@ pub(super) fn draw_params_dialog(
                 let mut key_cell = Cell::from(highlight::template_line(&key, key_style, theme));
                 let mut value_cell =
                     Cell::from(highlight::template_line(&value, value_style, theme));
-                if dialog.editor.is_some() && is_selected {
+                if let Some(editor) = dialog.editor.as_ref().filter(|_| is_selected) {
                     match dialog.field {
                         KeyValueField::Name => {
-                            key_cell = key_cell.style(active_editor_style(theme))
+                            key_cell = key_cell.style(edit_input_style(
+                                editor,
+                                theme,
+                                theme.accent,
+                                theme.surface,
+                            ))
                         }
                         KeyValueField::Value => {
-                            value_cell = value_cell.style(active_editor_style(theme));
+                            value_cell = value_cell.style(edit_input_style(
+                                editor,
+                                theme,
+                                theme.accent,
+                                theme.surface,
+                            ));
                         }
                     }
                 }
@@ -450,9 +466,10 @@ pub(super) fn variable_table_widths(width: u16) -> [Constraint; 3] {
         width.saturating_sub(TABLE_HIGHLIGHT_WIDTH + TABLE_COLUMN_SPACING.saturating_mul(2));
     let name = width.min(20);
     let default = width.saturating_sub(name).min(22);
+    let value = width.saturating_sub(name).saturating_sub(default);
     [
         Constraint::Length(name),
-        Constraint::Min(0),
+        Constraint::Length(value),
         Constraint::Length(default),
     ]
 }
@@ -478,57 +495,60 @@ pub(super) fn dialog_row_highlight(
     super::focus::selection_style(theme, content_focused)
 }
 
-fn active_editor_style(theme: &crate::settings::UiTheme) -> Style {
-    Style::default()
-        .fg(theme.accent)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-}
-
-pub(super) fn draw_dialog_footer(
+pub(super) fn draw_variables_footer(
     frame: &mut Frame<'_>,
     app: &App,
-    focus: DialogFocus,
+    focus: VariablePageFocus,
     layout: DialogLayout,
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
     if !layout.apply_button.is_empty() {
-        draw_secondary_button(
+        draw_send_button(
             frame,
             layout.apply_button,
             text.apply(),
-            focus == DialogFocus::Apply,
+            true,
+            focus == VariablePageFocus::Apply,
             theme,
         );
     }
     if !layout.close_button.is_empty() {
-        draw_secondary_button(
+        draw_send_button(
             frame,
             layout.close_button,
             text.close(),
-            focus == DialogFocus::Close,
+            true,
+            focus == VariablePageFocus::Close,
             theme,
         );
     }
 }
 
-pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) {
-    let (row_count, selected) = match app.dialog.as_ref() {
-        Some(Dialog::Variables(dialog)) => (dialog.rows.len(), dialog.selected),
-        _ => return,
+pub(super) fn handle_variables_mouse(
+    app: &mut App,
+    event: MouseEvent,
+    area: Rect,
+    is_double: bool,
+) {
+    let Some(page) = app.view.variables.as_ref() else {
+        return;
     };
-    let layout = dialog_layout(area, row_count);
+    let row_count = page.rows.len();
+    let selected = page.selected;
+    let layout = variables_page_layout(area);
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if contains(layout.apply_button, event.column, event.row) {
-                app.click_dialog_button(DialogFocus::Apply);
+                app.click_variables_page_button(VariablePageFocus::Apply);
                 return;
             }
             if contains(layout.close_button, event.column, event.row) {
-                app.click_dialog_button(DialogFocus::Close);
+                app.click_variables_page_button(VariablePageFocus::Close);
                 return;
             }
             if !contains(layout.rows.content, event.column, event.row) {
+                app.cancel_variable_edit();
                 return;
             }
 
@@ -536,6 +556,7 @@ pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) 
             let offset = request_list_offset(selected, row_count, visible);
             let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
             if index >= row_count {
+                app.cancel_variable_edit();
                 return;
             }
 
@@ -552,7 +573,9 @@ pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) 
                     constraint_length(widths[2]).saturating_add(TABLE_COLUMN_SPACING),
                 );
             let edit = event.column >= value_start && event.column < value_end;
-            app.click_variable_row(index, edit);
+            let cursor =
+                (edit && is_double).then(|| usize::from(event.column.saturating_sub(value_start)));
+            app.click_variable_row(index, edit, cursor);
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
             if contains(layout.rows.content, event.column, event.row) =>
@@ -562,7 +585,7 @@ pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) 
             } else {
                 1
             };
-            app.move_dialog_selection(direction);
+            app.move_variable_selection(direction);
         }
         _ => {}
     }

@@ -66,7 +66,11 @@ impl UiText {
     }
 
     pub(crate) fn request_url_required(self) -> &'static str {
-        self.pick("Enter a URL before sending", "发送前请输入地址")
+        self.pick("Enter a request URL first", "请先填写请求地址")
+    }
+
+    pub(crate) fn request_selection_required(self) -> &'static str {
+        self.pick("Select or create a request first", "请先选择或新建请求")
     }
 
     pub(crate) fn request_saved(self, path: &str) -> String {
@@ -80,6 +84,17 @@ impl UiText {
         match self.language {
             Language::English => format!("Could not save request: {error}"),
             Language::Chinese => format!("保存请求失败：{error}"),
+        }
+    }
+
+    pub(crate) fn configuration_save_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!(
+                "Request file saved, but configuration save failed: {error}. Fix the issue and press Ctrl+S again."
+            ),
+            Language::Chinese => {
+                format!("请求文件已保存，但配置保存失败：{error}。处理后请再次按 Ctrl+S")
+            }
         }
     }
 
@@ -126,7 +141,75 @@ impl UiText {
     }
 
     pub(crate) fn ready(self) -> &'static str {
-        self.pick("Ready", "待发送")
+        self.pick("Ready", "就绪")
+    }
+
+    pub(crate) fn operation_feedback(self) -> &'static str {
+        self.pick("Action", "操作")
+    }
+
+    pub(crate) fn theme_loaded(self, name: &str) -> String {
+        match self.language {
+            Language::English => format!("Theme loaded: {name}"),
+            Language::Chinese => format!("主题已加载：{name}"),
+        }
+    }
+
+    pub(crate) fn theme_load_failed(self, error: &str) -> String {
+        match self.language {
+            Language::English => format!("Could not load theme: {error}"),
+            Language::Chinese => format!("加载主题失败：{error}"),
+        }
+    }
+
+    pub(crate) fn unsaved_changes(self) -> &'static str {
+        self.pick("Unsaved", "未保存")
+    }
+
+    pub(crate) fn navigation_hint(self) -> &'static str {
+        self.pick(
+            "Tab Focus · r Send · Ctrl+S Save · o Response actions · q Quit",
+            "Tab 切换区域 · r 发送 · Ctrl+S 保存 · o 响应操作 · q 退出",
+        )
+    }
+
+    pub(crate) fn debug_navigation_hint(self) -> &'static str {
+        self.pick(
+            "Tab Focus · r Send · Ctrl+S Save · o Actions · F5 Theme · q Quit",
+            "Tab 切换 · r 发送 · Ctrl+S 保存 · o 操作 · F5 主题 · q 退出",
+        )
+    }
+
+    pub(crate) fn editing_hint(self) -> &'static str {
+        self.pick(
+            "Editing · Enter/Tab Confirm · Esc Cancel",
+            "编辑中 · Enter/Tab 确认 · Esc 取消",
+        )
+    }
+
+    pub(crate) fn menu_hint(self) -> &'static str {
+        self.pick(
+            "↑↓ Select · Enter Apply · Esc Close",
+            "↑↓ 选择 · Enter 应用 · Esc 关闭",
+        )
+    }
+
+    pub(crate) fn variables_page_hint(self) -> &'static str {
+        self.pick(
+            "↑↓ Select · Enter Edit · Tab Actions · Esc Back",
+            "↑↓ 选择 · Enter 编辑 · Tab 切换操作 · Esc 返回",
+        )
+    }
+
+    pub(crate) fn response_hint(self) -> &'static str {
+        self.pick(
+            "↑↓ Scroll · o Actions · Esc Restore",
+            "↑↓ 滚动 · o 响应操作 · Esc 恢复布局",
+        )
+    }
+
+    pub(crate) fn confirmation_hint(self) -> &'static str {
+        self.pick("Y Confirm · N Cancel", "Y 确认 · N 取消")
     }
 
     pub(crate) fn request_complete(self, status: u16, elapsed_ms: u128) -> String {
@@ -138,9 +221,10 @@ impl UiText {
 
     pub(crate) fn response_extract_failures(self, count: usize) -> String {
         match self.language {
-            Language::English if count == 1 => "1 field not extracted".to_string(),
-            Language::English => format!("{count} fields not extracted"),
-            Language::Chinese => format!("{count} 个字段提取失败"),
+            Language::English => format!(
+                "{count} field(s) not extracted; check the response JSON and extraction paths"
+            ),
+            Language::Chinese => format!("{count} 个字段提取失败；请检查响应 JSON 和提取路径"),
         }
     }
 
@@ -168,17 +252,37 @@ impl UiText {
         self.pick("Timeout", "超时")
     }
 
-    pub(crate) fn request_failed(self, error: &str) -> String {
-        match self.language {
-            Language::English => format!("Request failed: {error}"),
-            Language::Chinese => format!("请求失败：{error}"),
-        }
-    }
-
-    pub(crate) fn request_timeout(self, error: &str) -> String {
-        match self.language {
-            Language::English => format!("Request timed out: {error}"),
-            Language::Chinese => format!("请求超时：{error}"),
+    pub(crate) fn request_error(self, error: &crate::http::HttpError) -> &'static str {
+        use crate::http::HttpError;
+        match error {
+            HttpError::InvalidRequest(_) => self.pick(
+                "Invalid request; check the URL, method, headers and file types",
+                "请求参数无效；请检查地址、方法、请求头和文件类型",
+            ),
+            HttpError::Upload(_) => self.pick(
+                "Cannot read upload file; check its path and read permissions",
+                "无法读取上传文件；请检查文件路径和读取权限",
+            ),
+            HttpError::Timeout(_) => self.pick(
+                "Request timed out; check the service or increase the timeout",
+                "请求超时；请检查服务状态或增加超时时间",
+            ),
+            HttpError::Connection(_) => self.pick(
+                "Cannot connect; check the address, network and proxy settings",
+                "无法连接服务；请检查地址、网络和代理设置",
+            ),
+            HttpError::Transport(_) => self.pick(
+                "Request interrupted; check the network and service before retrying",
+                "请求传输中断；请检查网络和服务状态后重试",
+            ),
+            HttpError::ResponseRead(_) => self.pick(
+                "Cannot read the response; check the network and service",
+                "读取响应失败；请检查网络和服务状态",
+            ),
+            HttpError::ClientInitialization(_) => self.pick(
+                "Cannot initialize the HTTP client; check system and proxy settings",
+                "无法初始化 HTTP 客户端；请检查系统和代理设置",
+            ),
         }
     }
 
@@ -222,7 +326,7 @@ impl UiText {
     }
 
     pub(crate) fn apply(self) -> &'static str {
-        self.pick("Save", "保存")
+        self.pick("Apply", "应用")
     }
 
     pub(crate) fn close(self) -> &'static str {
@@ -230,7 +334,7 @@ impl UiText {
     }
 
     pub(crate) fn variables_applied(self) -> &'static str {
-        self.pick("Variables saved", "变量已保存")
+        self.pick("Variables applied to this session", "变量已应用到当前会话")
     }
 
     pub(crate) fn configuration_switched(self, configuration: &str) -> String {
@@ -241,7 +345,10 @@ impl UiText {
     }
 
     pub(crate) fn headers_applied(self) -> &'static str {
-        self.pick("Headers saved", "请求头已保存")
+        self.pick(
+            "Headers updated; press Ctrl+S to save to file",
+            "请求头已更新；按 Ctrl+S 保存到文件",
+        )
     }
 
     pub(crate) fn no_params(self) -> &'static str {
@@ -256,7 +363,10 @@ impl UiText {
     }
 
     pub(crate) fn params_applied(self) -> &'static str {
-        self.pick("Params saved", "参数已保存")
+        self.pick(
+            "Params updated; press Ctrl+S to save to file",
+            "参数已更新；按 Ctrl+S 保存到文件",
+        )
     }
 
     pub(crate) fn invalid_body_value(self) -> &'static str {

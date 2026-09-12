@@ -3,10 +3,8 @@ description: 公共请求体和变量保持不变，test 场景额外带一个�
 method: POST
 url: "{{api_base}}/post"
 headers:
-  - name: Content-Type
-    value: application/json
-  - name: X-PostUI-Scenario
-    value: "{{scenario}}"
+  Content-Type: application/json
+  X-PostUI-Scenario: "{{scenario}}"
 body: |
   {
     "client": "{{client_name}}",

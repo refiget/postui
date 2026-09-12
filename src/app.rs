@@ -1,33 +1,37 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    clipboard::ClipboardService,
     config::{ApiRequest, DataPart, RequestConfig, RequestParam, WorkspaceConfig},
-    editor::{
-        BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
-        merge_json_edit, terminal_width, text_position,
-    },
-    http::ResponseData,
+    editor::{BodyValueEditor, EditInput},
     i18n::UiText,
-    request_executor::{RequestExecutor, RequestResult},
+    request_executor::RequestExecutor,
     request_file::RequestFileStore,
-    response_document::ResponseDocument,
+    response_action::ResponseActionExecutor,
     settings::GlobalConfig,
     template::{self, ResolvedRequest},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 mod dialog;
+mod editing;
+mod execution;
+mod feedback;
+mod response;
 mod session;
+mod variables;
+mod view;
+use view::ViewState;
 
 use dialog::DialogAction;
 pub(crate) use dialog::{
-    ConfigurationsDialog, DataPartSource, Dialog, DialogFocus, HeaderRow, HeaderSource,
-    HeadersDialog, KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow, VariableRow,
-    VariablesDialog,
+    ConfigurationsDialog, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog,
+    KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow,
 };
+pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
+use variables::VariablesPageAction;
+pub(crate) use variables::{VariablePageFocus, VariableRow, VariablesPage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -171,6 +175,7 @@ impl ScrollState {
 #[derive(Debug, Default)]
 pub(crate) struct ResponseScrollState {
     offset: usize,
+    pub(crate) drag_anchor: Option<(u16, usize)>,
 }
 
 impl ResponseScrollState {
@@ -182,6 +187,11 @@ impl ResponseScrollState {
 
     fn reset(&mut self) {
         self.offset = 0;
+        self.drag_anchor = None;
+    }
+
+    pub(crate) fn set_offset(&mut self, offset: usize) {
+        self.offset = offset;
     }
 
     pub(crate) fn move_by(&mut self, direction: isize, max_offset: usize) -> bool {
@@ -202,8 +212,6 @@ pub(crate) struct PreviewContentState {
     pub(crate) scroll: ScrollState,
     pub(crate) editor: Option<BodyValueEditor>,
     pub(crate) file_editor: Option<FileValueEditor>,
-    pub(crate) variable_editor: Option<RequestVariableEditor>,
-    pub(crate) url_editor: Option<TextEditor>,
 }
 
 #[derive(Debug)]
@@ -217,40 +225,26 @@ pub(crate) struct FileValueEditor {
     pub(crate) file_index: usize,
     pub(crate) line: usize,
     pub(crate) column: usize,
-    pub(crate) input: TextEditor,
-}
-
-#[derive(Debug)]
-pub(crate) struct RequestVariableEditor {
-    pub(crate) variable: String,
-    pub(crate) line: usize,
-    pub(crate) column: usize,
-    pub(crate) input: TextEditor,
+    pub(crate) input: EditInput,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ResponseContentState {
     pub(crate) scroll: ResponseScrollState,
-    pub(crate) menu_open: bool,
-    pub(crate) menu_selected: usize,
+    pub(crate) menu_selection: Option<usize>,
 }
 
 pub(crate) struct App {
+    pub(crate) view: ViewState,
     pub(crate) config: WorkspaceConfig,
     pub(crate) global_config: GlobalConfig,
-    pub(crate) focus: Focus,
-    pub(crate) view_mode: ViewMode,
-    pub(crate) preview_state: PreviewContentState,
-    pub(crate) response_state: ResponseContentState,
     pub(crate) workspace_state: WorkspaceSession,
-    pub(crate) dialog: Option<Dialog>,
-    pub(crate) prompt: Option<AppPrompt>,
-    pub(crate) status: String,
-    pub(crate) animation_frame: usize,
     pub(crate) should_quit: bool,
+    pub(crate) debug_mode: bool,
     request_files: RequestFileStore,
     request_executor: RequestExecutor,
-    clipboard: ClipboardService,
+    response_actions: ResponseActionExecutor,
+    response_action_running: bool,
 }
 
 impl App {
@@ -259,12 +253,12 @@ impl App {
         workspace_path: PathBuf,
         global_config: GlobalConfig,
         request_executor: RequestExecutor,
+        debug_mode: bool,
     ) -> Self {
         let request_count = config.requests.len();
         let configured_variable_count = config.editable_variables.len();
         let (config, requests) = config.into_workspace();
         let request_files = RequestFileStore::new(workspace_path);
-        let text = UiText::new(global_config.language);
         tracing::debug!(
             config_path = %request_files.workspace_path().display(),
             global_config_path = global_config
@@ -282,19 +276,14 @@ impl App {
         Self {
             config,
             global_config,
-            focus: Focus::Requests,
-            view_mode: ViewMode::default(),
-            preview_state: PreviewContentState::default(),
-            response_state: ResponseContentState::default(),
+            view: ViewState::default(),
             workspace_state,
-            dialog: None,
-            prompt: None,
-            status: text.ready().to_string(),
-            animation_frame: 0,
             should_quit: false,
+            debug_mode,
             request_files,
             request_executor,
-            clipboard: ClipboardService::new(),
+            response_actions: ResponseActionExecutor::new(),
+            response_action_running: false,
         }
     }
 
@@ -316,8 +305,26 @@ impl App {
         UiText::new(self.global_config.language)
     }
 
+    pub(crate) fn current_feedback(&self) -> Option<&Feedback> {
+        self.view
+            .notice
+            .as_ref()
+            .or_else(|| self.workspace_state.current()?.runtime.feedback())
+    }
+
+    pub(crate) fn is_editing(&self) -> bool {
+        self.view.preview.editor.is_some()
+            || self.view.preview.file_editor.is_some()
+            || self
+                .view
+                .variables
+                .as_ref()
+                .is_some_and(|page| page.editor.is_some())
+            || self.view.dialog.as_ref().is_some_and(Dialog::is_editing)
+    }
+
     pub(crate) fn advance_animation(&mut self) {
-        self.animation_frame = self.animation_frame.wrapping_add(1);
+        self.view.animation_frame = self.view.animation_frame.wrapping_add(1);
     }
 
     pub(crate) fn is_animating(&self) -> bool {
@@ -328,94 +335,28 @@ impl App {
     }
 
     fn mark_current_dirty(&mut self) {
+        self.view.notice = None;
         if let Some(session) = self.workspace_state.current_mut() {
             session.dirty = true;
         }
     }
 
-    pub(crate) fn start_url_edit(&mut self) {
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        if self.request_status(&request.id) == RequestStatus::Sending {
-            return;
-        }
-        let Some(url) = self.current_effective_request().map(|request| request.url) else {
-            return;
-        };
-        self.preview_state.url_editor = Some(TextEditor::new(url));
-        self.focus = Focus::Preview;
-    }
-
-    pub(crate) fn cycle_method(&mut self) {
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        if self.request_status(&request.id) == RequestStatus::Sending {
-            return;
-        }
-        const METHODS: [&str; 2] = ["GET", "POST"];
-        let current = self
-            .current_effective_request()
-            .map(|request| request.method)
-            .unwrap_or_else(|| request.method.clone());
-        let index = METHODS
-            .iter()
-            .position(|method| *method == current.as_str())
-            .unwrap_or(0);
-        if let Some(request) = self.workspace_state.current_mut() {
-            request.draft.method = METHODS[(index + 1) % METHODS.len()].to_string();
-        }
-        self.mark_current_dirty();
-    }
-
-    fn commit_url_edit(&mut self) {
-        let Some(editor) = self.preview_state.url_editor.take() else {
-            return;
-        };
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        let request_id = request.id.clone();
-        let value = editor.value().trim().to_string();
-        let next_url = Some(value);
-        let changed = match self.workspace_state.request_mut(&request_id) {
-            Some(session) if session.draft.url != next_url => {
-                session.draft.url = next_url;
-                true
-            }
-            _ => false,
-        };
-        if changed {
-            self.mark_current_dirty();
-        }
-    }
-
-    fn handle_url_editor_key(&mut self, key: KeyEvent) {
-        let Some(editor) = self.preview_state.url_editor.as_mut() else {
-            return;
-        };
-        match editor.handle_key(key) {
-            EditorAction::Continue => {}
-            EditorAction::Commit => self.commit_url_edit(),
-            EditorAction::Cancel => self.preview_state.url_editor = None,
-        }
-    }
-
     pub(crate) fn save_current_request(&mut self) {
-        self.commit_active_editors();
+        self.cancel_active_editors();
         if self
             .current_effective_request()
             .is_none_or(|request| request.url.trim().is_empty())
         {
-            self.status = self.text().request_url_required().to_string();
+            self.view.notice = Some(Feedback::Warning(
+                self.text().request_url_required().to_string(),
+            ));
             return;
         }
         self.workspace_state.commit_configuration(&mut self.config);
         let Some(request) = self.current_request().cloned() else {
             return;
         };
-        let id = request.id.clone();
+        let request_id = request.id.clone();
         match self.request_files.save(&request) {
             Ok(path) => {
                 let configuration_save = self
@@ -429,20 +370,30 @@ impl App {
                             .map(|_| ())
                     });
                 if let Err(error) = configuration_save {
-                    self.status = self.text().request_save_failed(&error.to_string());
+                    tracing::error!(request_id = %request_id, error = %format!("{error:#}"), "配置保存失败");
+                    self.view.notice = Some(Feedback::Error(
+                        self.text().configuration_save_failed(&format!("{error:#}")),
+                    ));
                     return;
                 }
-                if let Some(session) = self.workspace_state.request_mut(&id) {
+                if let Some(session) = self.workspace_state.request_mut(&request_id) {
                     session.dirty = false;
                 }
-                self.status = self.text().request_saved(&path.display().to_string());
+                self.view.notice = Some(Feedback::Success(
+                    self.text().request_saved(&path.display().to_string()),
+                ));
             }
-            Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
+            Err(error) => {
+                tracing::error!(request_id = %request_id, error = %format!("{error:#}"), "保存请求失败");
+                self.view.notice = Some(Feedback::Error(
+                    self.text().request_save_failed(&format!("{error:#}")),
+                ));
+            }
         }
     }
 
     fn request_quit(&mut self) {
-        self.commit_active_editors();
+        self.cancel_active_editors();
         if !self
             .workspace_state
             .requests
@@ -451,7 +402,7 @@ impl App {
         {
             self.should_quit = true;
         } else {
-            self.prompt = Some(AppPrompt::ConfirmExit);
+            self.view.prompt = Some(AppPrompt::ConfirmExit);
         }
     }
 
@@ -461,10 +412,12 @@ impl App {
         };
         let request_id = request.id.clone();
         if self.request_status(&request_id) == RequestStatus::Sending {
-            self.status = self.text().request_in_progress().to_string();
+            self.view.notice = Some(Feedback::Warning(
+                self.text().request_in_progress().to_string(),
+            ));
             return;
         }
-        self.prompt = Some(AppPrompt::ConfirmDelete { request_id });
+        self.view.prompt = Some(AppPrompt::ConfirmDelete { request_id });
     }
 
     fn delete_request(&mut self, request_id: &str) {
@@ -474,11 +427,14 @@ impl App {
             .iter()
             .position(|session| session.source.id == request_id)
         else {
-            self.prompt = None;
+            self.view.prompt = None;
             return;
         };
         if let Err(error) = self.request_files.delete(request_id) {
-            self.status = self.text().request_delete_failed(&error.to_string());
+            tracing::error!(request_id, error = %format!("{error:#}"), "删除请求失败");
+            self.view.notice = Some(Feedback::Error(
+                self.text().request_delete_failed(&format!("{error:#}")),
+            ));
             return;
         }
         self.workspace_state.requests.remove(index);
@@ -487,18 +443,18 @@ impl App {
         } else {
             Some(index.min(self.workspace_state.requests.len().saturating_sub(1)))
         };
-        self.preview_state = PreviewContentState::default();
-        self.response_state = ResponseContentState::default();
-        self.dialog = None;
-        self.prompt = None;
-        self.status = self.text().request_deleted().to_string();
+        self.view.preview = PreviewContentState::default();
+        self.view.response = ResponseContentState::default();
+        self.view.dialog = None;
+        self.view.prompt = None;
+        self.view.notice = Some(Feedback::Success(self.text().request_deleted().to_string()));
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) {
-        match self.prompt.as_mut() {
+        match self.view.prompt.as_mut() {
             Some(AppPrompt::ConfirmExit) => match key.code {
                 KeyCode::Char('y' | 'Y') => self.should_quit = true,
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.prompt = None,
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.view.prompt = None,
                 _ => {}
             },
             Some(AppPrompt::ConfirmDelete { request_id }) => match key.code {
@@ -506,7 +462,7 @@ impl App {
                     let request_id = request_id.clone();
                     self.delete_request(&request_id);
                 }
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.prompt = None,
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.view.prompt = None,
                 _ => {}
             },
             None => {}
@@ -522,25 +478,20 @@ impl App {
         let previous = self.workspace_state.selected_request;
         let changed = previous != Some(index);
         if changed {
-            self.commit_active_editors();
+            self.cancel_active_editors();
             self.workspace_state.commit_configuration(&mut self.config);
             self.close_response_menu();
             if self.editing_preview_tab().is_some() {
-                self.dialog = None;
+                self.view.dialog = None;
             }
             self.workspace_state.selected_request = Some(index);
-            self.preview_state.active_tab = PreviewTab::Body;
-            self.preview_state.scroll.reset();
-            self.response_state.scroll.reset();
-            let Some((request_id, message)) = self.workspace_state.current().map(|session| {
-                (
-                    session.source.id.clone(),
-                    session.runtime.message().map(ToOwned::to_owned),
-                )
-            }) else {
+            self.view.preview.active_tab = PreviewTab::Body;
+            self.view.preview.scroll.reset();
+            self.view.response.scroll.reset();
+            let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
                 return;
             };
-            self.status = message.unwrap_or_else(|| self.text().ready().to_string());
+            self.view.notice = None;
             tracing::debug!(
                 previous_index = ?previous,
                 selected_index = index,
@@ -581,338 +532,6 @@ impl App {
             .map(|session| &mut session.draft)
     }
 
-    pub(crate) fn current_url_variables(&self) -> Vec<String> {
-        self.current_effective_request()
-            .map(|request| template::url_variable_names(&request.url))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn request_variable_value(&self, variable: &str) -> String {
-        self.workspace_state
-            .variables
-            .get(variable)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn resolved_url(&self, request: &ApiRequest) -> String {
-        let request = self.effective_request(request);
-        let url = template::display_url(&request);
-        template::display_text_parts(&url, &self.workspace_state.variables)
-            .into_iter()
-            .map(|part| part.text)
-            .collect()
-    }
-
-    pub(crate) fn body_json(&self) -> String {
-        let body = self
-            .current_resolved_request()
-            .and_then(|request| request.raw_body)
-            .unwrap_or_else(|| "{}".to_string());
-        serde_json::from_str::<serde_json::Value>(&body).map_or(body, |value| {
-            serde_json::to_string_pretty(&value).expect("JSON 请求体应可序列化")
-        })
-    }
-
-    pub(crate) fn body_preview(&self) -> String {
-        let Some(request) = self.current_effective_request() else {
-            return self.body_json();
-        };
-        if !request.body_parts.is_empty()
-            && request
-                .body_parts
-                .iter()
-                .all(|part| matches!(part, DataPart::UrlEncoded(_)))
-        {
-            return self
-                .current_resolved_request()
-                .and_then(|request| request.raw_body)
-                .unwrap_or_default()
-                .split('&')
-                .map(template::decode_urlencoded_data)
-                .collect::<Vec<_>>()
-                .join("\n");
-        }
-        self.body_json()
-    }
-
-    pub(crate) fn start_body_edit(&mut self, line: usize, column: usize) {
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        if self.request_status(&request.id) == RequestStatus::Sending {
-            return;
-        }
-        if self.preview_state.editor.is_some()
-            || self.preview_state.file_editor.is_some()
-            || self.preview_state.variable_editor.is_some()
-        {
-            return;
-        }
-        let Some(body) = self
-            .current_resolved_request()
-            .and_then(|request| request.raw_body)
-        else {
-            self.start_file_edit(line, column);
-            return;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
-            return;
-        };
-        let Ok(document) = serde_json::to_string_pretty(&value) else {
-            return;
-        };
-        let offset = text_position(&document, line, column);
-        let Some((span, kind, input)) = json_scalar_at(&document, offset) else {
-            return;
-        };
-        self.preview_state.editor = Some(BodyValueEditor {
-            document,
-            span,
-            kind,
-            input: TextEditor::new(input),
-        });
-        self.focus = Focus::Preview;
-    }
-
-    pub(crate) fn body_editor(&self) -> Option<&BodyValueEditor> {
-        self.preview_state.editor.as_ref()
-    }
-
-    pub(crate) fn file_editor(&self) -> Option<&FileValueEditor> {
-        self.preview_state.file_editor.as_ref()
-    }
-
-    pub(crate) fn variable_editor(&self) -> Option<&RequestVariableEditor> {
-        self.preview_state.variable_editor.as_ref()
-    }
-
-    pub(crate) fn start_request_variable_edit(&mut self, variable: String, line: usize) {
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        if self.request_status(&request.id) == RequestStatus::Sending
-            || self.preview_state.editor.is_some()
-            || self.preview_state.file_editor.is_some()
-            || self.preview_state.variable_editor.is_some()
-        {
-            return;
-        }
-        let value = self.request_variable_value(&variable);
-        self.preview_state.variable_editor = Some(RequestVariableEditor {
-            column: terminal_width(&variable).saturating_add(2),
-            variable,
-            line,
-            input: TextEditor::new(value),
-        });
-        self.focus = Focus::Preview;
-    }
-
-    fn start_file_edit(&mut self, line: usize, column: usize) {
-        let Some(request) = self.current_resolved_request() else {
-            return;
-        };
-        let variable_lines = self.current_url_variables().len();
-        let has_other_content = !request.form.is_empty() || !request.files.is_empty();
-        let content_offset =
-            variable_lines.saturating_add(usize::from(variable_lines > 0 && has_other_content));
-        let mut file_line = content_offset.saturating_add(if request.form.is_empty() {
-            1
-        } else {
-            request.form.len().saturating_add(3)
-        });
-        let Some((file_index, file)) = request
-            .files
-            .iter()
-            .enumerate()
-            .find(|(index, _)| file_line.saturating_add(*index) == line)
-        else {
-            return;
-        };
-        file_line = file_line.saturating_add(file_index);
-        let value_column = terminal_width(&file.field).saturating_add(2);
-        let value_columns =
-            value_column..value_column.saturating_add(terminal_width(&file.path).max(1));
-        if !value_columns.contains(&column) {
-            return;
-        }
-        let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
-            return;
-        };
-        let Some(configured_path) = self
-            .request_draft(&request_id)
-            .and_then(|draft| draft.files.get(file_index))
-            .map(|file| file.path.clone())
-        else {
-            return;
-        };
-        self.preview_state.file_editor = Some(FileValueEditor {
-            file_index,
-            line: file_line,
-            column: value_column,
-            input: TextEditor::new(configured_path),
-        });
-        self.focus = Focus::Preview;
-    }
-
-    pub(crate) fn commit_active_editors(&mut self) {
-        if self.preview_state.url_editor.is_some() {
-            self.commit_url_edit();
-        }
-        if self.preview_state.editor.is_some() {
-            self.commit_body_value();
-        }
-        if self.preview_state.file_editor.is_some() {
-            self.commit_file_value();
-        }
-        if self.preview_state.variable_editor.is_some() {
-            self.commit_request_variable();
-        }
-        if self.editing_preview_tab().is_some() && self.sync_dialog_draft() {
-            self.mark_current_dirty();
-        }
-    }
-
-    fn handle_body_editor_key(&mut self, key: KeyEvent) {
-        if self.preview_state.variable_editor.is_some() {
-            self.handle_request_variable_key(key);
-            return;
-        }
-        if self.preview_state.file_editor.is_some() {
-            self.handle_file_editor_key(key);
-            return;
-        }
-        if key.code == KeyCode::Esc {
-            self.preview_state.editor = None;
-            return;
-        }
-        if key.code == KeyCode::Enter {
-            self.commit_body_value();
-            return;
-        }
-        let Some(editor) = self.preview_state.editor.as_mut() else {
-            return;
-        };
-        let _ = editor.input.handle_key(key);
-    }
-
-    fn handle_file_editor_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
-            self.preview_state.file_editor = None;
-            return;
-        }
-        if key.code == KeyCode::Enter {
-            self.commit_file_value();
-            return;
-        }
-        if let Some(editor) = self.preview_state.file_editor.as_mut() {
-            let _ = editor.input.handle_key(key);
-        }
-    }
-
-    fn commit_file_value(&mut self) {
-        let Some(editor) = self.preview_state.file_editor.take() else {
-            return;
-        };
-        let Some(request) = self.current_request() else {
-            return;
-        };
-        let request_id = request.id.clone();
-        let default = self
-            .request_draft(&request_id)
-            .and_then(|draft| draft.files.get(editor.file_index))
-            .map(|file| file.path.clone())
-            .unwrap_or_default();
-        let value = editor.input.value().trim();
-        let path = if value.is_empty() {
-            default
-        } else {
-            value.to_string()
-        };
-        let changed = if let Some(file) = self
-            .request_draft_mut(&request_id)
-            .and_then(|draft| draft.files.get_mut(editor.file_index))
-        {
-            if file.path == path {
-                false
-            } else {
-                file.path = path;
-                true
-            }
-        } else {
-            false
-        };
-        if changed {
-            self.mark_current_dirty();
-        }
-    }
-
-    fn handle_request_variable_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
-            self.preview_state.variable_editor = None;
-            return;
-        }
-        if key.code == KeyCode::Enter {
-            self.commit_request_variable();
-            return;
-        }
-        if let Some(editor) = self.preview_state.variable_editor.as_mut() {
-            let _ = editor.input.handle_key(key);
-        }
-    }
-
-    fn commit_request_variable(&mut self) {
-        let Some(editor) = self.preview_state.variable_editor.take() else {
-            return;
-        };
-        self.workspace_state
-            .variables
-            .insert(editor.variable, editor.input.into_value());
-    }
-
-    fn commit_body_value(&mut self) {
-        let Some(editor) = self.preview_state.editor.take() else {
-            return;
-        };
-        let Some(replacement) = convert_json_scalar(editor.kind, editor.input.value()) else {
-            self.status = self.text().invalid_body_value().to_string();
-            return;
-        };
-        if editor.document.get(editor.span.clone()) == Some(replacement.as_str()) {
-            return;
-        }
-        let rendered_document = editor.document;
-        let mut document = rendered_document.clone();
-        document.replace_range(editor.span, &replacement);
-        let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
-            return;
-        };
-        let source_document = self
-            .request_draft(&request_id)
-            .map(|draft| {
-                draft
-                    .body_parts
-                    .iter()
-                    .map(template::data_part_text)
-                    .collect::<Vec<_>>()
-                    .join("&")
-            })
-            .unwrap_or_default();
-        let document =
-            merge_json_edit(&source_document, &rendered_document, &document).unwrap_or(document);
-        let next_body = vec![DataPart::Raw(document)];
-        let changed = match self.request_draft_mut(&request_id) {
-            Some(draft) if draft.body_parts != next_body => {
-                draft.body_parts = next_body;
-                true
-            }
-            _ => false,
-        };
-        if changed {
-            self.mark_current_dirty();
-        }
-    }
-
     pub(crate) fn variable_count(&self) -> usize {
         self.config.editable_variables.len()
     }
@@ -942,11 +561,11 @@ impl App {
             .iter()
             .position(|configuration| configuration == self.active_configuration())
             .unwrap_or_default();
-        self.dialog = Some(Dialog::Configurations(ConfigurationsDialog {
+        self.view.dialog = Some(Dialog::Configurations(ConfigurationsDialog {
             rows,
             selected,
         }));
-        self.focus = Focus::WorkspaceButton;
+        self.view.focus = Focus::WorkspaceButton;
         tracing::debug!(
             configuration = %self.active_configuration(),
             configuration_count = self.config.configurations.len(),
@@ -965,20 +584,24 @@ impl App {
             .iter()
             .any(|session| session.runtime.status() == RequestStatus::Sending)
         {
-            self.status = self.text().request_in_progress().to_string();
+            self.view.notice = Some(Feedback::Warning(
+                self.text().request_in_progress().to_string(),
+            ));
             return;
         }
-        self.commit_active_editors();
+        self.cancel_active_editors();
         if !self
             .workspace_state
             .switch_configuration(&mut self.config, configuration)
         {
             return;
         }
-        self.dialog = None;
-        self.preview_state = PreviewContentState::default();
-        self.response_state = ResponseContentState::default();
-        self.status = self.text().configuration_switched(configuration);
+        self.view.dialog = None;
+        self.view.preview = PreviewContentState::default();
+        self.view.response = ResponseContentState::default();
+        self.view.notice = Some(Feedback::Success(
+            self.text().configuration_switched(configuration),
+        ));
         tracing::debug!(configuration, "切换 workspace 配置");
     }
 
@@ -1024,14 +647,16 @@ impl App {
                     .unwrap_or_default(),
             })
             .collect::<Vec<_>>();
-        self.dialog = Some(Dialog::Variables(VariablesDialog {
+        let return_focus = self.view.focus;
+        self.view.variables = Some(VariablesPage {
             rows,
             selected: 0,
-            focus: DialogFocus::Content,
+            focus: VariablePageFocus::Content,
             editor: None,
-        }));
-        self.focus = Focus::Variables;
-        tracing::debug!(variable_count = self.variable_count(), "打开工作区变量窗口");
+            return_focus,
+        });
+        self.view.focus = Focus::Variables;
+        tracing::debug!(variable_count = self.variable_count(), "打开工作区变量页面");
     }
 
     pub(crate) fn open_headers(&mut self) {
@@ -1040,12 +665,14 @@ impl App {
         };
         if self.request_status(&request.id) == RequestStatus::Sending {
             tracing::debug!("请求执行中，忽略打开 Header 编辑窗口");
-            self.status = self.text().request_in_progress().to_string();
+            self.view.notice = Some(Feedback::Warning(
+                self.text().request_in_progress().to_string(),
+            ));
             return;
         }
-        self.preview_state.active_tab = PreviewTab::Headers;
-        self.dialog = self.preview_dialog(PreviewTab::Headers);
-        self.focus = Focus::Preview;
+        self.view.preview.active_tab = PreviewTab::Headers;
+        self.view.dialog = self.preview_dialog(PreviewTab::Headers);
+        self.view.focus = Focus::Preview;
         tracing::debug!(
             header_count = self.current_header_count(),
             "打开请求 Header 窗口"
@@ -1058,12 +685,14 @@ impl App {
         };
         if self.request_status(&request_id) == RequestStatus::Sending {
             tracing::debug!("请求执行中，忽略打开参数编辑窗口");
-            self.status = self.text().request_in_progress().to_string();
+            self.view.notice = Some(Feedback::Warning(
+                self.text().request_in_progress().to_string(),
+            ));
             return;
         }
-        self.preview_state.active_tab = PreviewTab::Params;
-        self.dialog = self.preview_dialog(PreviewTab::Params);
-        self.focus = Focus::Preview;
+        self.view.preview.active_tab = PreviewTab::Params;
+        self.view.dialog = self.preview_dialog(PreviewTab::Params);
+        self.view.focus = Focus::Preview;
         let (query_row_count, form_field_count) = self
             .request_draft(&request_id)
             .map(|draft| (draft.query_parts.len(), draft.form.len()))
@@ -1175,19 +804,15 @@ impl App {
         match action {
             PreviewAction::Send => self.send_current_request(),
             PreviewAction::Edit(tab) if self.editing_preview_tab() == Some(tab) => {
-                if let Some(dialog) = self.dialog.as_mut() {
-                    dialog.commit_editor();
+                if let Some(dialog) = self.view.dialog.as_mut() {
+                    dialog.cancel_editor();
                 }
                 self.apply_dialog();
             }
             PreviewAction::Edit(PreviewTab::Body) => {
-                if self.preview_state.editor.is_some()
-                    || self.preview_state.file_editor.is_some()
-                    || self.preview_state.variable_editor.is_some()
-                {
-                    self.preview_state.editor = None;
-                    self.preview_state.file_editor = None;
-                    self.preview_state.variable_editor = None;
+                if self.view.preview.editor.is_some() || self.view.preview.file_editor.is_some() {
+                    self.view.preview.editor = None;
+                    self.view.preview.file_editor = None;
                 } else {
                     self.start_body_edit(0, 0);
                 }
@@ -1198,7 +823,7 @@ impl App {
     }
 
     pub(crate) fn editing_preview_tab(&self) -> Option<PreviewTab> {
-        self.dialog.as_ref().and_then(Dialog::preview_tab)
+        self.view.dialog.as_ref().and_then(Dialog::preview_tab)
     }
 
     pub(crate) fn can_execute_preview_action(&self, action: PreviewAction) -> bool {
@@ -1209,13 +834,10 @@ impl App {
                     && self.current_request().is_some_and(|current| {
                         self.request_status(&current.id) != RequestStatus::Sending
                     })
-                    && !matches!(
-                        self.dialog,
-                        Some(Dialog::Variables(_) | Dialog::Configurations(_))
-                    )
-                    && self.preview_state.editor.is_none()
-                    && self.preview_state.file_editor.is_none()
-                    && self.preview_state.variable_editor.is_none()
+                    && !matches!(self.view.dialog, Some(Dialog::Configurations(_)))
+                    && self.view.variables.is_none()
+                    && self.view.preview.editor.is_none()
+                    && self.view.preview.file_editor.is_none()
             }),
             PreviewAction::Edit(tab) => self.current_request().is_some_and(|request| {
                 self.editing_preview_tab()
@@ -1226,25 +848,62 @@ impl App {
     }
 
     pub(crate) fn focused_preview_action(&self) -> Option<PreviewAction> {
-        match self.focus {
+        match self.view.focus {
             Focus::SendButton => Some(PreviewAction::Send),
             _ => None,
         }
     }
 
     pub(crate) fn close_dialog(&mut self) {
-        if self.dialog.take().is_some() {
+        if self.view.dialog.take().is_some() {
             tracing::debug!("关闭配置编辑窗口");
         }
     }
 
+    fn close_variables(&mut self) {
+        let Some(page) = self.view.variables.take() else {
+            return;
+        };
+        self.view.focus = page.return_focus;
+        tracing::debug!("关闭工作区变量页面");
+    }
+
+    fn apply_variables(&mut self) {
+        let Some(mut page) = self.view.variables.take() else {
+            return;
+        };
+        page.cancel_editor();
+        for row in page.rows {
+            self.workspace_state.variables.insert(row.name, row.value);
+        }
+        self.view.notice = Some(Feedback::Success(
+            self.text().variables_applied().to_string(),
+        ));
+        tracing::debug!(
+            variable_count = self.workspace_state.variables.len(),
+            "应用工作区变量修改"
+        );
+        self.view.focus = page.return_focus;
+    }
+
+    fn handle_variables_key(&mut self, key: KeyEvent) {
+        let Some(page) = self.view.variables.as_mut() else {
+            return;
+        };
+        match page.handle_key(key) {
+            Some(VariablesPageAction::Apply) => self.apply_variables(),
+            Some(VariablesPageAction::Close) => self.close_variables(),
+            None => {}
+        }
+    }
+
     pub(crate) fn apply_dialog(&mut self) {
-        if self.dialog.is_none() {
+        if self.view.dialog.is_none() {
             return;
         }
         let changed = self.sync_dialog_draft();
 
-        let Some(dialog) = self.dialog.take() else {
+        let Some(dialog) = self.view.dialog.take() else {
             return;
         };
         match dialog {
@@ -1252,16 +911,6 @@ impl App {
                 if let Some(configuration) = dialog.rows.get(dialog.selected).cloned() {
                     self.switch_configuration(&configuration);
                 }
-            }
-            Dialog::Variables(dialog) => {
-                for row in dialog.rows {
-                    self.workspace_state.variables.insert(row.name, row.value);
-                }
-                self.status = self.text().variables_applied().to_string();
-                tracing::debug!(
-                    variable_count = self.workspace_state.variables.len(),
-                    "应用工作区变量修改"
-                );
             }
             Dialog::Headers(dialog) => {
                 if changed {
@@ -1274,7 +923,8 @@ impl App {
                     .flatten()
                     .filter(|row| row.enabled)
                     .count();
-                self.status = self.text().headers_applied().to_string();
+                self.view.notice =
+                    Some(Feedback::Success(self.text().headers_applied().to_string()));
                 tracing::debug!(header_count, "应用请求 Header 修改");
             }
             Dialog::Params(dialog) => {
@@ -1286,14 +936,15 @@ impl App {
                         .map(|draft| (draft.query_parts.len(), draft.form.len()))
                         .unwrap_or_default()
                 };
-                self.status = self.text().params_applied().to_string();
+                self.view.notice =
+                    Some(Feedback::Success(self.text().params_applied().to_string()));
                 tracing::debug!(query_part_count, form_field_count, "应用请求参数修改");
             }
         }
     }
 
     pub(crate) fn handle_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.dialog.as_mut() else {
+        let Some(dialog) = self.view.dialog.as_mut() else {
             return;
         };
         let action = dialog.handle_key(key);
@@ -1315,16 +966,15 @@ impl App {
     }
 
     fn sync_dialog_draft(&mut self) -> bool {
-        let Some(mut dialog_state) = self.dialog.take() else {
+        let Some(dialog_state) = self.view.dialog.take() else {
             return false;
         };
-        dialog_state.commit_editor();
         let changed = match &dialog_state {
             Dialog::Headers(dialog) => self.sync_header_dialog(dialog),
             Dialog::Params(dialog) => self.sync_params_dialog(dialog),
-            Dialog::Configurations(_) | Dialog::Variables(_) => false,
+            Dialog::Configurations(_) => false,
         };
-        self.dialog = Some(dialog_state);
+        self.view.dialog = Some(dialog_state);
         changed
     }
 
@@ -1422,7 +1072,7 @@ impl App {
     }
 
     pub(crate) fn move_dialog_selection(&mut self, direction: isize) {
-        if let Some(dialog) = self.dialog.as_mut() {
+        if let Some(dialog) = self.view.dialog.as_mut() {
             dialog.move_selection(direction);
             tracing::debug!(direction, "移动配置窗口列表选择");
         }
@@ -1431,34 +1081,39 @@ impl App {
         }
     }
 
-    pub(crate) fn click_variable_row(&mut self, index: usize, edit: bool) {
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.commit_editor();
-            dialog.click_variable_row(index, edit);
+    pub(crate) fn click_variable_row(&mut self, index: usize, edit: bool, cursor: Option<usize>) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.click_row(index, edit, cursor);
         }
     }
 
     pub(crate) fn click_configuration_row(&mut self, index: usize) {
-        if let Some(dialog) = self.dialog.as_mut() {
+        if let Some(dialog) = self.view.dialog.as_mut() {
             dialog.click_configuration_row(index);
         }
     }
 
-    pub(crate) fn click_param_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
-        if self.sync_dialog_draft() {
-            self.mark_current_dirty();
-        }
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.click_param_row(index, field, edit);
+    pub(crate) fn click_param_row(
+        &mut self,
+        index: usize,
+        field: KeyValueField,
+        edit: bool,
+        cursor: Option<usize>,
+    ) {
+        if let Some(dialog) = self.view.dialog.as_mut() {
+            dialog.click_param_row(index, field, edit, cursor);
         }
     }
 
-    pub(crate) fn click_header_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
-        if self.sync_dialog_draft() {
-            self.mark_current_dirty();
-        }
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.click_header_row(index, field, edit);
+    pub(crate) fn click_header_row(
+        &mut self,
+        index: usize,
+        field: KeyValueField,
+        edit: bool,
+        cursor: Option<usize>,
+    ) {
+        if let Some(dialog) = self.view.dialog.as_mut() {
+            dialog.click_header_row(index, field, edit, cursor);
         }
     }
 
@@ -1466,7 +1121,7 @@ impl App {
         if self.sync_dialog_draft() {
             self.mark_current_dirty();
         }
-        if let Some(Dialog::Headers(dialog)) = self.dialog.as_mut() {
+        if let Some(Dialog::Headers(dialog)) = self.view.dialog.as_mut() {
             dialog.selected = index;
             dialog.toggle_selected();
         }
@@ -1475,18 +1130,30 @@ impl App {
         }
     }
 
-    pub(crate) fn focus_dialog(&mut self, focus: DialogFocus) {
-        if let Some(Dialog::Variables(dialog)) = self.dialog.as_mut() {
-            dialog.focus = focus;
+    pub(crate) fn focus_variables_page(&mut self, focus: VariablePageFocus) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.focus = focus;
         }
     }
 
-    pub(crate) fn click_dialog_button(&mut self, focus: DialogFocus) {
-        if self.dialog.as_ref().is_some_and(Dialog::is_editing) {
-            self.handle_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    pub(crate) fn click_variables_page_button(&mut self, focus: VariablePageFocus) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.cancel_editor();
         }
-        self.focus_dialog(focus);
-        self.handle_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        self.focus_variables_page(focus);
+        self.handle_variables_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    pub(crate) fn move_variable_selection(&mut self, direction: isize) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.move_selection(direction);
+        }
+    }
+
+    pub(crate) fn cancel_variable_edit(&mut self) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.cancel_editor();
+        }
     }
 
     pub(crate) fn request_status(&self, request_id: &str) -> RequestStatus {
@@ -1496,144 +1163,20 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub(crate) fn current_response(&self) -> Option<&ResponseData> {
-        self.workspace_state
-            .current()
-            .and_then(|session| session.runtime.response())
-    }
-
-    pub(crate) fn current_response_document(&self) -> Option<&ResponseDocument> {
-        self.workspace_state
-            .current()
-            .and_then(|session| session.runtime.document())
-    }
-
-    pub(crate) fn current_error(&self) -> Option<&str> {
-        self.workspace_state
-            .current()
-            .and_then(|session| session.runtime.error())
-    }
-
-    pub(crate) fn poll_messages(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok(RequestResult {
-            request_id,
-            operation_id,
-            result,
-            extracted_variables,
-            extract_failures,
-        }) = self.request_executor.try_recv()
-        {
-            tracing::debug!(
-                request_id = %request_id,
-                operation_id = %operation_id,
-                "收到后台请求结果"
-            );
-            let is_current = self
-                .current_request()
-                .is_some_and(|request| request.id == request_id);
-            let text = self.text();
-            let Some(active_operation_id) = self
-                .workspace_state
-                .request(&request_id)
-                .and_then(|session| session.runtime.active_operation_id().map(ToOwned::to_owned))
-            else {
-                tracing::debug!(
-                    request_id = %request_id,
-                    operation_id = %operation_id,
-                    "收到未知接口的后台请求结果"
-                );
-                continue;
-            };
-            if active_operation_id != operation_id {
-                tracing::debug!(
-                    request_id = %request_id,
-                    operation_id = %operation_id,
-                    active_operation_id = ?active_operation_id,
-                    "忽略过期的后台请求结果"
-                );
-                continue;
-            }
-            changed = true;
-            let status_message = match result {
-                Ok(completed) => {
-                    let response = completed.response;
-                    let document = completed.document;
-                    let status = response.status;
-                    let elapsed = response.elapsed_ms;
-                    let request_status = RequestStatus::from_http_status(status);
-                    tracing::debug!(
-                        request_id = %request_id,
-                        operation_id = %operation_id,
-                        status,
-                        request_status = ?request_status,
-                        elapsed_ms = elapsed,
-                        header_count = response.headers.len(),
-                        body_bytes = response.body_bytes.len(),
-                        "后台请求成功"
-                    );
-                    for (variable, value) in extracted_variables {
-                        self.workspace_state.variables.insert(variable, value);
-                    }
-                    let complete = text.request_complete(status, elapsed);
-                    let message = if extract_failures == 0 {
-                        complete
-                    } else {
-                        format!(
-                            "{complete} · {}",
-                            text.response_extract_failures(extract_failures)
-                        )
-                    };
-                    let Some(session) = self.workspace_state.request_mut(&request_id) else {
-                        continue;
-                    };
-                    session.runtime.complete_success(
-                        request_status,
-                        response,
-                        document,
-                        message.clone(),
-                    );
-                    is_current.then_some(message)
-                }
-                Err(error) => {
-                    let request_status = RequestStatus::from_error(&error);
-                    let error_message = error.to_string();
-                    tracing::error!(
-                        request_id = %request_id,
-                        operation_id = %operation_id,
-                        request_status = ?request_status,
-                        error = %error_message,
-                        "后台请求失败"
-                    );
-                    let message = request_status.error_message(text, &error_message);
-                    let Some(session) = self.workspace_state.request_mut(&request_id) else {
-                        continue;
-                    };
-                    session.runtime.complete_failure(
-                        request_status,
-                        error_message,
-                        message.clone(),
-                    );
-                    is_current.then_some(message)
-                }
-            };
-            if let Some(status) = status_message {
-                self.response_state.scroll.reset();
-                self.status = status;
-            }
-        }
-        changed
-    }
-
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         tracing::trace!(
             key_kind = key_kind(key.code),
             modifiers = ?key.modifiers,
-            focus = ?self.focus,
+            focus = ?self.view.focus,
             "处理键盘操作"
         );
 
-        if self.prompt.is_some() {
+        if key.code == KeyCode::F(5) && self.debug_mode {
+            self.load_next_theme();
+            return;
+        }
+
+        if self.view.prompt.is_some() {
             self.handle_prompt_key(key);
             return;
         }
@@ -1649,15 +1192,21 @@ impl App {
             return;
         }
 
-        if self.dialog.is_some() {
+        if self.view.variables.is_some() {
+            self.handle_variables_key(key);
+            return;
+        }
+
+        if self.view.dialog.is_some() {
             let inline_table = self
+                .view
                 .dialog
                 .as_ref()
                 .is_some_and(|dialog| dialog.preview_tab().is_some());
-            let editing_inline_cell = self.dialog.as_ref().is_some_and(Dialog::is_editing);
+            let editing_inline_cell = self.view.dialog.as_ref().is_some_and(Dialog::is_editing);
             let handle_as_global = inline_table
                 && !editing_inline_cell
-                && (self.focus != Focus::Preview
+                && (self.view.focus != Focus::Preview
                     || matches!(
                         key.code,
                         KeyCode::Tab
@@ -1670,20 +1219,12 @@ impl App {
             }
         }
 
-        if self.preview_state.editor.is_some()
-            || self.preview_state.file_editor.is_some()
-            || self.preview_state.variable_editor.is_some()
-            || self.preview_state.url_editor.is_some()
-        {
-            if self.preview_state.url_editor.is_some() {
-                self.handle_url_editor_key(key);
-            } else {
-                self.handle_body_editor_key(key);
-            }
+        if self.view.preview.editor.is_some() || self.view.preview.file_editor.is_some() {
+            self.handle_body_editor_key(key);
             return;
         }
 
-        if self.response_state.menu_open {
+        if self.view.response.menu_selection.is_some() {
             match key.code {
                 KeyCode::Esc => self.close_response_menu(),
                 KeyCode::Char('q') if self.response_zoomed() => self.restore_standard_view(),
@@ -1705,16 +1246,17 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                self.focus = self.next_focus(key.modifiers.contains(KeyModifiers::SHIFT));
-                tracing::debug!(focus = ?self.focus, "切换 TUI 区域焦点");
+                self.view.focus = self.next_focus(key.modifiers.contains(KeyModifiers::SHIFT));
+                tracing::debug!(focus = ?self.view.focus, "切换 TUI 区域焦点");
             }
+            KeyCode::BackTab => self.view.focus = self.next_focus(true),
             KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
             KeyCode::Char('w') => self.open_configurations(),
             KeyCode::Char('v') => self.open_variables(),
             KeyCode::Char('o') => self.open_response_menu(),
-            KeyCode::Delete if self.focus == Focus::Requests => self.request_delete(),
-            KeyCode::Left if self.focus == Focus::Preview => self.move_preview_tab(-1),
-            KeyCode::Right if self.focus == Focus::Preview => self.move_preview_tab(1),
+            KeyCode::Delete if self.view.focus == Focus::Requests => self.request_delete(),
+            KeyCode::Left if self.view.focus == Focus::Preview => self.move_preview_tab(-1),
+            KeyCode::Right if self.view.focus == Focus::Preview => self.move_preview_tab(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_focused(1),
             KeyCode::Enter | KeyCode::Char(' ') => self.handle_enter(),
@@ -1722,14 +1264,32 @@ impl App {
         }
     }
 
+    fn load_next_theme(&mut self) {
+        let current = self.global_config.theme.name.clone();
+        match crate::settings::next_theme(&current) {
+            Ok(theme) => {
+                let name = theme.name.clone();
+                self.global_config.theme = theme;
+                self.view.notice = Some(Feedback::Info(self.text().theme_loaded(&name)));
+                tracing::debug!(previous_theme = %current, theme = %name, "热加载内置主题");
+            }
+            Err(error) => {
+                self.view.notice = Some(Feedback::Error(
+                    self.text().theme_load_failed(&error.to_string()),
+                ));
+                tracing::error!(error = ?error, "热加载内置主题失败");
+            }
+        }
+    }
+
     fn handle_enter(&mut self) {
-        tracing::debug!(focus = ?self.focus, "处理 Enter 操作");
-        match self.focus {
+        tracing::debug!(focus = ?self.view.focus, "处理 Enter 操作");
+        match self.view.focus {
             Focus::Header => {}
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
-                let action = PreviewAction::Edit(self.preview_state.active_tab);
+                let action = PreviewAction::Edit(self.view.preview.active_tab);
                 self.handle_preview_action(action);
             }
             Focus::WorkspaceButton => self.open_configurations(),
@@ -1741,11 +1301,11 @@ impl App {
     }
 
     fn move_focused(&mut self, direction: isize) {
-        match self.focus {
+        match self.view.focus {
             Focus::Header => {}
             Focus::Requests => self.move_request(direction),
             Focus::Preview => {
-                self.preview_state.scroll.move_by(direction);
+                self.view.preview.scroll.move_by(direction);
             }
             Focus::Response => self.scroll_response(direction),
             Focus::WorkspaceButton
@@ -1771,14 +1331,14 @@ impl App {
             return;
         }
         let tab = match direction {
-            value if value < 0 => self.preview_state.active_tab.previous(),
-            value if value > 0 => self.preview_state.active_tab.next(),
-            _ => self.preview_state.active_tab,
+            value if value < 0 => self.view.preview.active_tab.previous(),
+            value if value > 0 => self.view.preview.active_tab.next(),
+            _ => self.view.preview.active_tab,
         };
         self.activate_preview_tab(tab);
-        self.preview_state.scroll.reset();
+        self.view.preview.scroll.reset();
         tracing::debug!(
-            tab = ?self.preview_state.active_tab,
+            tab = ?self.view.preview.active_tab,
             direction,
             "切换请求预览标签"
         );
@@ -1792,12 +1352,15 @@ impl App {
             return;
         }
         if self.editing_preview_tab().is_some() {
+            if let Some(dialog) = self.view.dialog.as_mut() {
+                dialog.cancel_editor();
+            }
             if self.sync_dialog_draft() {
                 self.mark_current_dirty();
             }
-            self.dialog = None;
+            self.view.dialog = None;
         }
-        self.preview_state.active_tab = tab;
+        self.view.preview.active_tab = tab;
         match tab {
             PreviewTab::Body => {}
             PreviewTab::Params => self.open_params(),
@@ -1807,10 +1370,13 @@ impl App {
 
     pub(crate) fn add_preview_row(&mut self, tab: PreviewTab) {
         self.activate_preview_tab(tab);
+        if let Some(dialog) = self.view.dialog.as_mut() {
+            dialog.cancel_editor();
+        }
         if self.sync_dialog_draft() {
             self.mark_current_dirty();
         }
-        match self.dialog.as_mut() {
+        match self.view.dialog.as_mut() {
             Some(Dialog::Headers(dialog)) if tab == PreviewTab::Headers => dialog.add_row(),
             Some(Dialog::Params(dialog)) if tab == PreviewTab::Params => dialog.add_row(),
             _ => return,
@@ -1819,97 +1385,15 @@ impl App {
         tracing::debug!(tab = ?tab, "通过请求标签新增字段");
     }
 
-    pub(crate) fn scroll_response(&mut self, direction: isize) {
-        let Some(max_offset) = self.current_response_document().map(|document| {
-            1usize
-                .saturating_add(document.line_count())
-                .saturating_add(usize::from(document.limited()))
-                .saturating_sub(1)
-        }) else {
-            return;
-        };
-        if self.response_state.scroll.move_by(direction, max_offset) {
-            tracing::trace!(
-                offset = self.response_state.scroll.offset(),
-                direction,
-                "滚动响应内容"
-            );
-        }
-    }
-
-    pub(crate) fn open_response_menu(&mut self) {
-        self.commit_active_editors();
-        if self.editing_preview_tab().is_some() {
-            self.dialog = None;
-        }
-        self.response_state.menu_open = true;
-        self.response_state.menu_selected = 0;
-        self.focus = Focus::ResponseActions;
-    }
-
-    pub(crate) fn close_response_menu(&mut self) {
-        self.response_state.menu_open = false;
-    }
-
-    pub(crate) fn move_response_menu_selection(&mut self, direction: isize) {
-        let action_count = ResponseMenuAction::all().len();
-        self.response_state.menu_selected = (self.response_state.menu_selected as isize + direction)
-            .rem_euclid(action_count as isize) as usize;
-    }
-
-    pub(crate) fn choose_response_action(&mut self, index: usize) {
-        self.response_state.menu_selected = index;
-        self.activate_selected_response_action();
-    }
-
-    pub(crate) fn activate_selected_response_action(&mut self) {
-        let action = ResponseMenuAction::from_index(self.response_state.menu_selected);
-        self.close_response_menu();
-        if let Some(action) = action {
-            self.activate_response_action(action);
-        }
-    }
-
-    fn activate_response_action(&mut self, action: ResponseMenuAction) {
-        match action {
-            ResponseMenuAction::Download => self.download_current_response(),
-            ResponseMenuAction::Copy => self.copy_current_response(),
-        }
-    }
-
-    pub(crate) fn response_zoomed(&self) -> bool {
-        matches!(self.view_mode, ViewMode::ResponseZoom { .. })
-    }
-
-    pub(crate) fn toggle_response_zoom(&mut self) {
-        if self.response_zoomed() {
-            self.restore_standard_view();
-        } else {
-            self.view_mode = ViewMode::ResponseZoom {
-                return_focus: self.focus,
-            };
-            self.focus = Focus::ResponseZoom;
-        }
-    }
-
-    fn restore_standard_view(&mut self) {
-        let ViewMode::ResponseZoom { return_focus } = self.view_mode else {
-            return;
-        };
-        self.view_mode = ViewMode::Standard;
-        self.focus = return_focus;
-        self.close_response_menu();
-    }
-
     fn next_focus(&self, reverse: bool) -> Focus {
         if !self.response_zoomed() {
             return if reverse {
-                self.focus.previous()
+                self.view.focus.previous()
             } else {
-                self.focus.next()
+                self.view.focus.next()
             };
         }
-        match (self.focus, reverse) {
+        match (self.view.focus, reverse) {
             (Focus::Header, true) => Focus::Response,
             (Focus::Header, false) => Focus::SendButton,
             (Focus::SendButton, true) => Focus::Header,
@@ -1922,102 +1406,6 @@ impl App {
             (Focus::Response, false) => Focus::Header,
             (_, _) => Focus::Response,
         }
-    }
-
-    fn copy_current_response(&mut self) {
-        let Some(body) = self
-            .current_response()
-            .map(|response| String::from_utf8_lossy(&response.body_bytes).into_owned())
-        else {
-            self.status = self.text().response_action_no_response().to_string();
-            return;
-        };
-        match self.clipboard.copy_text(&body) {
-            Ok(()) => self.status = self.text().response_copied().to_string(),
-            Err(error) => self.status = self.text().response_copy_failed(&error),
-        }
-    }
-
-    fn download_current_response(&mut self) {
-        let Some(response) = self.current_response() else {
-            self.status = self.text().response_action_no_response().to_string();
-            return;
-        };
-        let body = response.body_bytes.clone();
-        let headers = response.headers.clone();
-        let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
-            self.status = self.text().response_action_no_response().to_string();
-            return;
-        };
-        let directory = self.config.download_directory.clone();
-        match crate::response_output::save_response(&body, &headers, &request_id, &directory) {
-            Ok(path) => self.status = self.text().response_downloaded(&path.display().to_string()),
-            Err(error) => self.status = self.text().response_download_failed(&error),
-        }
-    }
-
-    pub(crate) fn send_current_request(&mut self) {
-        let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
-            self.status = self.text().request_url_required().to_string();
-            return;
-        };
-        tracing::debug!(request_id = %request_id, "触发发送当前请求");
-        self.commit_active_editors();
-        let Some(effective_request) = self.current_effective_request() else {
-            self.status = self.text().request_url_required().to_string();
-            return;
-        };
-        if effective_request.url.trim().is_empty() {
-            self.status = self.text().request_url_required().to_string();
-            return;
-        }
-        let timeout = effective_request.timeout_seconds;
-        let effective_method = effective_request.method;
-        if !supports_method(&effective_method) {
-            self.status = self.text().unsupported_method(&effective_method);
-            tracing::debug!(
-                method = %effective_method,
-                "忽略不支持的 HTTP 方法"
-            );
-            return;
-        }
-        if self.request_status(&request_id) == RequestStatus::Sending {
-            tracing::debug!("已有请求执行中，忽略重复发送");
-            self.status = self.text().request_in_progress().to_string();
-            return;
-        }
-
-        let Some(resolved) = self.current_resolved_request() else {
-            self.status = self.text().request_url_required().to_string();
-            return;
-        };
-        let operation = self.request_executor.prepare(&request_id);
-        let operation_id = operation.operation_id.clone();
-        let display_url = resolved.url.clone();
-        let file_directory = self.config.file_directory.clone();
-        tracing::debug!(
-            request_id = %request_id,
-            operation_id = %operation_id,
-            method = %resolved.method,
-            timeout_seconds = timeout,
-            file_directory = %file_directory.display(),
-            "开始异步发送请求"
-        );
-        let message = self.text().request_started(&resolved.method, &display_url);
-        if let Some(session) = self.workspace_state.request_mut(&request_id) {
-            session.runtime.start(operation_id, message.clone());
-        } else {
-            self.status = self.text().request_url_required().to_string();
-            return;
-        }
-        self.status = message;
-        self.request_executor.start(
-            operation,
-            resolved,
-            timeout,
-            file_directory,
-            self.global_config.max_response_display_bytes,
-        );
     }
 }
 

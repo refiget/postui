@@ -1,0 +1,155 @@
+use crate::{
+    app::{self, App},
+    ui,
+};
+use anyhow::{Context, Result};
+use crossterm::{
+    cursor::Show,
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    execute,
+    style::force_color_output,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
+
+pub(crate) fn run_app(app: &mut App) -> Result<()> {
+    force_color_output(true);
+    let terminal_session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend).context("创建终端失败")?;
+    tracing::debug!("终端界面已初始化");
+
+    let result = run(&mut terminal, app);
+    if let Err(error) = &result {
+        tracing::error!(error = ?error, "TUI 事件循环异常退出");
+    }
+
+    drop(terminal);
+    drop(terminal_session);
+    tracing::debug!("终端界面已恢复");
+    result
+}
+
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("启用终端 raw 模式失败")?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+            disable_raw_mode().ok();
+            return Err(error).context("初始化终端界面失败");
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        disable_raw_mode().ok();
+        execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        )
+        .ok();
+    }
+}
+
+fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+    const MAX_EVENT_BATCH: usize = 32;
+    const ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
+
+    tracing::debug!("进入 TUI 事件循环");
+    let mut redraw = true;
+    let mut next_animation = Instant::now();
+    while !app.should_quit {
+        redraw |= app.poll_request_results();
+        redraw |= app.poll_response_actions();
+
+        let now = Instant::now();
+        let animating = app.is_animating();
+        if animating && now >= next_animation {
+            app.advance_animation();
+            next_animation = now + ANIMATION_INTERVAL;
+            redraw = true;
+        } else if !animating {
+            next_animation = now;
+        }
+
+        if redraw {
+            terminal.draw(|frame| ui::draw(frame, app))?;
+            redraw = false;
+        }
+
+        let poll_timeout = if animating {
+            next_animation
+                .saturating_duration_since(Instant::now())
+                .min(ANIMATION_INTERVAL)
+        } else {
+            ANIMATION_INTERVAL
+        };
+        if event::poll(poll_timeout)? {
+            for _ in 0..MAX_EVENT_BATCH {
+                redraw |= handle_terminal_event(terminal, app, event::read()?)?;
+                if app.should_quit || !event::poll(Duration::ZERO)? {
+                    break;
+                }
+            }
+        }
+    }
+    tracing::debug!("TUI 事件循环结束");
+    Ok(())
+}
+
+fn handle_terminal_event(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    event: Event,
+) -> Result<bool> {
+    let redraw = match event {
+        Event::Key(key) => {
+            app.view.response.scroll.drag_anchor = None;
+            tracing::trace!(
+                key_kind = app::key_kind(key.code),
+                modifiers = ?key.modifiers,
+                "收到键盘事件"
+            );
+            app.handle_key(key);
+            true
+        }
+        Event::Mouse(mouse) => {
+            tracing::trace!(
+                kind = ?mouse.kind,
+                column = mouse.column,
+                row = mouse.row,
+                "收到鼠标事件"
+            );
+            let size = terminal.size()?;
+            let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+            let redraw = matches!(
+                mouse.kind,
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                    | crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left)
+                    | crossterm::event::MouseEventKind::ScrollUp
+                    | crossterm::event::MouseEventKind::ScrollDown
+            ) || matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
+                && (app.view.response.menu_selection.is_some()
+                    || matches!(app.view.dialog, Some(app::Dialog::Configurations(_))));
+            ui::handle_mouse(app, mouse, area);
+            redraw
+        }
+        Event::Resize(width, height) => {
+            app.view.response.scroll.drag_anchor = None;
+            tracing::debug!(width, height, "终端尺寸变化");
+            true
+        }
+        _ => false,
+    };
+    Ok(redraw)
+}

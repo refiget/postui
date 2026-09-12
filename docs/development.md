@@ -22,6 +22,14 @@ python3 -m venv .venv
 
 在 `mock/` 目录启动 `postui`，手工检查编辑、发送和响应展示。示例配置中的 token、Cookie 和接口地址均为虚构值，不要替换成个人项目凭据后提交。
 
+配置使用 `.postui/scenarios/dev.yaml` 和 `test.yaml`，项目默认场景为 `test`。在仓库根目录也可以显式选择场景：
+
+```bash
+cargo run -- mock --scenario dev
+```
+
+`dev` 保留创建任务请求的专属 Header 覆盖；`test` 使用公共请求定义。请求方法省略时为 GET，上传文件中未设置的可选属性不必写 `null`。
+
 超长响应可以直接使用示例请求“10 MiB 响应稳定性”。它默认请求 10 MiB 的分块 JSON，修改请求参数即可调整规模或切换为纯文本：
 
 ```text
@@ -89,6 +97,8 @@ cargo run -- --debug --log-file ./logs/postui-debug.log
 ```
 
 日志文件默认位于工作区的 `.postui/logs/postui-debug.log`。日志字段限制为 64 KiB，文件达到 8 MiB 后轮转。敏感请求头、查询参数、表单字段和 JSON 值会脱敏，剪贴板内容不会写入日志。
+
+Debug 模式中按 `F5` 会按内置主题顺序即时切换，界面顶栏显示当前主题。该操作只修改运行时状态，不写入个人配置，录制演示后重新启动即可恢复配置主题。
 
 ## 发布前检查
 

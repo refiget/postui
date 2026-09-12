@@ -5,15 +5,26 @@ use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TextEditor {
+pub(crate) struct EditInput {
     value: String,
     cursor: usize,
+    mode: EditMode,
 }
 
-impl TextEditor {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditMode {
+    Replace,
+    Insert,
+}
+
+impl EditInput {
     pub(crate) fn new(value: String) -> Self {
         let cursor = value.len();
-        Self { value, cursor }
+        Self {
+            value,
+            cursor,
+            mode: EditMode::Replace,
+        }
     }
 
     pub(crate) fn value(&self) -> &str {
@@ -28,7 +39,16 @@ impl TextEditor {
         terminal_width(&self.value[..self.cursor])
     }
 
-    pub(crate) fn into_value(self) -> String {
+    pub(crate) fn mode(&self) -> EditMode {
+        self.mode
+    }
+
+    pub(crate) fn place_cursor(&mut self, column: usize) {
+        self.cursor = text_position(&self.value, 0, column);
+        self.mode = EditMode::Insert;
+    }
+
+    pub(crate) fn confirmed_value(self) -> String {
         self.value
     }
 
@@ -36,11 +56,19 @@ impl TextEditor {
         if character.is_control() {
             return;
         }
+        if self.mode == EditMode::Replace {
+            self.value.clear();
+            self.cursor = 0;
+            self.mode = EditMode::Insert;
+        }
         self.value.insert(self.cursor, character);
         self.cursor += character.len_utf8();
     }
 
     fn backspace(&mut self) {
+        if self.clear_selection() {
+            return;
+        }
         let Some(previous) = previous_grapheme(&self.value, self.cursor) else {
             return;
         };
@@ -49,6 +77,9 @@ impl TextEditor {
     }
 
     fn delete(&mut self) {
+        if self.clear_selection() {
+            return;
+        }
         let Some(next) = next_grapheme(&self.value, self.cursor) else {
             return;
         };
@@ -56,32 +87,58 @@ impl TextEditor {
     }
 
     fn move_left(&mut self) {
+        if self.mode == EditMode::Replace {
+            self.cursor = 0;
+            self.mode = EditMode::Insert;
+            return;
+        }
         if let Some(previous) = previous_grapheme(&self.value, self.cursor) {
             self.cursor = previous;
         }
     }
 
     fn move_right(&mut self) {
+        if self.mode == EditMode::Replace {
+            self.cursor = self.value.len();
+            self.mode = EditMode::Insert;
+            return;
+        }
         if let Some(next) = next_grapheme(&self.value, self.cursor) {
             self.cursor = next;
         }
     }
 
     fn move_word_left(&mut self) {
+        if self.mode == EditMode::Replace {
+            self.cursor = 0;
+            self.mode = EditMode::Insert;
+            return;
+        }
         self.cursor = previous_word(&self.value, self.cursor);
     }
 
     fn move_word_right(&mut self) {
+        if self.mode == EditMode::Replace {
+            self.cursor = self.value.len();
+            self.mode = EditMode::Insert;
+            return;
+        }
         self.cursor = next_word(&self.value, self.cursor);
     }
 
     fn delete_word_left(&mut self) {
+        if self.clear_selection() {
+            return;
+        }
         let previous = previous_word(&self.value, self.cursor);
         self.value.drain(previous..self.cursor);
         self.cursor = previous;
     }
 
     fn delete_word_right(&mut self) {
+        if self.clear_selection() {
+            return;
+        }
         let next = next_word(&self.value, self.cursor);
         self.value.drain(self.cursor..next);
     }
@@ -91,15 +148,30 @@ impl TextEditor {
         self.cursor = 0;
     }
 
+    fn clear_selection(&mut self) -> bool {
+        if self.mode != EditMode::Replace {
+            return false;
+        }
+        self.delete_line();
+        self.mode = EditMode::Insert;
+        true
+    }
+
     fn delete_to_end(&mut self) {
+        if self.clear_selection() {
+            return;
+        }
         self.value.truncate(self.cursor);
     }
 
-    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> EditorAction {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> EditAction {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('a') => self.cursor = 0,
-                KeyCode::Char('e') => self.cursor = self.value.len(),
+                KeyCode::Char('a') => self.mode = EditMode::Replace,
+                KeyCode::Char('e') => {
+                    self.cursor = self.value.len();
+                    self.mode = EditMode::Insert;
+                }
                 KeyCode::Char('u') => self.delete_line(),
                 KeyCode::Left => self.move_word_left(),
                 KeyCode::Right => self.move_word_right(),
@@ -107,7 +179,7 @@ impl TextEditor {
                 KeyCode::Char('k') => self.delete_to_end(),
                 _ => {}
             }
-            return EditorAction::Continue;
+            return EditAction::Continue;
         }
 
         match key.code {
@@ -123,13 +195,19 @@ impl TextEditor {
             KeyCode::Delete => self.delete(),
             KeyCode::Left => self.move_left(),
             KeyCode::Right => self.move_right(),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.value.len(),
-            KeyCode::Enter | KeyCode::Tab => return EditorAction::Commit,
-            KeyCode::Esc => return EditorAction::Cancel,
+            KeyCode::Home => {
+                self.cursor = 0;
+                self.mode = EditMode::Insert;
+            }
+            KeyCode::End => {
+                self.cursor = self.value.len();
+                self.mode = EditMode::Insert;
+            }
+            KeyCode::Enter | KeyCode::Tab => return EditAction::Confirm,
+            KeyCode::Esc => return EditAction::Cancel,
             _ => {}
         }
-        EditorAction::Continue
+        EditAction::Continue
     }
 }
 
@@ -173,9 +251,9 @@ fn next_word(value: &str, cursor: usize) -> usize {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EditorAction {
+pub(crate) enum EditAction {
     Continue,
-    Commit,
+    Confirm,
     Cancel,
 }
 
@@ -192,7 +270,7 @@ pub(crate) struct BodyValueEditor {
     pub(crate) document: String,
     pub(crate) span: Range<usize>,
     pub(crate) kind: JsonScalarKind,
-    pub(crate) input: TextEditor,
+    pub(crate) input: EditInput,
 }
 
 impl BodyValueEditor {

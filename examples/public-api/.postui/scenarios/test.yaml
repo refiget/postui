@@ -1,0 +1,10 @@
+variables:
+  api_base: https://postman-echo.com
+  scenario: test
+
+overrides:
+  02-json-echo.yaml:
+    headers:
+      Content-Type: application/json
+      X-PostUI-Scenario: "{{scenario}}"
+      X-PostUI-Mode: shared-request

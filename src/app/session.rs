@@ -10,6 +10,7 @@ use crate::{
     response_document::ResponseDocument,
 };
 
+use super::Feedback;
 use super::dialog::{HeaderRow, HeaderSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,14 +49,6 @@ impl RequestStatus {
             Self::Timeout => text.request_status_timeout(),
         }
     }
-
-    pub(crate) fn error_message(self, text: UiText, error: &str) -> String {
-        if self == Self::Timeout {
-            text.request_timeout(error)
-        } else {
-            text.request_failed(error)
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -64,7 +57,7 @@ pub(super) struct RequestRuntimeState {
     response: Option<ResponseData>,
     document: Option<ResponseDocument>,
     error: Option<String>,
-    message: Option<String>,
+    feedback: Option<Feedback>,
     operation_id: Option<String>,
 }
 
@@ -89,46 +82,46 @@ impl RequestRuntimeState {
         self.operation_id.as_deref()
     }
 
-    pub(super) fn message(&self) -> Option<&str> {
-        self.message.as_deref()
+    pub(super) fn feedback(&self) -> Option<&Feedback> {
+        self.feedback.as_ref()
     }
 
-    pub(super) fn start(&mut self, operation_id: String, message: String) {
+    pub(super) fn start(&mut self, operation_id: String, feedback: Feedback) {
         self.status = RequestStatus::Sending;
         self.response = None;
         self.document = None;
         self.error = None;
         self.operation_id = Some(operation_id);
-        self.message = Some(message);
+        self.feedback = Some(feedback);
     }
 
-    pub(super) fn complete_success(
+    pub(super) fn receive_response(
         &mut self,
         status: RequestStatus,
         response: ResponseData,
         document: ResponseDocument,
-        message: String,
+        feedback: Feedback,
     ) {
         self.operation_id = None;
         self.status = status;
         self.response = Some(response);
         self.document = Some(document);
         self.error = None;
-        self.message = Some(message);
+        self.feedback = Some(feedback);
     }
 
     pub(super) fn complete_failure(
         &mut self,
         status: RequestStatus,
         error: String,
-        message: String,
+        feedback: Feedback,
     ) {
         self.operation_id = None;
         self.status = status;
         self.response = None;
         self.document = None;
         self.error = Some(error);
-        self.message = Some(message);
+        self.feedback = Some(feedback);
     }
 
     pub(super) fn reset(&mut self) {
@@ -213,7 +206,10 @@ impl RequestSession {
             .request_overrides
             .get(&self.source.id)
             .cloned();
-        let existing = previous.clone().unwrap_or_default();
+        let existing_extracts = previous
+            .as_ref()
+            .and_then(|request_override| request_override.extracts.clone());
+        let headers = draft_headers(&self.draft);
         let next = RequestOverride {
             method: (self.draft.method != base.method).then(|| self.draft.method.clone()),
             url: self
@@ -224,15 +220,14 @@ impl RequestSession {
                 .map(str::to_string),
             timeout_seconds: (self.draft.timeout_seconds != base.timeout_seconds)
                 .then_some(self.draft.timeout_seconds),
-            headers: (draft_headers(&self.draft) != base.headers)
-                .then(|| draft_headers(&self.draft)),
+            headers: (headers != base.headers).then_some(headers),
             query_parts: (self.draft.query_parts != base.query_parts)
                 .then(|| self.draft.query_parts.clone()),
             body_parts: (self.draft.body_parts != base.body_parts)
                 .then(|| self.draft.body_parts.clone()),
             form: (self.draft.form != base.form).then(|| self.draft.form.clone()),
             files: (self.draft.files != base.files).then(|| self.draft.files.clone()),
-            extracts: existing.extracts,
+            extracts: existing_extracts,
         };
         let next = (!next.is_empty()).then_some(next);
         if previous == next {
@@ -325,13 +320,13 @@ impl WorkspaceSession {
             return false;
         }
         self.commit_configuration(config);
-        let configuration_config = config
+        let target_configuration = config
             .configurations
             .get(configuration)
             .expect("已验证配置存在")
             .clone();
         for session in &mut self.requests {
-            session.activate_configuration(&configuration_config);
+            session.activate_configuration(&target_configuration);
         }
         self.active_configuration = configuration.to_string();
         self.variables = self

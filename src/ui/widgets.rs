@@ -125,24 +125,6 @@ pub(super) fn request_status_symbol(status: RequestStatus, animation_frame: usiz
     }
 }
 
-pub(super) fn request_status_spans(
-    status: RequestStatus,
-    text: crate::i18n::UiText,
-    theme: &crate::settings::UiTheme,
-    animation_frame: usize,
-) -> Vec<Span<'static>> {
-    vec![
-        Span::styled(
-            format!("{} ", request_status_symbol(status, animation_frame)),
-            request_status_style(status, theme),
-        ),
-        Span::styled(
-            status.label(text).to_string(),
-            Style::default().fg(theme.muted),
-        ),
-    ]
-}
-
 pub(super) fn label_style(theme: &crate::settings::UiTheme) -> Style {
     Style::default().fg(theme.muted)
 }
@@ -159,19 +141,6 @@ pub(super) fn panel_block(
     theme: &crate::settings::UiTheme,
 ) -> Block<'static> {
     let block = bordered_block(title, theme, border::ROUNDED);
-    if area.width >= 2 && area.height >= 2 {
-        block
-    } else {
-        Block::default()
-    }
-}
-
-pub(super) fn dialog_block(
-    title: impl Into<Line<'static>>,
-    area: Rect,
-    theme: &crate::settings::UiTheme,
-) -> Block<'static> {
-    let block = bordered_block(title, theme, border::DOUBLE);
     if area.width >= 2 && area.height >= 2 {
         block
     } else {
@@ -235,38 +204,6 @@ pub(super) fn draw_primary_button(
             theme.muted,
         ),
     );
-}
-
-pub(super) fn draw_secondary_button(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-) {
-    let label_width = crate::editor::terminal_width(label);
-    let block = area.height >= 3 && usize::from(area.width) >= label_width.saturating_add(4);
-    let style = ButtonPalette::new(
-        theme.text,
-        theme.selection,
-        theme.text,
-        theme.surface,
-        theme.muted,
-    )
-    .style(true, focused);
-    if block {
-        let button = Block::default().borders(Borders::ALL).border_style(style);
-        let inner = button.inner(area);
-        frame.render_widget(button, area);
-        frame.render_widget(
-            Paragraph::new(label)
-                .style(style)
-                .alignment(Alignment::Center),
-            inner,
-        );
-    } else {
-        render_button_line(frame, area, label, style);
-    }
 }
 
 fn draw_single_line_button(
@@ -356,9 +293,12 @@ pub(super) fn truncate(value: &str, width: usize) -> String {
     result
 }
 
-pub(super) fn editor_view(editor: &crate::editor::TextEditor, width: usize) -> String {
+pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> String {
     if width == 0 {
         return String::new();
+    }
+    if editor.mode() == crate::editor::EditMode::Replace {
+        return truncate(editor.value(), width);
     }
     let cursor = editor.cursor_byte();
     let before = &editor.value()[..cursor];
@@ -393,4 +333,23 @@ pub(super) fn editor_view(editor: &crate::editor::TextEditor, width: usize) -> S
         used = used.saturating_add(character_width);
     }
     result
+}
+
+pub(super) fn edit_input_style(
+    editor: &crate::editor::EditInput,
+    theme: &crate::settings::UiTheme,
+    foreground: Color,
+    background: Color,
+) -> Style {
+    edit_input_text_style(foreground).bg(if editor.mode() == crate::editor::EditMode::Replace {
+        theme.selection
+    } else {
+        background
+    })
+}
+
+pub(super) fn edit_input_text_style(foreground: Color) -> Style {
+    Style::default()
+        .fg(foreground)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }

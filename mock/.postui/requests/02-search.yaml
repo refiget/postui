@@ -1,10 +1,8 @@
 name: 查询参数
 description: 参数会在变量展开后编码查询值。
-method: GET
 url: http://{{host}}/v1/search
 headers:
-  - name: X-Debug-Token
-    value: "{{token}}"
+  X-Debug-Token: "{{token}}"
 params:
   - name: q
     value: "{{search_term}}"

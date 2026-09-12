@@ -5,5 +5,3 @@ url: http://{{host}}/v1/upload
 files:
   - field: file
     path: "{{missing_file}}"
-    filename: null
-    content_type: null

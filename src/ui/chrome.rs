@@ -1,5 +1,60 @@
 use super::*;
 
+pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = &app.global_config.theme;
+    let text = app.text();
+    let feedback = app.current_feedback();
+    let (symbol, color) = match feedback {
+        Some(crate::app::Feedback::Info(_)) => ("◆", theme.primary),
+        Some(crate::app::Feedback::Success(_)) => ("✓", theme.success),
+        Some(crate::app::Feedback::Warning(_)) => ("!", theme.warning),
+        Some(crate::app::Feedback::Error(_)) => ("×", theme.error),
+        _ => ("›", theme.muted),
+    };
+    let owner = if app.view.variables.is_some() {
+        text.variables()
+    } else if app.view.notice.is_some() {
+        text.operation_feedback()
+    } else {
+        app.current_request()
+            .map_or(app.config.name.as_str(), |request| request.name.as_str())
+    };
+    let message = feedback.map_or(text.ready(), |feedback| feedback.message());
+    let hint = if app.view.prompt.is_some() {
+        text.confirmation_hint()
+    } else if app.is_editing() {
+        text.editing_hint()
+    } else if app.view.variables.is_some() {
+        text.variables_page_hint()
+    } else if app.view.dialog.is_some() || app.view.response.menu_selection.is_some() {
+        text.menu_hint()
+    } else if app.response_zoomed() {
+        text.response_hint()
+    } else if app.debug_mode {
+        text.debug_navigation_hint()
+    } else {
+        text.navigation_hint()
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(format!(" {symbol} "), Style::default().fg(color)),
+                Span::styled(
+                    format!("{} · ", truncate(owner, 20)),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::styled(message, Style::default().fg(color)),
+            ]),
+            Line::from(Span::styled(
+                format!(" {hint}"),
+                Style::default().fg(theme.muted),
+            )),
+        ])
+        .style(Style::default().bg(theme.background)),
+        area,
+    );
+}
+
 pub(super) fn draw_header(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -8,7 +63,7 @@ pub(super) fn draw_header(
     app: &App,
 ) {
     let theme = &app.global_config.theme;
-    let focus = FocusStyles::new(app.focus, theme);
+    let focus = FocusStyles::new(app.view.focus, theme);
     let mut line = vec![
         Span::styled(
             " POSTUI ",
@@ -21,25 +76,24 @@ pub(super) fn draw_header(
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ];
-    if area.width >= 72 {
+    if area.width >= 110 {
         line.push(Span::styled(
             format!("  │  {}", app.workspace_path().display()),
             Style::default().fg(theme.muted),
         ));
     }
-    let mut status_line = vec![Span::styled("  › ", Style::default().fg(theme.secondary))];
-    status_line.extend(highlight::template_spans(
-        app.status.as_str(),
-        Style::default().fg(theme.text),
-        theme,
-    ));
+    if app.debug_mode {
+        line.push(Span::styled(
+            format!("  ◆ {}", theme.name),
+            Style::default().fg(theme.secondary),
+        ));
+    }
     frame.render_widget(
         panel_block("", area, theme).border_style(focus.header_border()),
         area,
     );
     frame.render_widget(
-        Paragraph::new(Text::from(vec![Line::from(line), Line::from(status_line)]))
-            .style(Style::default().fg(theme.text)),
+        Paragraph::new(Line::from(line)).style(Style::default().fg(theme.text)),
         content_area,
     );
 
@@ -52,7 +106,7 @@ pub(super) fn draw_header(
         let label = if loading {
             format!(
                 "{} {}",
-                request_status_symbol(request_status, app.animation_frame),
+                request_status_symbol(request_status, app.view.animation_frame),
                 app.text().send_button(true)
             )
         } else {
@@ -77,7 +131,7 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     let scrollbar_area = layout.request_scrollbar;
     let theme = &app.global_config.theme;
     let text = app.text();
-    let focus = FocusStyles::new(app.focus, theme);
+    let focus = FocusStyles::new(app.view.focus, theme);
     frame.render_widget(
         panel_block(text.request_selector(), area, theme).border_style(focus.sidebar_border()),
         area,
@@ -88,9 +142,9 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Length(1)])
             .split(workspace_selector_area);
-        let fixed_width = Line::from("◆  ▾").width();
+        let fixed_width = Line::from(" ▾").width();
         let configuration = format!(
-            "◆ {} ▾",
+            "{} ▾",
             truncate(
                 app.active_configuration(),
                 usize::from(workspace_selector_area.width).saturating_sub(fixed_width)
@@ -110,7 +164,7 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         );
     }
     if !variables_button_area.is_empty() {
-        let label = format!("◇ {} ({})", text.variables(), app.variable_count());
+        let label = format!("{} ({})", text.variables(), app.variable_count());
         draw_primary_button(
             frame,
             variables_button_area,
@@ -132,7 +186,7 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
                 session.dirty,
                 theme,
                 request_list_area.width,
-                app.animation_frame,
+                app.view.animation_frame,
             )
         })
         .collect::<Vec<_>>();
@@ -140,7 +194,12 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         .style(Style::default().bg(theme.surface).fg(theme.text))
         .highlight_style(focus.request_selection())
         .highlight_symbol("› ");
-    let mut state = ListState::default();
+    let offset = request_list_offset(
+        app.workspace_state.selected_request.unwrap_or_default(),
+        app.workspace_state.requests.len(),
+        usize::from(request_list_area.height),
+    );
+    let mut state = ListState::default().with_offset(offset);
     if let Some(selected) = app.workspace_state.selected_request {
         state.select(Some(selected));
     }

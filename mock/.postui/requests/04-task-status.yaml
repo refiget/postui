@@ -1,6 +1,5 @@
 name: 查询任务状态
 description: 路径变量、对象字段和数组下标提取。
-method: GET
 url: http://{{host}}/v1/tasks/{{task_id}}
 extracts:
   - variable: task_status

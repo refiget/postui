@@ -8,15 +8,27 @@ use ratatui::style::Color;
 use serde::Deserialize;
 
 const DEFAULT_THEME: &str = "gruvbox-dark";
+pub(crate) const BUILT_IN_THEME_NAMES: [&str; 10] = [
+    "gruvbox-dark",
+    "dracula",
+    "catppuccin-mocha",
+    "tokyo-night",
+    "nord",
+    "one-dark",
+    "solarized-dark",
+    "kanagawa",
+    "rose-pine",
+    "monokai",
+];
 pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
 pub(crate) const DEFAULT_MAX_RESPONSE_DISPLAY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub(crate) enum Language {
-    #[serde(rename = "en", alias = "english")]
+    #[serde(rename = "en")]
     #[default]
     English,
-    #[serde(rename = "zh", alias = "chinese")]
+    #[serde(rename = "zh")]
     Chinese,
 }
 
@@ -77,37 +89,32 @@ struct RawGlobalConfig {
     max_response_display_bytes: usize,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTheme {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    primary: Option<String>,
-    #[serde(default)]
-    secondary: Option<String>,
-    #[serde(default)]
-    accent: Option<String>,
-    #[serde(default)]
-    background: Option<String>,
-    #[serde(default)]
-    surface: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    muted: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    success: Option<String>,
-    #[serde(default)]
-    warning: Option<String>,
-    #[serde(default)]
-    selection: Option<String>,
-    #[serde(default)]
-    variable: Option<String>,
-    #[serde(default)]
-    syntax: Option<String>,
+impl Default for RawGlobalConfig {
+    fn default() -> Self {
+        Self {
+            language: Language::default(),
+            theme: default_theme(),
+            max_response_display_bytes: default_max_response_display_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ThemeDefinition {
+    name: &'static str,
+    primary: &'static str,
+    secondary: &'static str,
+    accent: &'static str,
+    background: &'static str,
+    surface: &'static str,
+    text: &'static str,
+    muted: &'static str,
+    error: &'static str,
+    success: &'static str,
+    warning: &'static str,
+    selection: &'static str,
+    variable: &'static str,
+    syntax_theme: &'static str,
 }
 
 impl Default for UiTheme {
@@ -134,8 +141,11 @@ impl Default for UiTheme {
 pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("无法读取用户界面配置: {}", path.display()))?;
-    let raw: RawGlobalConfig = parse_document(path, &text)?;
-    let global = normalize(path, raw)?;
+    let raw = serde_saphyr::from_str::<Option<RawGlobalConfig>>(&text)
+        .with_context(|| format!("个人配置 YAML 格式无效: {}", path.display()))?
+        .unwrap_or_default();
+    let global =
+        normalize(path, raw).with_context(|| format!("用户界面配置无效: {}", path.display()))?;
     tracing::debug!(
         path = %path.display(),
         language = global.language.as_str(),
@@ -162,74 +172,29 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
         bail!("max_response_display_bytes 必须大于 0")
     }
 
-    let mut raw_theme = built_in_theme(&raw.theme).ok_or_else(|| {
-        anyhow::anyhow!(
-            "未知内置主题: {}；可选 gruvbox-dark、ocean、nord、mono",
-            raw.theme
-        )
-    })?;
-
-    let theme_name = raw_theme
-        .name
-        .take()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| raw.theme.trim().to_string());
-    let syntax_theme = raw_theme
-        .syntax
-        .take()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SYNTAX_THEME.to_string());
-    let variable = raw_theme
-        .variable
-        .take()
-        .unwrap_or_else(|| "#d3869b".to_string());
-
     Ok(GlobalConfig {
         path: Some(path.to_path_buf()),
         language: raw.language,
         max_response_display_bytes: raw.max_response_display_bytes,
-        theme: UiTheme {
-            name: theme_name,
-            primary: color("primary", raw_theme.primary, "#83a598")?,
-            secondary: color("secondary", raw_theme.secondary, "#fabd2f")?,
-            accent: color("accent", raw_theme.accent, "#8ec07c")?,
-            background: color("background", raw_theme.background, "#282828")?,
-            surface: color("surface", raw_theme.surface, "#3c3836")?,
-            text: color("text", raw_theme.text, "#ebdbb2")?,
-            muted: color("muted", raw_theme.muted, "#a89984")?,
-            error: color("error", raw_theme.error, "#fb4934")?,
-            success: color("success", raw_theme.success, "#b8bb26")?,
-            warning: color("warning", raw_theme.warning, "#fe8019")?,
-            selection: color("selection", raw_theme.selection, "#504945")?,
-            variable: color("variable", Some(variable), "#d3869b")?,
-            syntax_theme,
-        },
+        theme: theme(&raw.theme)?,
     })
+}
+
+pub(crate) fn next_theme(current: &str) -> Result<UiTheme> {
+    let current_index = BUILT_IN_THEME_NAMES
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(current))
+        .unwrap_or_default();
+    let next_name = BUILT_IN_THEME_NAMES[(current_index + 1) % BUILT_IN_THEME_NAMES.len()];
+    theme(next_name)
 }
 
 fn default_max_response_display_bytes() -> usize {
     DEFAULT_MAX_RESPONSE_DISPLAY_BYTES
 }
 
-fn parse_document<T>(path: &Path, text: &str) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension == "json" {
-        serde_json::from_str(text).with_context(|| format!("JSON 配置格式无效: {}", path.display()))
-    } else {
-        serde_saphyr::from_str(text)
-            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))
-    }
-}
-
-fn color(field: &str, value: Option<String>, default: &str) -> Result<Color> {
-    let value = value.as_deref().unwrap_or(default).trim();
+fn color(field: &str, value: &str) -> Result<Color> {
+    let value = value.trim();
     let Some(hex) = value.strip_prefix('#') else {
         return named_color(value).ok_or_else(|| {
             anyhow::anyhow!("主题颜色无效: {field}={value}，请使用 #RRGGBB 或标准颜色名")
@@ -269,76 +234,206 @@ fn named_color(value: &str) -> Option<Color> {
     }
 }
 
-fn built_in_theme(name: &str) -> Option<RawTheme> {
-    let mut theme = match name.trim().to_ascii_lowercase().as_str() {
-        "gruvbox-dark" | "gruvbox dark" | "gruvbox" => RawTheme {
-            name: Some("gruvbox-dark".to_string()),
-            primary: Some("#83a598".to_string()),
-            secondary: Some("#fabd2f".to_string()),
-            accent: Some("#8ec07c".to_string()),
-            background: Some("#282828".to_string()),
-            surface: Some("#3c3836".to_string()),
-            text: Some("#ebdbb2".to_string()),
-            muted: Some("#a89984".to_string()),
-            error: Some("#fb4934".to_string()),
-            success: Some("#b8bb26".to_string()),
-            warning: Some("#fe8019".to_string()),
-            selection: Some("#504945".to_string()),
-            variable: Some("#d3869b".to_string()),
-            syntax: Some(DEFAULT_SYNTAX_THEME.to_string()),
-        },
-        "ocean" | "default" => RawTheme {
-            name: Some("ocean".to_string()),
-            primary: Some("#7dd3fc".to_string()),
-            secondary: Some("#fbbf24".to_string()),
-            accent: Some("#7dd3fc".to_string()),
-            background: Some("#0b1120".to_string()),
-            surface: Some("#111827".to_string()),
-            text: Some("#f8fafc".to_string()),
-            muted: Some("#94a3b8".to_string()),
-            error: Some("#f87171".to_string()),
-            success: Some("#4ade80".to_string()),
-            warning: Some("#fbbf24".to_string()),
-            selection: Some("#1e293b".to_string()),
-            variable: Some("#c084fc".to_string()),
-            syntax: Some("base16-ocean.dark".to_string()),
-        },
-        "nord" => RawTheme {
-            name: Some("nord".to_string()),
-            primary: Some("#88c0d0".to_string()),
-            secondary: Some("#ebcb8b".to_string()),
-            accent: Some("#81a1c1".to_string()),
-            background: Some("#2e3440".to_string()),
-            surface: Some("#3b4252".to_string()),
-            text: Some("#eceff4".to_string()),
-            muted: Some("#d8dee9".to_string()),
-            error: Some("#bf616a".to_string()),
-            success: Some("#a3be8c".to_string()),
-            warning: Some("#ebcb8b".to_string()),
-            selection: Some("#434c5e".to_string()),
-            variable: Some("#b48ead".to_string()),
-            syntax: Some("base16-ocean.dark".to_string()),
-        },
-        "mono" => RawTheme {
-            name: Some("mono".to_string()),
-            primary: Some("white".to_string()),
-            secondary: Some("gray".to_string()),
-            accent: Some("white".to_string()),
-            background: Some("black".to_string()),
-            surface: Some("black".to_string()),
-            text: Some("white".to_string()),
-            muted: Some("gray".to_string()),
-            error: Some("light-red".to_string()),
-            success: Some("light-green".to_string()),
-            warning: Some("light-yellow".to_string()),
-            selection: Some("darkgray".to_string()),
-            variable: Some("light-magenta".to_string()),
-            syntax: Some("InspiredGitHub".to_string()),
-        },
+fn theme(name: &str) -> Result<UiTheme> {
+    let normalized = name.trim().to_ascii_lowercase();
+    let definition = theme_definition(&normalized).ok_or_else(|| {
+        anyhow::anyhow!(
+            "未知内置主题: {}；可选 {}",
+            name,
+            BUILT_IN_THEME_NAMES.join("、")
+        )
+    })?;
+    Ok(UiTheme {
+        name: definition.name.to_string(),
+        primary: color("primary", definition.primary)?,
+        secondary: color("secondary", definition.secondary)?,
+        accent: color("accent", definition.accent)?,
+        background: color("background", definition.background)?,
+        surface: color("surface", definition.surface)?,
+        text: color("text", definition.text)?,
+        muted: color("muted", definition.muted)?,
+        error: color("error", definition.error)?,
+        success: color("success", definition.success)?,
+        warning: color("warning", definition.warning)?,
+        selection: color("selection", definition.selection)?,
+        variable: color("variable", definition.variable)?,
+        syntax_theme: definition.syntax_theme.to_string(),
+    })
+}
+
+fn theme_definition(name: &str) -> Option<ThemeDefinition> {
+    let values = match name {
+        "gruvbox-dark" => [
+            "#83a598",
+            "#fabd2f",
+            "#8ec07c",
+            "#282828",
+            "#3c3836",
+            "#ebdbb2",
+            "#a89984",
+            "#fb4934",
+            "#b8bb26",
+            "#fe8019",
+            "#504945",
+            "#d3869b",
+            "base16-mocha.dark",
+        ],
+        "dracula" => [
+            "#8be9fd",
+            "#bd93f9",
+            "#ff79c6",
+            "#282a36",
+            "#343746",
+            "#f8f8f2",
+            "#a9a9b3",
+            "#ff5555",
+            "#50fa7b",
+            "#f1fa8c",
+            "#44475a",
+            "#ff79c6",
+            "base16-ocean.dark",
+        ],
+        "catppuccin-mocha" => [
+            "#89b4fa",
+            "#cba6f7",
+            "#f5c2e7",
+            "#1e1e2e",
+            "#313244",
+            "#cdd6f4",
+            "#a6adc8",
+            "#f38ba8",
+            "#a6e3a1",
+            "#f9e2af",
+            "#45475a",
+            "#cba6f7",
+            "base16-ocean.dark",
+        ],
+        "tokyo-night" => [
+            "#7aa2f7",
+            "#bb9af7",
+            "#2ac3de",
+            "#1a1b26",
+            "#24283b",
+            "#c0caf5",
+            "#9aa5ce",
+            "#f7768e",
+            "#9ece6a",
+            "#e0af68",
+            "#33467c",
+            "#ff9e64",
+            "base16-ocean.dark",
+        ],
+        "nord" => [
+            "#88c0d0",
+            "#81a1c1",
+            "#5e81ac",
+            "#2e3440",
+            "#3b4252",
+            "#eceff4",
+            "#aeb8c6",
+            "#bf616a",
+            "#a3be8c",
+            "#ebcb8b",
+            "#434c5e",
+            "#b48ead",
+            "base16-ocean.dark",
+        ],
+        "one-dark" => [
+            "#61afef",
+            "#c678dd",
+            "#56b6c2",
+            "#282c34",
+            "#353b45",
+            "#abb2bf",
+            "#7f8795",
+            "#e06c75",
+            "#98c379",
+            "#e5c07b",
+            "#3e4451",
+            "#d19a66",
+            "base16-ocean.dark",
+        ],
+        "solarized-dark" => [
+            "#268bd2",
+            "#6c71c4",
+            "#2aa198",
+            "#002b36",
+            "#073642",
+            "#eee8d5",
+            "#93a1a1",
+            "#dc322f",
+            "#859900",
+            "#b58900",
+            "#0b4a5a",
+            "#d33682",
+            "Solarized (dark)",
+        ],
+        "kanagawa" => [
+            "#7e9cd8",
+            "#957fb8",
+            "#7fb4ca",
+            "#1f1f28",
+            "#2a2a37",
+            "#dcd7ba",
+            "#938aa9",
+            "#e82424",
+            "#98bb6c",
+            "#e6c384",
+            "#363646",
+            "#ffa066",
+            "base16-ocean.dark",
+        ],
+        "rose-pine" => [
+            "#9ccfd8",
+            "#c4a7e7",
+            "#ebbcba",
+            "#191724",
+            "#26233a",
+            "#e0def4",
+            "#908caa",
+            "#eb6f92",
+            "#9ccfd8",
+            "#f6c177",
+            "#403d52",
+            "#c4a7e7",
+            "base16-ocean.dark",
+        ],
+        "monokai" => [
+            "#66d9ef",
+            "#ae81ff",
+            "#f92672",
+            "#272822",
+            "#3e3d32",
+            "#f8f8f2",
+            "#a6a69c",
+            "#f92672",
+            "#a6e22e",
+            "#e6db74",
+            "#49483e",
+            "#fd971f",
+            "base16-eighties.dark",
+        ],
         _ => return None,
     };
-    theme.name = Some(name.trim().to_string());
-    Some(theme)
+    Some(ThemeDefinition {
+        name: BUILT_IN_THEME_NAMES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == name)?,
+        primary: values[0],
+        secondary: values[1],
+        accent: values[2],
+        background: values[3],
+        surface: values[4],
+        text: values[5],
+        muted: values[6],
+        error: values[7],
+        success: values[8],
+        warning: values[9],
+        selection: values[10],
+        variable: values[11],
+        syntax_theme: values[12],
+    })
 }
 
 fn default_theme() -> String {
