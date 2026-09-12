@@ -57,9 +57,6 @@ pub(crate) fn template_spans(
 }
 
 pub(crate) fn json_text_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {
-    if !theme.highlight_enabled {
-        return plain_lines(value, theme);
-    }
     let syntax_set = JSON_SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
     let Some(syntax) = syntax_set.find_syntax_by_extension("json") else {
         return plain_lines(value, theme);

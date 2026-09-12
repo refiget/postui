@@ -21,6 +21,7 @@ cargo clippy --all-targets -- -D warnings
 7. [阶段 6 已完成] 收敛单行编辑器的 Unicode 边界，并使用正式剪贴板库。
 8. [阶段 7 已完成] 统一 URL query、curl data 和 form 的参数表示与编码路径。
 9. [阶段 8 已完成] 删除仅用于 Button 渲染的 `ratatui-interact`，改用 Ratatui 原生组件。
+10. [阶段 9 已完成] 将请求会话模型和运行态状态转换移出 `App`，集中到会话模块。
 
 ## 值得使用现成库替换的实现
 
@@ -175,7 +176,7 @@ PostUI 仍只调用 `read_sync` 和 `write_sync`，不会启动 async-std runtim
 
 ### App 承担过多职责
 
-`src/app.rs` 当前约 1980 行，仍负责：
+`src/app.rs` 当前约 1800 行，仍负责：
 
 - 当前请求选择。
 - 编辑器生命周期。
@@ -207,6 +208,13 @@ App
     ├── response state
     └── keyboard/mouse orchestration
 ```
+
+阶段九继续收拢了会话层，但没有把界面流程泛化成 trait 或状态机：
+
+- `src/app/session.rs` 负责 `RequestDraft`、`RequestSession` 和 `WorkspaceSession`。
+- `RequestStatus` 和 `RequestRuntimeState` 与请求会话放在同一模块，保持运行态字段的所有权集中。
+- 有效请求的 Header 合并由会话模型完成，请求运行态的开始、成功结束和失败结束由运行态对象统一迁移。
+- `App` 仍负责变量提取、状态提示和事件编排，这些行为需要同时协调工作区与 UI，因此没有继续下沉。
 
 这里需要的是职责划分，不是动态多态。不要先创建大量 trait。阶段四已经将 `RequestFileStore` 和 `RequestExecutor` 接入 `App`；结果如何写入 `RequestSession` 仍由 `App` 编排。
 
@@ -382,6 +390,11 @@ struct CellSelection {
 ### 第四批：界面依赖收敛
 
 1. [阶段 8 已完成] 删除仅用于 Button 渲染的 `ratatui-interact`，使用 Ratatui 原生 `Block`/`Paragraph`。
+
+### 第五批：会话模型收敛
+
+1. [阶段 9 已完成] 将请求草稿、请求会话、工作区会话和运行态转换移到 `src/app/session.rs`。
+2. [阶段 9 已完成] 让 `App` 通过运行态对象更新请求状态，避免直接维护多个相互关联的字段。
 
 不建议一次性进行框架化重写。先解决 HTTP Client 生命周期和请求状态模型，项目复杂度会自然下降，再进行模块拆分。
 

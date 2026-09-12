@@ -32,7 +32,7 @@ impl DialogFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HeaderField {
+pub(crate) enum KeyValueField {
     Name,
     Value,
 }
@@ -102,7 +102,7 @@ pub(crate) struct HeadersDialog {
     pub(crate) request_id: String,
     pub(crate) rows: Vec<HeaderRow>,
     pub(crate) selected: usize,
-    pub(crate) field: HeaderField,
+    pub(crate) field: KeyValueField,
     pub(crate) editor: Option<TextEditor>,
 }
 
@@ -111,7 +111,7 @@ pub(crate) struct ParamsDialog {
     pub(crate) request_id: String,
     pub(crate) rows: Vec<ParamsDialogRow>,
     pub(crate) selected: usize,
-    pub(crate) field: HeaderField,
+    pub(crate) field: KeyValueField,
     pub(crate) editor: Option<TextEditor>,
 }
 
@@ -234,11 +234,11 @@ impl HeadersDialog {
                 DialogAction::None
             }
             KeyCode::Left => {
-                self.field = HeaderField::Name;
+                self.field = KeyValueField::Name;
                 DialogAction::None
             }
             KeyCode::Right => {
-                self.field = HeaderField::Value;
+                self.field = KeyValueField::Value;
                 DialogAction::None
             }
             KeyCode::Char('d') => {
@@ -270,8 +270,8 @@ impl HeadersDialog {
             return;
         };
         let value = match self.field {
-            HeaderField::Name => row.name.clone(),
-            HeaderField::Value => row.value.clone(),
+            KeyValueField::Name => row.name.clone(),
+            KeyValueField::Value => row.value.clone(),
         };
         self.editor = Some(TextEditor::new(value));
     }
@@ -285,11 +285,11 @@ impl HeadersDialog {
         };
         let value = editor.into_value();
         let changed = match self.field {
-            HeaderField::Name if row.name != value => {
+            KeyValueField::Name if row.name != value => {
                 row.name = value;
                 true
             }
-            HeaderField::Value if row.value != value => {
+            KeyValueField::Value if row.value != value => {
                 row.value = value;
                 true
             }
@@ -308,7 +308,7 @@ impl HeadersDialog {
             source: HeaderSource::Request,
         });
         self.selected = self.rows.len().saturating_sub(1);
-        self.field = HeaderField::Name;
+        self.field = KeyValueField::Name;
         self.editor = Some(TextEditor::new(String::new()));
     }
 
@@ -331,7 +331,7 @@ impl HeadersDialog {
         }
     }
 
-    fn click_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+    fn click_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
         if index >= self.rows.len() {
             return;
         }
@@ -370,11 +370,11 @@ impl ParamsDialog {
                 DialogAction::None
             }
             KeyCode::Left => {
-                self.field = HeaderField::Name;
+                self.field = KeyValueField::Name;
                 DialogAction::None
             }
             KeyCode::Right => {
-                self.field = HeaderField::Value;
+                self.field = KeyValueField::Value;
                 DialogAction::None
             }
             KeyCode::Char('d') => {
@@ -405,8 +405,8 @@ impl ParamsDialog {
             return;
         };
         let value = match self.field {
-            HeaderField::Name => row.key.clone(),
-            HeaderField::Value => row.value.clone(),
+            KeyValueField::Name => row.key.clone(),
+            KeyValueField::Value => row.value.clone(),
         };
         self.editor = Some(TextEditor::new(value));
     }
@@ -420,8 +420,8 @@ impl ParamsDialog {
         };
         let value = editor.into_value();
         match self.field {
-            HeaderField::Name if row.key != value => row.key = value,
-            HeaderField::Value if row.value != value => {
+            KeyValueField::Name if row.key != value => row.key = value,
+            KeyValueField::Value if row.value != value => {
                 row.value = value;
                 if row.source == ParamSource::Query {
                     row.has_equals = true;
@@ -459,7 +459,7 @@ impl ParamsDialog {
             has_equals: true,
         });
         self.selected = self.rows.len().saturating_sub(1);
-        self.field = HeaderField::Name;
+        self.field = KeyValueField::Name;
         self.editor = Some(TextEditor::new(String::new()));
     }
 
@@ -471,7 +471,7 @@ impl ParamsDialog {
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
     }
 
-    fn click_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+    fn click_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
         if index >= self.rows.len() {
             return;
         }
@@ -515,7 +515,7 @@ impl Dialog {
         }
     }
 
-    pub(super) fn click_param_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+    pub(super) fn click_param_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
         if let Self::Params(dialog) = self {
             dialog.click_row(index, field, edit);
         }
@@ -537,7 +537,7 @@ impl Dialog {
         }
     }
 
-    pub(super) fn click_header_row(&mut self, index: usize, field: HeaderField, edit: bool) {
+    pub(super) fn click_header_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
         if let Self::Headers(dialog) = self {
             dialog.click_row(index, field, edit);
         }

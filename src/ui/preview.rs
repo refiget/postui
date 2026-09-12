@@ -560,12 +560,12 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
                 .saturating_add(TABLE_COLUMN_SPACING);
             if column < value_start {
                 if request_row {
-                    app.click_header_row(index, HeaderField::Name, true);
+                    app.click_header_row(index, KeyValueField::Name, true);
                 } else {
                     app.toggle_header_row(index);
                 }
             } else {
-                app.click_header_row(index, HeaderField::Value, true);
+                app.click_header_row(index, KeyValueField::Value, true);
             }
         }
         Some(Dialog::Params(_)) => {
@@ -578,9 +578,9 @@ pub(super) fn handle_inline_editor_click(app: &mut App, column: u16, row: u16, a
                 .saturating_add(constraint_length(widths[0]))
                 .saturating_add(TABLE_COLUMN_SPACING);
             let field = if column < value_start {
-                HeaderField::Name
+                KeyValueField::Name
             } else {
-                HeaderField::Value
+                KeyValueField::Value
             };
             app.click_param_row(index, field, true);
         }

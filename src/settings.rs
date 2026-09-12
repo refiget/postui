@@ -51,10 +51,9 @@ pub(crate) struct UiTheme {
     pub(crate) selection: Color,
     pub(crate) variable: Color,
     pub(crate) syntax_theme: String,
-    pub(crate) highlight_enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawGlobalConfig {
     #[serde(default)]
@@ -63,7 +62,7 @@ struct RawGlobalConfig {
     theme: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTheme {
     #[serde(default)]
@@ -113,7 +112,6 @@ impl Default for UiTheme {
             selection: Color::Rgb(80, 73, 69),
             variable: Color::Rgb(211, 134, 155),
             syntax_theme: DEFAULT_SYNTAX_THEME.to_string(),
-            highlight_enabled: true,
         }
     }
 }
@@ -128,7 +126,6 @@ pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
         language = global.language.as_str(),
         theme = %global.theme.name,
         syntax_theme = %global.theme.syntax_theme,
-        highlight_enabled = global.theme.highlight_enabled,
         "用户界面配置加载完成"
     );
     Ok(global)
@@ -184,7 +181,6 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
             selection: color("selection", raw_theme.selection, "#504945")?,
             variable: color("variable", Some(variable), "#d3869b")?,
             syntax_theme,
-            highlight_enabled: true,
         },
     })
 }

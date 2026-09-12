@@ -1,6 +1,6 @@
 use crate::{
     app::{
-        App, AppPrompt, Dialog, DialogFocus, Focus, HeaderField, HeaderSource, PreviewAction,
+        App, AppPrompt, Dialog, DialogFocus, Focus, HeaderSource, KeyValueField, PreviewAction,
         PreviewTab, RequestStatus, ResponseMenuAction, supports_method,
     },
     config::ApiRequest,

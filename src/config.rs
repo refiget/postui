@@ -151,7 +151,7 @@ pub(crate) struct ResponseExtract {
     pub(crate) path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawWorkspaceConfig {
     #[serde(default)]
@@ -166,7 +166,7 @@ struct RawWorkspaceConfig {
     timeout: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDirectories {
     #[serde(default = "default_upload_directory")]
@@ -196,13 +196,13 @@ impl Default for RawWorkspaceConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct RequestFile {
     path: PathBuf,
     text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ParsedRequest {
     name: String,
     id: String,

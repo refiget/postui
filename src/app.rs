@@ -1,19 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use crate::{
     clipboard::ClipboardService,
-    config::{
-        ApiRequest, DataPart, FileUpload, NameValue, RequestConfig, RequestParam, WorkspaceConfig,
-        value_to_string,
-    },
+    config::{ApiRequest, DataPart, RequestConfig, RequestParam, WorkspaceConfig},
     editor::{
         BodyValueEditor, EditorAction, TextEditor, convert_json_scalar, json_scalar_at,
         merge_json_edit, terminal_width, text_position,
     },
-    http::{HttpError, ResponseData},
+    http::ResponseData,
     i18n::UiText,
     request_executor::{RequestExecutor, RequestResult},
     request_file::RequestFileStore,
@@ -23,12 +17,15 @@ use crate::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 mod dialog;
+mod session;
 
 use dialog::DialogAction;
 pub(crate) use dialog::{
-    DataPartSource, Dialog, DialogFocus, HeaderField, HeaderRow, HeaderSource, HeadersDialog,
+    DataPartSource, Dialog, DialogFocus, HeaderRow, HeaderSource, HeadersDialog, KeyValueField,
     ParamSource, ParamsDialog, ParamsDialogRow, VariableRow, VariablesDialog,
 };
+pub(crate) use session::RequestStatus;
+use session::{RequestDraft, WorkspaceSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -145,61 +142,6 @@ impl ScrollState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum RequestStatus {
-    #[default]
-    NotSent,
-    Sending,
-    Success,
-    Failed,
-    Timeout,
-}
-
-impl RequestStatus {
-    pub(crate) fn from_http_status(status: u16) -> Self {
-        if status < 400 {
-            Self::Success
-        } else {
-            Self::Failed
-        }
-    }
-
-    pub(crate) fn from_error(error: &HttpError) -> Self {
-        if error.is_timeout() {
-            Self::Timeout
-        } else {
-            Self::Failed
-        }
-    }
-
-    pub(crate) fn label(self, text: UiText) -> &'static str {
-        match self {
-            Self::NotSent => text.request_status_not_sent(),
-            Self::Sending => text.request_status_sending(),
-            Self::Success => text.request_status_success(),
-            Self::Failed => text.request_status_failed(),
-            Self::Timeout => text.request_status_timeout(),
-        }
-    }
-
-    pub(crate) fn error_message(self, text: UiText, error: &str) -> String {
-        if self == Self::Timeout {
-            text.request_timeout(error)
-        } else {
-            text.request_failed(error)
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct RequestRuntimeState {
-    pub(crate) status: RequestStatus,
-    pub(crate) response: Option<ResponseData>,
-    pub(crate) error: Option<String>,
-    message: Option<String>,
-    operation_id: Option<String>,
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct PreviewContentState {
     pub(crate) active_tab: PreviewTab,
@@ -210,7 +152,7 @@ pub(crate) struct PreviewContentState {
     pub(crate) url_editor: Option<TextEditor>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum AppPrompt {
     ConfirmExit,
     ConfirmDelete { request_id: String },
@@ -237,144 +179,6 @@ pub(crate) struct ResponseContentState {
     pub(crate) scroll: ScrollState,
     pub(crate) menu_open: bool,
     pub(crate) menu_selected: usize,
-}
-
-#[derive(Debug)]
-pub(crate) struct RequestSession {
-    pub(crate) source: ApiRequest,
-    pub(crate) draft: RequestDraft,
-    pub(crate) runtime: RequestRuntimeState,
-    pub(crate) dirty: bool,
-}
-
-impl RequestSession {
-    fn new(source: ApiRequest) -> Self {
-        let draft = RequestDraft::from(&source);
-        Self {
-            source,
-            draft,
-            runtime: RequestRuntimeState::default(),
-            dirty: false,
-        }
-    }
-
-    fn effective_request(&self, collection_headers: &[NameValue]) -> ApiRequest {
-        let mut effective = self.source.clone();
-        if let Some(url) = &self.draft.url {
-            effective.url = url.clone();
-        }
-        let headers = collection_headers
-            .iter()
-            .filter(|header| {
-                !self
-                    .draft
-                    .headers
-                    .iter()
-                    .any(|row| row.name.eq_ignore_ascii_case(&header.name))
-            })
-            .cloned()
-            .chain(
-                self.draft
-                    .headers
-                    .iter()
-                    .filter(|row| row.enabled && !row.name.trim().is_empty())
-                    .map(|row| NameValue {
-                        name: row.name.trim().to_string(),
-                        value: row.value.clone(),
-                    }),
-            )
-            .collect();
-        effective.headers = headers;
-        effective.query_parts = self.draft.query_parts.clone();
-        effective.form = self.draft.form.clone();
-        effective.files = self.draft.files.clone();
-        effective.body_parts = self.draft.body_parts.clone();
-        effective
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct WorkspaceSession {
-    pub(crate) variables: BTreeMap<String, String>,
-    pub(crate) requests: Vec<RequestSession>,
-    pub(crate) selected_request: Option<usize>,
-}
-
-impl WorkspaceSession {
-    fn from_config(config: &WorkspaceConfig, requests: Vec<ApiRequest>) -> Self {
-        let has_requests = !requests.is_empty();
-        let variables = config
-            .variables
-            .iter()
-            .map(|(key, definition)| {
-                let value = definition
-                    .default
-                    .as_ref()
-                    .map(value_to_string)
-                    .unwrap_or_default();
-                (key.clone(), value)
-            })
-            .collect();
-        Self {
-            variables,
-            requests: requests.into_iter().map(RequestSession::new).collect(),
-            selected_request: has_requests.then_some(0),
-        }
-    }
-
-    fn current(&self) -> Option<&RequestSession> {
-        self.selected_request
-            .and_then(|index| self.requests.get(index))
-    }
-
-    fn current_mut(&mut self) -> Option<&mut RequestSession> {
-        self.selected_request
-            .and_then(|index| self.requests.get_mut(index))
-    }
-
-    fn request(&self, request_id: &str) -> Option<&RequestSession> {
-        self.requests
-            .iter()
-            .find(|session| session.source.id == request_id)
-    }
-
-    fn request_mut(&mut self, request_id: &str) -> Option<&mut RequestSession> {
-        self.requests
-            .iter_mut()
-            .find(|session| session.source.id == request_id)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RequestDraft {
-    pub(crate) url: Option<String>,
-    pub(crate) headers: Vec<HeaderRow>,
-    pub(crate) query_parts: Vec<DataPart>,
-    pub(crate) form: Vec<RequestParam>,
-    pub(crate) files: Vec<FileUpload>,
-    pub(crate) body_parts: Vec<DataPart>,
-}
-
-impl From<&ApiRequest> for RequestDraft {
-    fn from(request: &ApiRequest) -> Self {
-        Self {
-            url: None,
-            headers: request
-                .headers
-                .iter()
-                .map(|header| HeaderRow {
-                    name: header.name.clone(),
-                    value: header.value.clone(),
-                    enabled: true,
-                    source: HeaderSource::Request,
-                })
-                .collect(),
-            query_parts: request.query_parts.clone(),
-            form: request.form.clone(),
-            files: request.files.clone(),
-            body_parts: request.body_parts.clone(),
-        }
-    }
 }
 
 pub(crate) struct App {
@@ -424,14 +228,7 @@ impl App {
             config,
             global_config,
             focus: Focus::Requests,
-            preview_state: PreviewContentState {
-                active_tab: PreviewTab::Body,
-                scroll: ScrollState::default(),
-                editor: None,
-                file_editor: None,
-                variable_editor: None,
-                url_editor: None,
-            },
+            preview_state: PreviewContentState::default(),
             response_state: ResponseContentState::default(),
             workspace_state,
             dialog: None,
@@ -516,10 +313,17 @@ impl App {
         let request_id = request.id.clone();
         let configured = request.url.clone();
         let value = editor.value().trim().to_string();
-        if let Some(session) = self.workspace_state.request_mut(&request_id) {
-            session.draft.url = (value != configured).then_some(value);
+        let next_url = (value != configured).then_some(value);
+        let changed = match self.workspace_state.request_mut(&request_id) {
+            Some(session) if session.draft.url != next_url => {
+                session.draft.url = next_url;
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            self.mark_current_dirty();
         }
-        self.mark_current_dirty();
     }
 
     fn handle_url_editor_key(&mut self, key: KeyEvent) {
@@ -640,11 +444,14 @@ impl App {
             self.preview_state.active_tab = PreviewTab::Body;
             self.preview_state.scroll.reset();
             self.response_state.scroll.reset();
-            let (request_id, message) = self
-                .workspace_state
-                .current()
-                .map(|session| (session.source.id.clone(), session.runtime.message.clone()))
-                .expect("刚刚选中的请求会话必须存在");
+            let Some((request_id, message)) = self.workspace_state.current().map(|session| {
+                (
+                    session.source.id.clone(),
+                    session.runtime.message().map(ToOwned::to_owned),
+                )
+            }) else {
+                return;
+            };
             self.status = message.unwrap_or_else(|| self.text().ready().to_string());
             tracing::debug!(
                 previous_index = ?previous,
@@ -872,8 +679,8 @@ impl App {
         if self.preview_state.variable_editor.is_some() {
             self.commit_request_variable();
         }
-        if self.editing_preview_tab().is_some() {
-            self.sync_dialog_draft();
+        if self.editing_preview_tab().is_some() && self.sync_dialog_draft() {
+            self.mark_current_dirty();
         }
     }
 
@@ -933,11 +740,20 @@ impl App {
         } else {
             value.to_string()
         };
-        if let Some(file) = self
+        let changed = if let Some(file) = self
             .request_draft_mut(&request_id)
             .and_then(|draft| draft.files.get_mut(editor.file_index))
         {
-            file.path = path;
+            if file.path == path {
+                false
+            } else {
+                file.path = path;
+                true
+            }
+        } else {
+            false
+        };
+        if changed {
             self.mark_current_dirty();
         }
     }
@@ -973,6 +789,9 @@ impl App {
             self.status = self.text().invalid_body_value().to_string();
             return;
         };
+        if editor.document.get(editor.span.clone()) == Some(replacement.as_str()) {
+            return;
+        }
         let rendered_document = editor.document;
         let mut document = rendered_document.clone();
         document.replace_range(editor.span, &replacement);
@@ -992,10 +811,17 @@ impl App {
             .unwrap_or_default();
         let document =
             merge_json_edit(&source_document, &rendered_document, &document).unwrap_or(document);
-        if let Some(draft) = self.request_draft_mut(&request_id) {
-            draft.body_parts = vec![DataPart::Raw(document)];
+        let next_body = vec![DataPart::Raw(document)];
+        let changed = match self.request_draft_mut(&request_id) {
+            Some(draft) if draft.body_parts != next_body => {
+                draft.body_parts = next_body;
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            self.mark_current_dirty();
         }
-        self.mark_current_dirty();
     }
 
     pub(crate) fn variable_count(&self) -> usize {
@@ -1120,7 +946,7 @@ impl App {
                     request_id,
                     rows,
                     selected: 0,
-                    field: HeaderField::Value,
+                    field: KeyValueField::Value,
                     editor: None,
                 }))
             }
@@ -1168,7 +994,7 @@ impl App {
                 {
                     for part in &draft.body_parts {
                         let DataPart::UrlEncoded(parameter) = part else {
-                            unreachable!();
+                            continue;
                         };
                         rows.push(ParamsDialogRow {
                             source: ParamSource::Body,
@@ -1184,7 +1010,7 @@ impl App {
                     request_id,
                     rows,
                     selected: 0,
-                    field: HeaderField::Name,
+                    field: KeyValueField::Name,
                     editor: None,
                 }))
             }
@@ -1259,7 +1085,7 @@ impl App {
         if self.dialog.is_none() {
             return;
         }
-        self.sync_dialog_draft();
+        let changed = self.sync_dialog_draft();
 
         let Some(dialog) = self.dialog.take() else {
             return;
@@ -1276,6 +1102,9 @@ impl App {
                 );
             }
             Dialog::Headers(dialog) => {
+                if changed {
+                    self.mark_current_dirty();
+                }
                 let header_count = self
                     .request_draft(&dialog.request_id)
                     .map(|draft| draft.headers.iter())
@@ -1287,6 +1116,9 @@ impl App {
                 tracing::debug!(header_count, "应用请求 Header 修改");
             }
             Dialog::Params(dialog) => {
+                if changed {
+                    self.mark_current_dirty();
+                }
                 let (query_part_count, form_field_count) = {
                     self.request_draft(&dialog.request_id)
                         .map(|draft| (draft.query_parts.len(), draft.form.len()))
@@ -1306,124 +1138,130 @@ impl App {
         match action {
             DialogAction::None => {}
             DialogAction::Changed => {
-                self.sync_dialog_draft();
-                self.mark_current_dirty();
+                if self.sync_dialog_draft() {
+                    self.mark_current_dirty();
+                }
             }
             DialogAction::Apply => self.apply_dialog(),
             DialogAction::Cancel => {
-                self.sync_dialog_draft();
+                if self.sync_dialog_draft() {
+                    self.mark_current_dirty();
+                }
                 self.close_dialog();
             }
         }
     }
 
-    fn sync_dialog_draft(&mut self) {
+    fn sync_dialog_draft(&mut self) -> bool {
         let Some(mut dialog_state) = self.dialog.take() else {
-            return;
+            return false;
         };
         dialog_state.commit_editor();
-        match &mut dialog_state {
-            Dialog::Headers(dialog) => {
-                let rows = dialog
-                    .rows
-                    .iter()
-                    .filter(|row| {
-                        row.source == HeaderSource::Request && !row.name.trim().is_empty()
-                    })
-                    .map(|row| HeaderRow {
-                        name: row.name.trim().to_string(),
-                        ..row.clone()
-                    })
-                    .collect();
-                if let Some(session) = self.workspace_state.request_mut(&dialog.request_id) {
-                    session.draft.headers = rows;
-                }
-            }
-            Dialog::Params(dialog) => {
-                let request_data =
-                    self.workspace_state
-                        .request(&dialog.request_id)
-                        .map(|session| {
-                            let configured_url = session.source.url.clone();
-                            let effective_url = session
-                                .draft
-                                .url
-                                .clone()
-                                .unwrap_or_else(|| configured_url.clone());
-                            (effective_url, session.draft.body_parts.clone())
-                        });
-                if let Some((effective_url, existing_body_parts)) = request_data {
-                    let url_location = template::split_url_query(&effective_url);
-                    let mut url_parts = Vec::new();
-                    let mut query_parts = Vec::new();
-                    let mut form = Vec::new();
-                    let mut body_parts = Vec::new();
-                    for row in &dialog.rows {
-                        let key = row.key.trim();
-                        let value = row.value.trim();
-                        match row.source {
-                            ParamSource::Url if !key.is_empty() || !value.is_empty() => {
-                                url_parts.push(RequestParam::new(
-                                    key.to_string(),
-                                    value.to_string(),
-                                    row.has_equals,
-                                ));
-                            }
-                            ParamSource::Query if !key.is_empty() || !value.is_empty() => {
-                                query_parts.push(
-                                    row.part_type.unwrap_or(DataPartSource::Raw).to_part(
-                                        RequestParam::new(
-                                            key.to_string(),
-                                            row.value.clone(),
-                                            row.has_equals,
-                                        ),
-                                    ),
-                                );
-                            }
-                            ParamSource::Form if !key.is_empty() => {
-                                form.push(RequestParam::new(
-                                    key.to_string(),
-                                    row.value.clone(),
-                                    true,
-                                ));
-                            }
-                            ParamSource::Body if !key.is_empty() || !value.is_empty() => {
-                                body_parts.push(
-                                    row.part_type.unwrap_or(DataPartSource::UrlEncoded).to_part(
-                                        RequestParam::new(
-                                            key.to_string(),
-                                            row.value.clone(),
-                                            row.has_equals,
-                                        ),
-                                    ),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let url = template::rebuild_url(
-                        &url_location.base,
-                        &url_parts,
-                        &url_location.fragment,
-                    );
-                    let replace_body = !body_parts.is_empty()
-                        || existing_body_parts
-                            .iter()
-                            .all(|part| matches!(part, DataPart::UrlEncoded(_)));
-                    if let Some(session) = self.workspace_state.request_mut(&dialog.request_id) {
-                        session.draft.url = Some(url);
-                        session.draft.query_parts = query_parts;
-                        session.draft.form = form;
-                        if replace_body {
-                            session.draft.body_parts = body_parts;
-                        }
-                    }
-                }
-            }
-            Dialog::Variables(_) => {}
-        }
+        let changed = match &dialog_state {
+            Dialog::Headers(dialog) => self.sync_header_dialog(dialog),
+            Dialog::Params(dialog) => self.sync_params_dialog(dialog),
+            Dialog::Variables(_) => false,
+        };
         self.dialog = Some(dialog_state);
+        changed
+    }
+
+    fn sync_header_dialog(&mut self, dialog: &HeadersDialog) -> bool {
+        let rows = dialog
+            .rows
+            .iter()
+            .filter(|row| row.source == HeaderSource::Request && !row.name.trim().is_empty())
+            .map(|row| HeaderRow {
+                name: row.name.trim().to_string(),
+                ..row.clone()
+            })
+            .collect();
+        match self.workspace_state.request_mut(&dialog.request_id) {
+            Some(session) if session.draft.headers != rows => {
+                session.draft.headers = rows;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn sync_params_dialog(&mut self, dialog: &ParamsDialog) -> bool {
+        let request_data = self
+            .workspace_state
+            .request(&dialog.request_id)
+            .map(|session| {
+                let configured_url = session.source.url.clone();
+                let effective_url = session
+                    .draft
+                    .url
+                    .clone()
+                    .unwrap_or_else(|| configured_url.clone());
+                (
+                    configured_url,
+                    effective_url,
+                    session.draft.body_parts.clone(),
+                )
+            });
+        let Some((configured_url, effective_url, existing_body_parts)) = request_data else {
+            return false;
+        };
+
+        let url_location = template::split_url_query(&effective_url);
+        let mut url_parts = Vec::new();
+        let mut query_parts = Vec::new();
+        let mut form = Vec::new();
+        let mut body_parts = Vec::new();
+        for row in &dialog.rows {
+            let key = row.key.trim();
+            let value = row.value.trim();
+            match row.source {
+                ParamSource::Url if !key.is_empty() || !value.is_empty() => {
+                    url_parts.push(RequestParam::new(
+                        key.to_string(),
+                        value.to_string(),
+                        row.has_equals,
+                    ));
+                }
+                ParamSource::Query if !key.is_empty() || !value.is_empty() => {
+                    query_parts.push(row.part_type.unwrap_or(DataPartSource::Raw).to_part(
+                        RequestParam::new(key.to_string(), row.value.clone(), row.has_equals),
+                    ));
+                }
+                ParamSource::Form if !key.is_empty() => {
+                    form.push(RequestParam::new(key.to_string(), row.value.clone(), true));
+                }
+                ParamSource::Body if !key.is_empty() || !value.is_empty() => {
+                    body_parts.push(row.part_type.unwrap_or(DataPartSource::UrlEncoded).to_part(
+                        RequestParam::new(key.to_string(), row.value.clone(), row.has_equals),
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        let url = template::rebuild_url(&url_location.base, &url_parts, &url_location.fragment);
+        let url = (url != configured_url).then_some(url);
+        let replace_body = !body_parts.is_empty()
+            || existing_body_parts
+                .iter()
+                .all(|part| matches!(part, DataPart::UrlEncoded(_)));
+        match self.workspace_state.request_mut(&dialog.request_id) {
+            Some(session)
+                if session.draft.url != url
+                    || session.draft.query_parts != query_parts
+                    || session.draft.form != form
+                    || (replace_body && session.draft.body_parts != body_parts) =>
+            {
+                session.draft.url = url;
+                session.draft.query_parts = query_parts;
+                session.draft.form = form;
+                if replace_body {
+                    session.draft.body_parts = body_parts;
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn move_dialog_selection(&mut self, direction: isize) {
@@ -1431,7 +1269,9 @@ impl App {
             dialog.move_selection(direction);
             tracing::debug!(direction, "移动配置窗口列表选择");
         }
-        self.sync_dialog_draft();
+        if self.sync_dialog_draft() {
+            self.mark_current_dirty();
+        }
     }
 
     pub(crate) fn click_variable_row(&mut self, index: usize, edit: bool) {
@@ -1441,10 +1281,8 @@ impl App {
         }
     }
 
-    pub(crate) fn click_param_row(&mut self, index: usize, field: HeaderField, edit: bool) {
-        let changed = self.dialog.as_ref().is_some_and(Dialog::is_editing);
-        self.sync_dialog_draft();
-        if changed {
+    pub(crate) fn click_param_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
+        if self.sync_dialog_draft() {
             self.mark_current_dirty();
         }
         if let Some(dialog) = self.dialog.as_mut() {
@@ -1452,10 +1290,8 @@ impl App {
         }
     }
 
-    pub(crate) fn click_header_row(&mut self, index: usize, field: HeaderField, edit: bool) {
-        let changed = self.dialog.as_ref().is_some_and(Dialog::is_editing);
-        self.sync_dialog_draft();
-        if changed {
+    pub(crate) fn click_header_row(&mut self, index: usize, field: KeyValueField, edit: bool) {
+        if self.sync_dialog_draft() {
             self.mark_current_dirty();
         }
         if let Some(dialog) = self.dialog.as_mut() {
@@ -1464,13 +1300,16 @@ impl App {
     }
 
     pub(crate) fn toggle_header_row(&mut self, index: usize) {
-        self.sync_dialog_draft();
+        if self.sync_dialog_draft() {
+            self.mark_current_dirty();
+        }
         if let Some(Dialog::Headers(dialog)) = self.dialog.as_mut() {
             dialog.selected = index;
             dialog.toggle_selected();
         }
-        self.sync_dialog_draft();
-        self.mark_current_dirty();
+        if self.sync_dialog_draft() {
+            self.mark_current_dirty();
+        }
     }
 
     pub(crate) fn focus_dialog(&mut self, focus: DialogFocus) {
@@ -1487,27 +1326,23 @@ impl App {
         self.handle_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
 
-    pub(crate) fn current_request_state(&self) -> Option<&RequestRuntimeState> {
-        self.workspace_state
-            .current()
-            .map(|session| &session.runtime)
-    }
-
     pub(crate) fn request_status(&self, request_id: &str) -> RequestStatus {
         self.workspace_state
             .request(request_id)
-            .map(|session| session.runtime.status)
+            .map(|session| session.runtime.status())
             .unwrap_or_default()
     }
 
     pub(crate) fn current_response(&self) -> Option<&ResponseData> {
-        self.current_request_state()
-            .and_then(|state| state.response.as_ref())
+        self.workspace_state
+            .current()
+            .and_then(|session| session.runtime.response())
     }
 
     pub(crate) fn current_error(&self) -> Option<&str> {
-        self.current_request_state()
-            .and_then(|state| state.error.as_deref())
+        self.workspace_state
+            .current()
+            .and_then(|session| session.runtime.error())
     }
 
     fn apply_response_extracts(&mut self, request_id: &str, body: &str) -> usize {
@@ -1566,7 +1401,7 @@ impl App {
             let Some(active_operation_id) = self
                 .workspace_state
                 .request(&request_id)
-                .map(|session| session.runtime.operation_id.clone())
+                .and_then(|session| session.runtime.active_operation_id().map(ToOwned::to_owned))
             else {
                 tracing::debug!(
                     request_id = %request_id,
@@ -1575,7 +1410,7 @@ impl App {
                 );
                 continue;
             };
-            if active_operation_id.as_deref() != Some(operation_id.as_str()) {
+            if active_operation_id != operation_id {
                 tracing::debug!(
                     request_id = %request_id,
                     operation_id = %operation_id,
@@ -1616,11 +1451,9 @@ impl App {
                     let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
                     };
-                    session.runtime.operation_id = None;
-                    session.runtime.status = request_status;
-                    session.runtime.response = Some(response);
-                    session.runtime.error = None;
-                    session.runtime.message = Some(message.clone());
+                    session
+                        .runtime
+                        .complete_success(request_status, response, message.clone());
                     is_current.then_some(message)
                 }
                 Err(error) => {
@@ -1637,11 +1470,11 @@ impl App {
                     let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
                     };
-                    session.runtime.operation_id = None;
-                    session.runtime.status = request_status;
-                    session.runtime.response = None;
-                    session.runtime.error = Some(error_message.clone());
-                    session.runtime.message = Some(message.clone());
+                    session.runtime.complete_failure(
+                        request_status,
+                        error_message,
+                        message.clone(),
+                    );
                     is_current.then_some(message)
                 }
             };
@@ -1806,7 +1639,9 @@ impl App {
             return;
         }
         if self.editing_preview_tab().is_some() {
-            self.sync_dialog_draft();
+            if self.sync_dialog_draft() {
+                self.mark_current_dirty();
+            }
             self.dialog = None;
         }
         self.preview_state.active_tab = tab;
@@ -1819,7 +1654,9 @@ impl App {
 
     pub(crate) fn add_preview_row(&mut self, tab: PreviewTab) {
         self.activate_preview_tab(tab);
-        self.sync_dialog_draft();
+        if self.sync_dialog_draft() {
+            self.mark_current_dirty();
+        }
         match self.dialog.as_mut() {
             Some(Dialog::Headers(dialog)) if tab == PreviewTab::Headers => dialog.add_row(),
             Some(Dialog::Params(dialog)) if tab == PreviewTab::Params => dialog.add_row(),
@@ -1965,11 +1802,7 @@ impl App {
         );
         let message = self.text().request_started(&resolved.method, &display_url);
         if let Some(session) = self.workspace_state.request_mut(&request_id) {
-            session.runtime.status = RequestStatus::Sending;
-            session.runtime.response = None;
-            session.runtime.error = None;
-            session.runtime.operation_id = Some(operation_id.clone());
-            session.runtime.message = Some(message.clone());
+            session.runtime.start(operation_id, message.clone());
         } else {
             self.status = self.text().request_url_required().to_string();
             return;

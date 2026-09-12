@@ -221,22 +221,22 @@ pub(super) fn draw_headers_dialog(
             .take(visible)
             .map(|(index, row)| {
                 let editing = dialog.editor.is_some() && dialog.selected == index;
-                let name = if editing && dialog.field == HeaderField::Name {
+                let name = if editing && dialog.field == KeyValueField::Name {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(name_width))
                 } else {
                     crate::template::resolve_text(&row.name, &app.workspace_state.variables)
                 };
-                let value = if editing && dialog.field == HeaderField::Value {
+                let value = if editing && dialog.field == KeyValueField::Value {
                     editor_view(dialog.editor.as_ref().unwrap(), usize::from(value_width))
                 } else {
                     crate::template::resolve_text(&row.value, &app.workspace_state.variables)
                 };
-                let name = if editing && dialog.field == HeaderField::Name {
+                let name = if editing && dialog.field == KeyValueField::Name {
                     name
                 } else {
                     truncate(&name, usize::from(name_width))
                 };
-                let value = if editing && dialog.field == HeaderField::Value {
+                let value = if editing && dialog.field == KeyValueField::Value {
                     value
                 } else {
                     truncate(&value, usize::from(value_width))
@@ -256,10 +256,10 @@ pub(super) fn draw_headers_dialog(
                     Cell::from(highlight::template_line(&value, value_style, theme));
                 if editing {
                     match dialog.field {
-                        HeaderField::Name => {
+                        KeyValueField::Name => {
                             name_cell = name_cell.style(active_editor_style(theme))
                         }
-                        HeaderField::Value => {
+                        KeyValueField::Value => {
                             value_cell = value_cell.style(active_editor_style(theme));
                         }
                     }
@@ -333,19 +333,19 @@ pub(super) fn draw_params_dialog(
                 if is_selected {
                     if let Some(editor) = dialog.editor.as_ref() {
                         match dialog.field {
-                            crate::app::HeaderField::Name => {
+                            crate::app::KeyValueField::Name => {
                                 key = editor_view(editor, usize::from(key_width));
                             }
-                            crate::app::HeaderField::Value => {
+                            crate::app::KeyValueField::Value => {
                                 value = editor_view(editor, usize::from(value_width));
                             }
                         }
                     }
                 }
-                if dialog.editor.is_none() || !is_selected || dialog.field != HeaderField::Name {
+                if dialog.editor.is_none() || !is_selected || dialog.field != KeyValueField::Name {
                     key = truncate(&key, usize::from(key_width));
                 }
-                if dialog.editor.is_none() || !is_selected || dialog.field != HeaderField::Value {
+                if dialog.editor.is_none() || !is_selected || dialog.field != KeyValueField::Value {
                     value = truncate(&value, usize::from(value_width));
                 }
                 let key_style = Style::default().fg(theme.text);
@@ -355,8 +355,10 @@ pub(super) fn draw_params_dialog(
                     Cell::from(highlight::template_line(&value, value_style, theme));
                 if dialog.editor.is_some() && is_selected {
                     match dialog.field {
-                        HeaderField::Name => key_cell = key_cell.style(active_editor_style(theme)),
-                        HeaderField::Value => {
+                        KeyValueField::Name => {
+                            key_cell = key_cell.style(active_editor_style(theme))
+                        }
+                        KeyValueField::Value => {
                             value_cell = value_cell.style(active_editor_style(theme));
                         }
                     }
