@@ -172,14 +172,7 @@ pub(super) fn draw_request_list(
         );
     }
 
-    let list_height = list_area.height.saturating_sub(3);
-    let request_list_area = Rect::new(list_area.x, list_area.y, list_area.width, list_height);
-    let add_area = Rect::new(
-        list_area.x,
-        list_area.y.saturating_add(list_height),
-        list_area.width,
-        list_area.height.saturating_sub(list_height),
-    );
+    let request_list_area = list_area;
     let items = app
         .config
         .requests
@@ -222,28 +215,6 @@ pub(super) fn draw_request_list(
         state.offset(),
         theme,
     );
-    if !add_area.is_empty() {
-        let focused = app.focus == Focus::Requests && app.add_request_selected();
-        let style = Style::default()
-            .fg(if focused { theme.accent } else { theme.muted })
-            .bg(if focused {
-                theme.selection
-            } else {
-                theme.surface
-            })
-            .add_modifier(if focused {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            });
-        frame.render_widget(
-            Paragraph::new("+")
-                .alignment(Alignment::Center)
-                .style(style)
-                .block(Block::default().borders(Borders::ALL).border_style(style)),
-            add_area,
-        );
-    }
 }
 
 pub(super) fn request_item(

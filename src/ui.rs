@@ -227,15 +227,7 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
     if area.is_empty() || row < area.y || column >= area.right() {
         return;
     }
-    let request_area_height = area.height.saturating_sub(3);
-    let add_y = area.y.saturating_add(request_area_height);
-    if row >= add_y {
-        app.requests_state.selected_request = app.config.requests.len();
-        app.focus = Focus::Requests;
-        app.create_draft_request();
-        return;
-    }
-    let visible = usize::from(request_area_height);
+    let visible = usize::from(area.height);
     let offset = request_list_offset(
         app.requests_state.selected_request,
         app.config.requests.len(),
@@ -289,7 +281,6 @@ fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {
     let text = app.text();
     let width = frame.area().width.saturating_sub(4).min(56);
     let height = match app.prompt {
-        Some(AppPrompt::SaveRequest(_)) => 7,
         Some(AppPrompt::ConfirmExit | AppPrompt::ConfirmDelete { .. }) => 5,
         None => return,
     }
@@ -307,7 +298,6 @@ fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.surface).fg(theme.text))
             .title(match app.prompt {
-                Some(AppPrompt::SaveRequest(_)) => text.save_request(),
                 Some(AppPrompt::ConfirmExit) => text.unsaved_requests(),
                 Some(AppPrompt::ConfirmDelete { .. }) => text.delete_request(),
                 None => "",
@@ -316,42 +306,6 @@ fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {
     );
     let inner = area.inner(Margin::new(2, 1));
     match &app.prompt {
-        Some(AppPrompt::SaveRequest(editor)) => {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                ])
-                .split(inner);
-            frame.render_widget(
-                Paragraph::new(text.file_name()).style(label_style(theme)),
-                rows[0],
-            );
-            frame.render_widget(
-                Paragraph::new(editor.value.clone()).style(
-                    Style::default()
-                        .fg(theme.text)
-                        .bg(theme.selection)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-                rows[1],
-            );
-            frame.render_widget(
-                Paragraph::new(text.save_prompt_hint()).style(Style::default().fg(theme.muted)),
-                rows[2],
-            );
-            frame.set_cursor_position((
-                rows[1].x.saturating_add(
-                    u16::try_from(crate::editor::terminal_width(
-                        &editor.value[..editor.cursor],
-                    ))
-                    .unwrap_or(u16::MAX),
-                ),
-                rows[1].y,
-            ));
-        }
         Some(AppPrompt::ConfirmExit) => {
             frame.render_widget(
                 Paragraph::new(Text::from(vec![

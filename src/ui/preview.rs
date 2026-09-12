@@ -14,14 +14,8 @@ pub(super) fn draw_preview(
         frame.render_widget(panel_block(text.request_editor(), area, theme), area);
         let empty = area.inner(Margin::new(2, 2));
         frame.render_widget(
-            Paragraph::new(Text::from(vec![
-                Line::from(Span::styled(text.no_requests(), label_style(theme))),
-                Line::from(Span::styled(
-                    text.create_request_hint(),
-                    Style::default().fg(theme.muted),
-                )),
-            ]))
-            .alignment(Alignment::Center),
+            Paragraph::new(Span::styled(text.no_requests(), label_style(theme)))
+                .alignment(Alignment::Center),
             empty,
         );
         return;

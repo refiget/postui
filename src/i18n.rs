@@ -61,32 +61,12 @@ impl UiText {
         self.pick("No requests yet", "暂无请求")
     }
 
-    pub(crate) fn create_request_hint(self) -> &'static str {
-        self.pick("Select + to create one", "选择 + 新建请求")
-    }
-
-    pub(crate) fn draft_created(self) -> &'static str {
-        self.pick("Draft created · enter a URL", "已新建草稿，请输入地址")
-    }
-
     pub(crate) fn enter_url(self) -> &'static str {
         self.pick("Enter URL", "输入地址")
     }
 
     pub(crate) fn request_url_required(self) -> &'static str {
         self.pick("Enter a URL before sending", "发送前请输入地址")
-    }
-
-    pub(crate) fn save_request(self) -> &'static str {
-        self.pick("Save request", "保存请求")
-    }
-
-    pub(crate) fn file_name(self) -> &'static str {
-        self.pick("File name", "文件名")
-    }
-
-    pub(crate) fn save_prompt_hint(self) -> &'static str {
-        self.pick("Enter Save · Esc Cancel", "Enter 保存 · Esc 取消")
     }
 
     pub(crate) fn request_saved(self, path: &str) -> String {
@@ -101,14 +81,6 @@ impl UiText {
             Language::English => format!("Could not save request: {error}"),
             Language::Chinese => format!("保存请求失败：{error}"),
         }
-    }
-
-    pub(crate) fn invalid_request_path(self) -> &'static str {
-        self.pick("Use a relative .http file name", "请输入相对 .http 文件名")
-    }
-
-    pub(crate) fn request_file_exists(self) -> &'static str {
-        self.pick("That request file already exists", "请求文件已存在")
     }
 
     pub(crate) fn unsaved_requests(self) -> &'static str {

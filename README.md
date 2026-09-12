@@ -78,7 +78,7 @@ variables:
 
 所有字段都可省略。相对上传和下载目录以项目根目录为基准。在项目目录或子目录运行 `postui` 会自动发现工作区，也可以运行 `postui /path/to/project`。
 
-`requests/` 目录也可以省略。空工作区会正常打开；选择侧栏底部的 `+` 新建临时请求，输入 URL 后可直接发送，按 `Ctrl+S` 保存为 `.postui/requests/*.http`。
+`requests/` 目录也可以省略，空工作区仍会正常打开。PostUI 只加载配置中已有的请求；请在 `.postui/requests/` 中维护请求文件。
 
 个人界面配置位于 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`，Windows 位于 `%APPDATA%\postui\config.yaml`：
 

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -126,8 +126,6 @@ enum AppMessage {
 }
 
 static NEXT_REQUEST_OPERATION: AtomicU64 = AtomicU64::new(1);
-static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
-
 fn blank_request(id: String, timeout_seconds: u64) -> ApiRequest {
     ApiRequest {
         id,
@@ -244,7 +242,6 @@ pub(crate) struct PreviewContentState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum AppPrompt {
-    SaveRequest(TextEditor),
     ConfirmExit,
     ConfirmDelete { request_id: String },
 }
@@ -277,7 +274,6 @@ pub(crate) struct WorkspaceState {
     pub(crate) variables: BTreeMap<String, String>,
     pub(crate) request_edits: HashMap<String, RequestEdits>,
     pub(crate) request_states: HashMap<String, RequestRuntimeState>,
-    pub(crate) draft_requests: HashSet<String>,
     pub(crate) dirty_requests: HashSet<String>,
 }
 
@@ -339,7 +335,6 @@ impl WorkspaceState {
                 .iter()
                 .map(|request| (request.id.clone(), RequestRuntimeState::default()))
                 .collect(),
-            draft_requests: HashSet::new(),
             dirty_requests: HashSet::new(),
         }
     }
@@ -427,10 +422,6 @@ impl App {
         self.requests_state.selected_request < self.config.requests.len()
     }
 
-    pub(crate) fn add_request_selected(&self) -> bool {
-        self.requests_state.selected_request == self.config.requests.len()
-    }
-
     pub(crate) fn text(&self) -> UiText {
         UiText::new(self.global_config.language)
     }
@@ -439,38 +430,8 @@ impl App {
         self.animation_frame = self.animation_frame.wrapping_add(1);
     }
 
-    pub(crate) fn create_draft_request(&mut self) {
-        self.commit_active_editors();
-        let id = format!("draft:{}", NEXT_DRAFT_ID.fetch_add(1, Ordering::Relaxed));
-        let request = blank_request(id.clone(), self.config.timeout_seconds);
-        self.workspace_state
-            .request_edits
-            .insert(id.clone(), RequestEdits::from(&request));
-        self.workspace_state
-            .request_states
-            .insert(id.clone(), RequestRuntimeState::default());
-        self.workspace_state.draft_requests.insert(id.clone());
-        self.workspace_state.dirty_requests.insert(id);
-        self.config.requests.push(request);
-        self.requests_state.selected_request = self.config.requests.len() - 1;
-        self.preview_state.active_tab = PreviewTab::Body;
-        self.preview_state.scroll.reset();
-        self.response_state = ResponseContentState::default();
-        self.focus = Focus::Preview;
-        self.start_url_edit();
-        self.status = self.text().draft_created().to_string();
-    }
-
     pub(crate) fn is_request_dirty(&self, request_id: &str) -> bool {
         self.workspace_state.dirty_requests.contains(request_id)
-    }
-
-    pub(crate) fn is_current_draft(&self) -> bool {
-        self.has_current_request()
-            && self
-                .workspace_state
-                .draft_requests
-                .contains(&self.current_request().id)
     }
 
     fn mark_current_dirty(&mut self) {
@@ -539,58 +500,11 @@ impl App {
         if !self.has_current_request() {
             return;
         }
-        if self.is_current_draft() {
-            self.prompt = Some(AppPrompt::SaveRequest(TextEditor::new(
-                "untitled-request.http".to_string(),
-            )));
-            return;
-        }
         let id = self.current_request().id.clone();
         match self.write_request_file(&id) {
             Ok(path) => {
                 self.workspace_state.dirty_requests.remove(&id);
                 self.status = self.text().request_saved(&path.display().to_string());
-            }
-            Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
-        }
-    }
-
-    fn save_draft_as(&mut self, name: &str) {
-        let Some(relative) = normalized_request_path(name) else {
-            self.status = self.text().invalid_request_path().to_string();
-            return;
-        };
-        let path = self.config_path.join("requests").join(&relative);
-        if path.exists() {
-            self.status = self.text().request_file_exists().to_string();
-            return;
-        }
-        let old_id = self.current_request().id.clone();
-        let new_id = format!("requests/{}", relative.to_string_lossy().replace('\\', "/"));
-        match self.write_request_to_path(&path) {
-            Ok(()) => {
-                let mut request =
-                    self.config.requests[self.requests_state.selected_request].clone();
-                request.id = new_id.clone();
-                request.name = relative
-                    .file_stem()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Untitled request".to_string());
-                self.config.requests[self.requests_state.selected_request] = request;
-                if let Some(edits) = self.workspace_state.request_edits.remove(&old_id) {
-                    self.workspace_state
-                        .request_edits
-                        .insert(new_id.clone(), edits);
-                }
-                if let Some(state) = self.workspace_state.request_states.remove(&old_id) {
-                    self.workspace_state
-                        .request_states
-                        .insert(new_id.clone(), state);
-                }
-                self.workspace_state.draft_requests.remove(&old_id);
-                self.workspace_state.dirty_requests.remove(&old_id);
-                self.status = self.text().request_saved(&path.display().to_string());
-                self.prompt = None;
             }
             Err(error) => self.status = self.text().request_save_failed(&error.to_string()),
         }
@@ -656,23 +570,21 @@ impl App {
             self.prompt = None;
             return;
         };
-        if !self.workspace_state.draft_requests.contains(request_id) {
-            let Some(relative) = request_id.strip_prefix("requests/") else {
-                self.status = self.text().request_delete_failed("请求源路径无效");
-                return;
-            };
-            let path = self.config_path.join("requests").join(relative);
-            if let Err(error) = fs::remove_file(&path) {
-                self.status = self.text().request_delete_failed(&error.to_string());
-                return;
-            }
+        let Some(relative) = request_id.strip_prefix("requests/") else {
+            self.status = self.text().request_delete_failed("请求源路径无效");
+            return;
+        };
+        let path = self.config_path.join("requests").join(relative);
+        if let Err(error) = fs::remove_file(&path) {
+            self.status = self.text().request_delete_failed(&error.to_string());
+            return;
         }
         self.config.requests.remove(index);
         self.workspace_state.request_edits.remove(request_id);
         self.workspace_state.request_states.remove(request_id);
-        self.workspace_state.draft_requests.remove(request_id);
         self.workspace_state.dirty_requests.remove(request_id);
-        self.requests_state.selected_request = index.min(self.config.requests.len());
+        self.requests_state.selected_request =
+            index.min(self.config.requests.len().saturating_sub(1));
         self.preview_state = PreviewContentState::default();
         self.response_state = ResponseContentState::default();
         self.dialog = None;
@@ -682,14 +594,6 @@ impl App {
 
     fn handle_prompt_key(&mut self, key: KeyEvent) {
         match self.prompt.as_mut() {
-            Some(AppPrompt::SaveRequest(editor)) => match editor.handle_key(key) {
-                EditorAction::Continue => {}
-                EditorAction::Cancel => self.prompt = None,
-                EditorAction::Commit => {
-                    let name = editor.value.clone();
-                    self.save_draft_as(&name);
-                }
-            },
             Some(AppPrompt::ConfirmExit) => match key.code {
                 KeyCode::Char('y' | 'Y') => self.should_quit = true,
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => self.prompt = None,
@@ -1811,7 +1715,6 @@ impl App {
     fn handle_enter(&mut self) {
         tracing::debug!(focus = ?self.focus, "处理 Enter 操作");
         match self.focus {
-            Focus::Requests if self.add_request_selected() => self.create_draft_request(),
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
@@ -1833,16 +1736,13 @@ impl App {
     }
 
     pub(crate) fn move_request(&mut self, delta: isize) {
-        let count = self.config.requests.len().saturating_add(1);
+        let count = self.config.requests.len();
+        if count == 0 {
+            return;
+        }
         let current = self.requests_state.selected_request % count;
         let next = (current as isize + delta).rem_euclid(count as isize) as usize;
-        if next == self.config.requests.len() {
-            self.commit_active_editors();
-            self.requests_state.selected_request = next;
-            self.focus = Focus::Requests;
-        } else {
-            self.select_request(next);
-        }
+        self.select_request(next);
     }
 
     pub(crate) fn move_preview_tab(&mut self, direction: isize) {
@@ -2098,27 +1998,6 @@ fn rebuild_url(base: &str, query_parts: &[String], fragment: &str) -> String {
         url.push_str(fragment);
     }
     url
-}
-
-fn normalized_request_path(value: &str) -> Option<PathBuf> {
-    let mut path = PathBuf::from(value.trim());
-    if path.as_os_str().is_empty() || path.is_absolute() {
-        return None;
-    }
-    if path.extension().is_none() {
-        path.set_extension("http");
-    }
-    if path.extension().and_then(|value| value.to_str()) != Some("http")
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return None;
-    }
-    Some(path)
 }
 
 fn shell_quote(value: &str) -> String {
