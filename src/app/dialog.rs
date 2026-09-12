@@ -98,10 +98,9 @@ pub(crate) struct VariablesDialog {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct EnvironmentsDialog {
+pub(crate) struct ConfigurationsDialog {
     pub(crate) rows: Vec<String>,
     pub(crate) selected: usize,
-    pub(crate) focus: DialogFocus,
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +123,7 @@ pub(crate) struct ParamsDialog {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Dialog {
-    Environments(EnvironmentsDialog),
+    Configurations(ConfigurationsDialog),
     Variables(VariablesDialog),
     Headers(HeadersDialog),
     Params(ParamsDialog),
@@ -215,30 +214,19 @@ impl VariablesDialog {
     }
 }
 
-impl EnvironmentsDialog {
+impl ConfigurationsDialog {
     fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
         match key.code {
             KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Tab => {
-                self.focus = self.focus.next();
-                DialogAction::None
-            }
-            KeyCode::BackTab => {
-                self.focus = self.focus.previous();
-                DialogAction::None
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.focus == DialogFocus::Content => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') if self.focus == DialogFocus::Content => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => match self.focus {
-                DialogFocus::Content | DialogFocus::Apply => DialogAction::Apply,
-                DialogFocus::Close => DialogAction::Cancel,
-            },
+            KeyCode::Enter | KeyCode::Char(' ') => DialogAction::Apply,
             _ => DialogAction::None,
         }
     }
@@ -250,7 +238,6 @@ impl EnvironmentsDialog {
     fn click_row(&mut self, index: usize) {
         if index < self.rows.len() {
             self.selected = index;
-            self.focus = DialogFocus::Content;
         }
     }
 }
@@ -534,7 +521,7 @@ impl ParamsDialog {
 impl Dialog {
     pub(crate) fn preview_tab(&self) -> Option<PreviewTab> {
         match self {
-            Self::Environments(_) | Self::Variables(_) => None,
+            Self::Configurations(_) | Self::Variables(_) => None,
             Self::Headers(_) => Some(PreviewTab::Headers),
             Self::Params(_) => Some(PreviewTab::Params),
         }
@@ -542,7 +529,7 @@ impl Dialog {
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
         match self {
-            Self::Environments(dialog) => dialog.handle_key(key),
+            Self::Configurations(dialog) => dialog.handle_key(key),
             Self::Variables(dialog) => dialog.handle_key(key),
             Self::Headers(dialog) => dialog.handle_key(key),
             Self::Params(dialog) => dialog.handle_key(key),
@@ -552,15 +539,15 @@ impl Dialog {
     pub(super) fn move_selection(&mut self, direction: isize) {
         self.commit_editor();
         match self {
-            Self::Environments(dialog) => dialog.move_selection(direction),
+            Self::Configurations(dialog) => dialog.move_selection(direction),
             Self::Variables(dialog) => dialog.move_selection(direction),
             Self::Headers(dialog) => dialog.move_selection(direction),
             Self::Params(dialog) => dialog.move_selection(direction),
         }
     }
 
-    pub(super) fn click_environment_row(&mut self, index: usize) {
-        if let Self::Environments(dialog) = self {
+    pub(super) fn click_configuration_row(&mut self, index: usize) {
+        if let Self::Configurations(dialog) = self {
             dialog.click_row(index);
         }
     }
@@ -579,7 +566,7 @@ impl Dialog {
 
     pub(super) fn commit_editor(&mut self) {
         match self {
-            Self::Environments(_) => {}
+            Self::Configurations(_) => {}
             Self::Variables(dialog) => dialog.commit_editor(),
             Self::Headers(dialog) => dialog.commit_editor(),
             Self::Params(dialog) => dialog.commit_editor(),
@@ -588,7 +575,7 @@ impl Dialog {
 
     pub(super) fn is_editing(&self) -> bool {
         match self {
-            Self::Environments(_) => false,
+            Self::Configurations(_) => false,
             Self::Variables(dialog) => dialog.editor.is_some(),
             Self::Headers(dialog) => dialog.editor.is_some(),
             Self::Params(dialog) => dialog.editor.is_some(),

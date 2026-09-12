@@ -16,8 +16,8 @@ pub(crate) struct RequestConfig {
     pub(crate) download_directory: PathBuf,
     pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
-    pub(crate) environments: BTreeMap<String, EnvironmentConfig>,
-    pub(crate) default_environment: String,
+    pub(crate) configurations: BTreeMap<String, WorkspaceConfiguration>,
+    pub(crate) default_configuration: String,
     #[serde(default)]
     pub(crate) editable_variables: BTreeSet<String>,
     pub(crate) requests: Vec<ApiRequest>,
@@ -31,10 +31,9 @@ pub(crate) struct WorkspaceConfig {
     pub(crate) download_directory: PathBuf,
     pub(crate) headers: Vec<NameValue>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
-    pub(crate) environments: BTreeMap<String, EnvironmentConfig>,
-    pub(crate) default_environment: String,
+    pub(crate) configurations: BTreeMap<String, WorkspaceConfiguration>,
+    pub(crate) default_configuration: String,
     pub(crate) editable_variables: BTreeSet<String>,
-    pub(crate) timeout_seconds: u64,
 }
 
 impl RequestConfig {
@@ -45,11 +44,11 @@ impl RequestConfig {
             download_directory,
             headers,
             variables,
-            environments,
-            default_environment,
+            configurations,
+            default_configuration,
             editable_variables,
             requests,
-            timeout_seconds,
+            timeout_seconds: _,
         } = self;
         (
             WorkspaceConfig {
@@ -58,17 +57,16 @@ impl RequestConfig {
                 download_directory,
                 headers,
                 variables,
-                environments,
-                default_environment,
+                configurations,
+                default_configuration,
                 editable_variables,
-                timeout_seconds,
             },
             requests,
         )
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct VariableDefinition {
     pub(crate) default: Option<Value>,
 }
@@ -118,7 +116,7 @@ fn default_has_equals() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ApiRequest {
     pub(crate) id: String,
     pub(crate) name: String,
@@ -132,12 +130,16 @@ pub(crate) struct ApiRequest {
     pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) extracts: Vec<ResponseExtract>,
-    pub(crate) overrides: BTreeMap<String, RequestOverride>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EnvironmentConfig {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceConfiguration {
+    #[serde(default)]
+    pub(crate) path: Option<PathBuf>,
     pub(crate) variables: BTreeMap<String, VariableDefinition>,
+    pub(crate) headers: Vec<NameValue>,
+    pub(crate) timeout_seconds: Option<u64>,
+    pub(crate) request_overrides: BTreeMap<String, RequestOverride>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +180,17 @@ pub(crate) struct RequestDocument {
     pub(crate) files: Vec<FileUpload>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) extracts: Vec<ResponseExtract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConfigurationDocument {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) variables: BTreeMap<String, Option<Value>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) headers: Vec<NameValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) overrides: BTreeMap<String, RequestOverrideDocument>,
 }
@@ -206,12 +219,14 @@ pub(crate) struct RequestOverrideDocument {
 }
 
 impl ApiRequest {
-    pub(crate) fn for_environment(&self, environment: &str) -> Self {
+    pub(crate) fn for_configuration(&self, configuration: &WorkspaceConfiguration) -> Self {
         let mut request = self.clone();
-        if let Some(request_override) = self.overrides.get(environment) {
+        if let Some(timeout_seconds) = configuration.timeout_seconds {
+            request.timeout_seconds = timeout_seconds;
+        }
+        if let Some(request_override) = configuration.request_overrides.get(&self.id) {
             request_override.apply_to(&mut request);
         }
-        request.overrides.clear();
         request
     }
 }
@@ -229,7 +244,7 @@ impl RequestOverride {
             && self.extracts.is_none()
     }
 
-    fn apply_to(&self, request: &mut ApiRequest) {
+    pub(crate) fn apply_to(&self, request: &mut ApiRequest) {
         if let Some(method) = &self.method {
             request.method = method.clone();
         }
@@ -278,12 +293,26 @@ impl From<&ApiRequest> for RequestDocument {
             form: request.form.clone(),
             files: request.files.clone(),
             extracts: request.extracts.clone(),
-            overrides: request
-                .overrides
+        }
+    }
+}
+
+impl From<&WorkspaceConfiguration> for ConfigurationDocument {
+    fn from(configuration: &WorkspaceConfiguration) -> Self {
+        Self {
+            variables: configuration
+                .variables
                 .iter()
-                .map(|(environment, request_override)| {
+                .map(|(name, definition)| (name.clone(), definition.default.clone()))
+                .collect(),
+            headers: configuration.headers.clone(),
+            timeout: configuration.timeout_seconds,
+            overrides: configuration
+                .request_overrides
+                .iter()
+                .map(|(request_id, request_override)| {
                     (
-                        environment.clone(),
+                        request_id.clone(),
                         RequestOverrideDocument::from(request_override),
                     )
                 })
@@ -367,20 +396,24 @@ struct RawWorkspaceConfig {
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
     #[serde(default)]
-    environments: BTreeMap<String, RawEnvironmentConfig>,
-    #[serde(default)]
-    default_environment: Option<String>,
+    default_configuration: Option<String>,
     #[serde(default)]
     headers: Vec<NameValue>,
     #[serde(default = "default_timeout_seconds")]
     timeout: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawEnvironmentConfig {
+struct RawConfiguration {
     #[serde(default)]
     variables: BTreeMap<String, Option<Value>>,
+    #[serde(default)]
+    headers: Vec<NameValue>,
+    #[serde(default)]
+    timeout: Option<u64>,
+    #[serde(default)]
+    overrides: BTreeMap<String, RequestOverrideDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,8 +440,7 @@ impl Default for RawWorkspaceConfig {
             name: None,
             directories: RawDirectories::default(),
             variables: BTreeMap::new(),
-            environments: BTreeMap::new(),
-            default_environment: None,
+            default_configuration: None,
             headers: Vec::new(),
             timeout: default_timeout_seconds(),
         }
@@ -418,6 +450,13 @@ impl Default for RawWorkspaceConfig {
 #[derive(Debug)]
 struct RequestFile {
     path: PathBuf,
+    text: String,
+}
+
+#[derive(Debug)]
+struct ConfigurationFile {
+    path: PathBuf,
+    name: String,
     text: String,
 }
 
@@ -454,13 +493,19 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
 
     let workspace_config_path = workspace_path.join("postui.yaml");
     let workspace_config = read_optional_file(&workspace_config_path)?;
+    let configuration_files = read_configuration_files(&workspace_path.join("configs"))?;
     let request_files = read_request_files(&workspace_path.join("requests"))?;
-    let fingerprint =
-        workspace_fingerprint(workspace_path, workspace_config.as_deref(), &request_files);
+    let fingerprint = workspace_fingerprint(
+        workspace_path,
+        workspace_config.as_deref(),
+        &configuration_files,
+        &request_files,
+    );
     tracing::debug!(
         path = %workspace_path.display(),
         config_path = %workspace_config_path.display(),
         config_present = workspace_config.is_some(),
+        configuration_count = configuration_files.len(),
         request_count = request_files.len(),
         "读取工作区"
     );
@@ -472,6 +517,7 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
                 &workspace_config_path,
                 workspace_config.as_deref(),
                 workspace_path,
+                &configuration_files,
                 &request_files,
             )?;
             (config, false)
@@ -490,7 +536,7 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
         name = %config.name,
         request_count = config.requests.len(),
         variable_count = config.editable_variables.len(),
-        environment_count = config.environments.len(),
+        configuration_count = config.configurations.len(),
         workspace_header_count = config.headers.len(),
         timeout_seconds = config.timeout_seconds,
         file_directory = %config.file_directory.display(),
@@ -505,6 +551,7 @@ fn parse_workspace_config(
     path: &Path,
     text: Option<&str>,
     workspace_path: &Path,
+    configuration_files: &[ConfigurationFile],
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let raw = match text {
@@ -512,28 +559,25 @@ fn parse_workspace_config(
             .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?,
         None => RawWorkspaceConfig::default(),
     };
-    normalize_config(raw, workspace_path, request_files)
+    normalize_config(raw, workspace_path, configuration_files, request_files)
 }
 
 fn normalize_config(
     raw: RawWorkspaceConfig,
     workspace_path: &Path,
+    configuration_files: &[ConfigurationFile],
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let RawWorkspaceConfig {
         name,
         directories,
         variables: raw_variables,
-        environments: raw_environments,
-        default_environment: raw_default_environment,
+        default_configuration: raw_default_configuration,
         headers: raw_headers,
         timeout,
     } = raw;
     let variables = normalize_variables(raw_variables)?;
     let headers = normalize_headers(raw_headers)?;
-    let environments = normalize_environments(raw_environments)?;
-    let default_environment =
-        normalize_default_environment(raw_default_environment, &environments)?;
     let timeout_seconds = if timeout == 0 {
         default_timeout_seconds()
     } else {
@@ -552,7 +596,7 @@ fn normalize_config(
     let mut requests = Vec::with_capacity(request_files.len());
     for file in request_files {
         let raw_request = parse_request_file(file, workspace_path)?;
-        let request = normalize_request(raw_request, timeout_seconds, &environments)?;
+        let request = normalize_request(raw_request, timeout_seconds)?;
         if !request_ids.insert(request.id.clone()) {
             bail!("接口 id 重复: {}", request.id)
         }
@@ -572,9 +616,25 @@ fn normalize_config(
         requests.push(request);
     }
 
+    let configurations = normalize_configurations(configuration_files, &request_ids)?;
+    let default_configuration =
+        normalize_default_configuration(raw_default_configuration, &configurations)?;
+
     let mut editable_variables = variables.keys().cloned().collect::<BTreeSet<_>>();
-    for environment in environments.values() {
-        editable_variables.extend(environment.variables.keys().cloned());
+    for configuration in configurations.values() {
+        editable_variables.extend(configuration.variables.keys().cloned());
+        for header in &configuration.headers {
+            editable_variables.extend(
+                crate::template::variable_names_in_text(&header.name)
+                    .into_iter()
+                    .chain(crate::template::variable_names_in_text(&header.value)),
+            );
+        }
+        for request_override in configuration.request_overrides.values() {
+            editable_variables.extend(crate::template::variable_names_in_override(
+                request_override,
+            ));
+        }
     }
     for request in &requests {
         editable_variables.extend(crate::template::variable_names(request));
@@ -604,8 +664,8 @@ fn normalize_config(
         download_directory,
         headers,
         variables,
-        environments,
-        default_environment,
+        configurations,
+        default_configuration,
         editable_variables,
         requests,
         timeout_seconds,
@@ -613,54 +673,88 @@ fn normalize_config(
     Ok(config)
 }
 
-fn normalize_environments(
-    raw_environments: BTreeMap<String, RawEnvironmentConfig>,
-) -> Result<BTreeMap<String, EnvironmentConfig>> {
-    if raw_environments.is_empty() {
+fn normalize_configurations(
+    configuration_files: &[ConfigurationFile],
+    request_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, WorkspaceConfiguration>> {
+    if configuration_files.is_empty() {
         return Ok(BTreeMap::from([(
             "default".to_string(),
-            EnvironmentConfig {
+            WorkspaceConfiguration {
+                path: None,
                 variables: BTreeMap::new(),
+                headers: Vec::new(),
+                timeout_seconds: None,
+                request_overrides: BTreeMap::new(),
             },
         )]));
     }
 
-    let mut environments = BTreeMap::new();
-    for (raw_name, raw_environment) in raw_environments {
-        let Some(name) = normalize_environment_name(&raw_name) else {
-            bail!("环境名称无效: {raw_name}")
+    let mut configurations = BTreeMap::new();
+    for file in configuration_files {
+        let raw = if file.text.trim().is_empty() {
+            RawConfiguration::default()
+        } else {
+            serde_saphyr::from_str(&file.text)
+                .with_context(|| format!("配置 {} 的 YAML 格式无效", file.name))?
         };
-        let variables = normalize_variables(raw_environment.variables)
-            .with_context(|| format!("环境 {name} 的变量配置无效"))?;
-        if environments
-            .insert(name.clone(), EnvironmentConfig { variables })
+        let variables = normalize_variables(raw.variables)
+            .with_context(|| format!("配置 {} 的变量配置无效", file.name))?;
+        let headers = normalize_headers(raw.headers)
+            .with_context(|| format!("配置 {} 的 headers 配置无效", file.name))?;
+        let timeout_seconds = raw.timeout.filter(|timeout| *timeout > 0);
+        let mut request_overrides = BTreeMap::new();
+        for (raw_request_id, raw_override) in raw.overrides {
+            let request_id = normalize_request_id(&raw_request_id)?;
+            if !request_ids.contains(&request_id) {
+                bail!("配置 {} 使用了不存在的接口: {}", file.name, raw_request_id)
+            }
+            let request_override = normalize_override(raw_override, &request_id, &file.name)?;
+            if request_overrides
+                .insert(request_id.clone(), request_override)
+                .is_some()
+            {
+                bail!("配置 {} 重复声明接口覆盖: {request_id}", file.name)
+            }
+        }
+        if configurations
+            .insert(
+                file.name.clone(),
+                WorkspaceConfiguration {
+                    path: Some(file.path.clone()),
+                    variables,
+                    headers,
+                    timeout_seconds,
+                    request_overrides,
+                },
+            )
             .is_some()
         {
-            bail!("环境名称重复: {name}")
+            bail!("配置名称重复: {}", file.name)
         }
     }
-    Ok(environments)
+    Ok(configurations)
 }
 
-fn normalize_default_environment(
+fn normalize_default_configuration(
     raw_name: Option<String>,
-    environments: &BTreeMap<String, EnvironmentConfig>,
+    configurations: &BTreeMap<String, WorkspaceConfiguration>,
 ) -> Result<String> {
     if let Some(raw_name) = raw_name {
-        let Some(name) = normalize_environment_name(&raw_name) else {
-            bail!("默认环境名称无效: {raw_name}")
+        let Some(name) = normalize_configuration_name(&raw_name) else {
+            bail!("默认配置名称无效: {raw_name}")
         };
-        if !environments.contains_key(&name) {
-            bail!("默认环境不存在: {name}")
+        if !configurations.contains_key(&name) {
+            bail!("默认配置不存在: {name}")
         }
         return Ok(name);
     }
 
-    environments
+    configurations
         .keys()
         .next()
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("工作区没有可用环境"))
+        .ok_or_else(|| anyhow::anyhow!("工作区没有可用配置"))
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<String>> {
@@ -686,6 +780,41 @@ fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
             .with_context(|| format!("无法读取请求文件: {}", path.display()))?;
         tracing::debug!(path = %path.display(), bytes = text.len(), "读取请求文件");
         files.push(RequestFile { path, text });
+    }
+    Ok(files)
+}
+
+fn read_configuration_files(configurations_directory: &Path) -> Result<Vec<ConfigurationFile>> {
+    if !configurations_directory.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = fs::read_dir(configurations_directory)
+        .with_context(|| format!("无法读取配置目录: {}", configurations_directory.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("无法枚举配置目录: {}", configurations_directory.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("无法读取文件类型: {}", path.display()))?;
+        if !file_type.is_file() || !is_configuration_file(&path) {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let Some(name) = normalize_configuration_name(stem) else {
+            bail!("配置文件名称无效: {}", path.display())
+        };
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("无法读取配置文件: {}", path.display()))?;
+        tracing::debug!(path = %path.display(), name = %name, bytes = text.len(), "读取 workspace 配置");
+        files.push(ConfigurationFile { path, name, text });
     }
     Ok(files)
 }
@@ -717,9 +846,14 @@ fn is_request_file(path: &Path) -> bool {
         .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "yaml" | "yml"))
 }
 
+fn is_configuration_file(path: &Path) -> bool {
+    is_request_file(path)
+}
+
 fn workspace_fingerprint(
     workspace_path: &Path,
     workspace_config: Option<&str>,
+    configuration_files: &[ConfigurationFile],
     request_files: &[RequestFile],
 ) -> blake3::Hash {
     let mut fingerprint = blake3::Hasher::new();
@@ -728,6 +862,16 @@ fn workspace_fingerprint(
         &mut fingerprint,
         workspace_config.unwrap_or("<missing-config>").as_bytes(),
     );
+    for file in configuration_files {
+        let relative = file
+            .path
+            .strip_prefix(workspace_path)
+            .unwrap_or(&file.path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        append_fingerprint_part(&mut fingerprint, relative.as_bytes());
+        append_fingerprint_part(&mut fingerprint, file.text.as_bytes());
+    }
     for file in request_files {
         let relative = file
             .path
@@ -876,11 +1020,7 @@ fn normalize_headers(raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
     Ok(headers)
 }
 
-fn normalize_request(
-    raw: ParsedRequest,
-    default_timeout_seconds: u64,
-    environments: &BTreeMap<String, EnvironmentConfig>,
-) -> Result<ApiRequest> {
+fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result<ApiRequest> {
     let id = raw.id;
     let document = raw.document;
     let name = if document.name.trim().is_empty() {
@@ -908,22 +1048,6 @@ fn normalize_request(
     let form = normalize_params(document.form, &id, "form")?;
     let files = normalize_files(document.files, &id)?;
     let extracts = normalize_extracts(document.extracts, &id)?;
-    let mut overrides = BTreeMap::new();
-    for (raw_environment, raw_override) in document.overrides {
-        let Some(environment) = normalize_environment_name(&raw_environment) else {
-            bail!("接口 {id} 的环境名称无效: {raw_environment}")
-        };
-        if !environments.contains_key(&environment) {
-            bail!("接口 {id} 使用了未配置的环境: {environment}")
-        }
-        let request_override = normalize_override(raw_override, &id, &environment)?;
-        if overrides
-            .insert(environment.clone(), request_override)
-            .is_some()
-        {
-            bail!("接口 {id} 重复声明环境覆盖: {environment}")
-        }
-    }
 
     Ok(ApiRequest {
         id,
@@ -942,14 +1066,13 @@ fn normalize_request(
         form,
         files,
         extracts,
-        overrides,
     })
 }
 
 fn normalize_override(
     raw: RequestOverrideDocument,
     request_id: &str,
-    environment: &str,
+    configuration: &str,
 ) -> Result<RequestOverride> {
     let method = raw
         .method
@@ -957,13 +1080,13 @@ fn normalize_override(
         .transpose()?;
     let url = raw.url.map(|url| url.trim().to_string());
     if url.as_deref().is_some_and(str::is_empty) {
-        bail!("接口 {request_id} 的环境 {environment} 覆盖 url 不能为空")
+        bail!("配置 {configuration} 的接口 {request_id} 覆盖 url 不能为空")
     }
     let headers = raw
         .headers
         .map(normalize_headers)
         .transpose()
-        .with_context(|| format!("接口 {request_id} 的环境 {environment} headers 配置无效"))?;
+        .with_context(|| format!("配置 {configuration} 的接口 {request_id} headers 配置无效"))?;
     let query_parts = raw
         .params
         .map(|params| normalize_params(params, request_id, "params"))
@@ -999,7 +1122,7 @@ fn normalize_override(
         && files.is_none()
         && extracts.is_none()
     {
-        bail!("接口 {request_id} 的环境 {environment} 覆盖不能为空")
+        bail!("配置 {configuration} 的接口 {request_id} 覆盖不能为空")
     }
     Ok(RequestOverride {
         method,
@@ -1111,7 +1234,26 @@ fn normalize_variable_name(value: &str) -> Option<String> {
     }
 }
 
-fn normalize_environment_name(value: &str) -> Option<String> {
+fn normalize_request_id(value: &str) -> Result<String> {
+    let value = value.trim().replace('\\', "/");
+    let value = value.strip_prefix("requests/").unwrap_or(&value);
+    let path = Path::new(value);
+    if value.is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("配置覆盖中的接口路径无效: {value}")
+    }
+    let normalized = normalize_path(path).to_string_lossy().replace('\\', "/");
+    Ok(format!("requests/{normalized}"))
+}
+
+fn normalize_configuration_name(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()
         && value.chars().all(|character| {

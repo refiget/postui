@@ -1,0 +1,3 @@
+variables:
+  api_base: https://httpbin.org
+  scenario: dev

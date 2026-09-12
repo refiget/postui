@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     config::{
         ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam,
-        WorkspaceConfig, value_to_string,
+        WorkspaceConfig, WorkspaceConfiguration, value_to_string,
     },
     http::{HttpError, ResponseData},
     i18n::UiText,
@@ -132,23 +132,25 @@ pub(crate) struct RequestSession {
     pub(crate) draft: RequestDraft,
     pub(super) runtime: RequestRuntimeState,
     pub(crate) dirty: bool,
-    environment: String,
 }
 
 impl RequestSession {
-    pub(super) fn new(source: ApiRequest, environment: &str) -> Self {
-        let draft = RequestDraft::from(&source.for_environment(environment));
+    pub(super) fn new(source: ApiRequest, configuration: &WorkspaceConfiguration) -> Self {
+        let draft = RequestDraft::from(&source.for_configuration(configuration));
         Self {
             source,
             draft,
             runtime: RequestRuntimeState::default(),
             dirty: false,
-            environment: environment.to_string(),
         }
     }
 
-    pub(super) fn effective_request(&self, collection_headers: &[NameValue]) -> ApiRequest {
-        let mut effective = self.source.for_environment(&self.environment);
+    pub(super) fn effective_request(
+        &self,
+        configuration: &WorkspaceConfiguration,
+        collection_headers: &[NameValue],
+    ) -> ApiRequest {
+        let mut effective = self.source.for_configuration(configuration);
         effective.method = self.draft.method.clone();
         if let Some(url) = &self.draft.url {
             effective.url = url.clone();
@@ -183,33 +185,43 @@ impl RequestSession {
         effective
     }
 
-    pub(super) fn activate_environment(&mut self, environment: &str) {
-        self.environment = environment.to_string();
-        self.draft = RequestDraft::from(&self.source.for_environment(environment));
+    pub(super) fn activate_configuration(&mut self, configuration: &WorkspaceConfiguration) {
+        self.draft = RequestDraft::from(&self.source.for_configuration(configuration));
         self.runtime.reset();
     }
 
-    pub(super) fn commit_draft(&mut self) -> bool {
-        let previous = self.source.overrides.get(&self.environment).cloned();
+    pub(super) fn commit_draft(&mut self, configuration: &mut WorkspaceConfiguration) -> bool {
+        if configuration.path.is_none() {
+            return self.commit_default_draft();
+        }
+
+        let mut base = self.source.clone();
+        if let Some(timeout_seconds) = configuration.timeout_seconds {
+            base.timeout_seconds = timeout_seconds;
+        }
+        let previous = configuration
+            .request_overrides
+            .get(&self.source.id)
+            .cloned();
         let existing = previous.clone().unwrap_or_default();
         let next = RequestOverride {
-            method: (self.draft.method != self.source.method).then(|| self.draft.method.clone()),
+            method: (self.draft.method != base.method).then(|| self.draft.method.clone()),
             url: self
                 .draft
                 .url
                 .as_deref()
-                .filter(|url| !url.trim().is_empty() && *url != self.source.url)
+                .filter(|url| !url.trim().is_empty() && *url != base.url)
                 .map(str::to_string),
-            timeout_seconds: (self.draft.timeout_seconds != self.source.timeout_seconds)
+            timeout_seconds: (self.draft.timeout_seconds != base.timeout_seconds)
                 .then_some(self.draft.timeout_seconds),
-            headers: (draft_headers(&self.draft) != self.source.headers)
+            headers: (draft_headers(&self.draft) != base.headers)
                 .then(|| draft_headers(&self.draft)),
-            query_parts: (self.draft.query_parts != self.source.query_parts)
+            query_parts: (self.draft.query_parts != base.query_parts)
                 .then(|| self.draft.query_parts.clone()),
-            body_parts: (self.draft.body_parts != self.source.body_parts)
+            body_parts: (self.draft.body_parts != base.body_parts)
                 .then(|| self.draft.body_parts.clone()),
-            form: (self.draft.form != self.source.form).then(|| self.draft.form.clone()),
-            files: (self.draft.files != self.source.files).then(|| self.draft.files.clone()),
+            form: (self.draft.form != base.form).then(|| self.draft.form.clone()),
+            files: (self.draft.files != base.files).then(|| self.draft.files.clone()),
             extracts: existing.extracts,
         };
         let next = (!next.is_empty()).then_some(next);
@@ -217,11 +229,32 @@ impl RequestSession {
             return false;
         }
         if let Some(request_override) = next {
-            self.source
-                .overrides
-                .insert(self.environment.clone(), request_override);
+            configuration
+                .request_overrides
+                .insert(self.source.id.clone(), request_override);
         } else {
-            self.source.overrides.remove(&self.environment);
+            configuration.request_overrides.remove(&self.source.id);
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn commit_default_draft(&mut self) -> bool {
+        let before = self.source.clone();
+        self.source.method = self.draft.method.clone();
+        self.source.url = self
+            .draft
+            .url
+            .clone()
+            .unwrap_or_else(|| self.source.url.clone());
+        self.source.timeout_seconds = self.draft.timeout_seconds;
+        self.source.headers = draft_headers(&self.draft);
+        self.source.query_parts = self.draft.query_parts.clone();
+        self.source.body_parts = self.draft.body_parts.clone();
+        self.source.form = self.draft.form.clone();
+        self.source.files = self.draft.files.clone();
+        if before == self.source {
+            return false;
         }
         self.dirty = true;
         true
@@ -230,68 +263,100 @@ impl RequestSession {
 
 #[derive(Debug)]
 pub(crate) struct WorkspaceSession {
-    pub(crate) active_environment: String,
+    pub(crate) active_configuration: String,
     pub(crate) variables: BTreeMap<String, String>,
     pub(crate) requests: Vec<RequestSession>,
     pub(crate) selected_request: Option<usize>,
-    environment_variables: BTreeMap<String, BTreeMap<String, String>>,
+    configuration_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl WorkspaceSession {
     pub(super) fn from_config(config: &WorkspaceConfig, requests: Vec<ApiRequest>) -> Self {
         let has_requests = !requests.is_empty();
-        let active_environment = config.default_environment.clone();
-        let environment_variables = config
-            .environments
+        let active_configuration = config.default_configuration.clone();
+        let configuration_variables = config
+            .configurations
             .keys()
-            .map(|environment| (environment.clone(), initial_variables(config, environment)))
+            .map(|configuration| {
+                (
+                    configuration.clone(),
+                    initial_variables(config, configuration),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
-        let variables = environment_variables
-            .get(&active_environment)
+        let variables = configuration_variables
+            .get(&active_configuration)
             .cloned()
             .unwrap_or_default();
+        let configuration = config
+            .configurations
+            .get(&active_configuration)
+            .expect("默认配置应已在加载时规范化");
         Self {
-            active_environment: active_environment.clone(),
+            active_configuration: active_configuration.clone(),
             variables,
             requests: requests
                 .into_iter()
-                .map(|request| RequestSession::new(request, &active_environment))
+                .map(|request| RequestSession::new(request, configuration))
                 .collect(),
             selected_request: has_requests.then_some(0),
-            environment_variables,
+            configuration_variables,
         }
     }
 
-    pub(super) fn switch_environment(
+    pub(super) fn switch_configuration(
         &mut self,
-        config: &WorkspaceConfig,
-        environment: &str,
+        config: &mut WorkspaceConfig,
+        configuration: &str,
     ) -> bool {
-        if environment == self.active_environment || !config.environments.contains_key(environment)
+        if configuration == self.active_configuration
+            || !config.configurations.contains_key(configuration)
         {
             return false;
         }
-        self.commit_environment();
+        self.commit_configuration(config);
+        let configuration_config = config
+            .configurations
+            .get(configuration)
+            .expect("已验证配置存在")
+            .clone();
         for session in &mut self.requests {
-            session.activate_environment(environment);
+            session.activate_configuration(&configuration_config);
         }
-        self.active_environment = environment.to_string();
+        self.active_configuration = configuration.to_string();
         self.variables = self
-            .environment_variables
-            .entry(self.active_environment.clone())
-            .or_insert_with(|| initial_variables(config, environment))
+            .configuration_variables
+            .entry(self.active_configuration.clone())
+            .or_insert_with(|| initial_variables(config, configuration))
             .clone();
         true
     }
 
-    pub(super) fn commit_environment(&mut self) -> bool {
+    pub(super) fn commit_configuration(&mut self, config: &mut WorkspaceConfig) -> bool {
         let mut changed = false;
+        let Some(configuration) = config.configurations.get_mut(&self.active_configuration) else {
+            return false;
+        };
         for session in &mut self.requests {
-            changed |= session.commit_draft();
+            changed |= session.commit_draft(configuration);
         }
-        self.environment_variables
-            .insert(self.active_environment.clone(), self.variables.clone());
+        self.configuration_variables
+            .insert(self.active_configuration.clone(), self.variables.clone());
         changed
+    }
+
+    pub(super) fn current_effective_request(&self, config: &WorkspaceConfig) -> Option<ApiRequest> {
+        self.effective_request(config, self.current()?)
+    }
+
+    pub(super) fn effective_request(
+        &self,
+        config: &WorkspaceConfig,
+        session: &RequestSession,
+    ) -> Option<ApiRequest> {
+        let configuration = config.configurations.get(&self.active_configuration)?;
+        let headers = collection_headers(config, configuration);
+        Some(session.effective_request(configuration, &headers))
     }
 
     pub(super) fn current(&self) -> Option<&RequestSession> {
@@ -317,16 +382,31 @@ impl WorkspaceSession {
     }
 }
 
-fn initial_variables(config: &WorkspaceConfig, environment: &str) -> BTreeMap<String, String> {
-    let environment_variables = config
-        .environments
-        .get(environment)
+fn collection_headers(
+    config: &WorkspaceConfig,
+    configuration: &WorkspaceConfiguration,
+) -> Vec<NameValue> {
+    let mut headers = config.headers.clone();
+    headers.retain(|existing| {
+        !configuration
+            .headers
+            .iter()
+            .any(|header| existing.name.eq_ignore_ascii_case(&header.name))
+    });
+    headers.extend(configuration.headers.iter().cloned());
+    headers
+}
+
+fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<String, String> {
+    let configuration_variables = config
+        .configurations
+        .get(configuration)
         .map(|config| &config.variables);
     config
         .editable_variables
         .iter()
         .map(|name| {
-            let definition = environment_variables
+            let definition = configuration_variables
                 .and_then(|variables| variables.get(name))
                 .or_else(|| config.variables.get(name));
             let value = definition

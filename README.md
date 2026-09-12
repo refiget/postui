@@ -50,6 +50,9 @@ Windows 发布包：
 ```text
 .postui/
 ├── postui.yaml
+├── configs/
+│   ├── dev.yaml
+│   └── test.yaml
 └── requests/
     ├── 01-list.yaml
     └── 02-detail.yaml
@@ -74,21 +77,25 @@ headers:
 variables:
   token:
   item_id:
-
-environments:
-  dev:
-    variables:
-      host: https://dev-api.example.test
-  test:
-    variables:
-      host: https://test-api.example.test
-
-default_environment: dev
 ```
 
 所有字段都可省略。相对上传和下载目录以项目根目录为基准。在项目目录或子目录运行 `postui` 会自动发现工作区，也可以运行 `postui /path/to/project`。
 
 `requests/` 目录也可以省略，空工作区仍会正常打开。PostUI 只加载配置中已有的请求；请在 `.postui/requests/` 中维护请求文件。
+
+workspace 的配置选项位于 `.postui/configs/`，文件名就是下拉菜单中的配置名：
+
+```yaml
+# .postui/configs/dev.yaml
+variables:
+  host: https://dev-api.example.test
+
+# .postui/configs/test.yaml
+variables:
+  host: https://test-api.example.test
+```
+
+在左侧 Workspace 下拉菜单中选择 `dev` 或 `test`。公共请求只保留一份，切换配置只更换变量、Header、超时和该配置的接口覆盖。`postui.yaml` 中的 `default_configuration` 指定启动时的选项；省略时使用配置文件名排序后的第一个配置。
 
 个人界面配置位于 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`，Windows 位于 `%APPDATA%\postui\config.yaml`：
 
@@ -116,17 +123,11 @@ extracts:
   - variable: user_id
     path: data.id
 
-# 只有 dev 环境需要的接口级差异；公共接口不需要复制
-overrides:
-  dev:
-    headers:
-      - name: X-Debug
-        value: "true"
 ```
 
 变量格式：`{{variable_name}}`。
 
-工作区 `variables` 是所有环境共享的默认变量；`environments.<name>.variables` 只声明该环境的变量或覆盖同名默认值。接口文件的 `overrides.<name>` 只放该环境不同的 method、url、timeout、headers、params、body、form、files 或 extracts。发送时按“公共配置 → 环境变量/接口覆盖 → 当前编辑草稿”的顺序合并，因此同一接口可以被多个环境复用。
+工作区 `variables` 是所有配置共享的默认变量；`.postui/configs/<name>.yaml` 只声明该配置的变量、Header、timeout 和接口 `overrides`。发送时按“工作区公共配置 → 当前 workspace 配置 → 当前接口覆盖 → 当前编辑草稿”的顺序合并，因此同一接口可以被多个配置复用。
 
 支持的 HTTP 方法：`GET`、`POST`。
 

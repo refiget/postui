@@ -77,9 +77,12 @@ pub(crate) fn display_url(request: &ApiRequest) -> String {
 pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text_request(request, &mut names);
-    for request_override in request.overrides.values() {
-        collect_text_override(request_override, &mut names);
-    }
+    names.into_iter().collect()
+}
+
+pub(crate) fn variable_names_in_override(request_override: &RequestOverride) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    collect_text_override(request_override, &mut names);
     names.into_iter().collect()
 }
 

@@ -1,0 +1,19 @@
+name: JSON 请求回显
+description: 公共请求体和变量保持不变，test 场景额外带一个接口级 Header。
+method: POST
+url: "{{api_base}}/post"
+headers:
+  - name: Content-Type
+    value: application/json
+  - name: X-PostUI-Scenario
+    value: "{{scenario}}"
+body: |
+  {
+    "client": "{{client_name}}",
+    "scenario": "{{scenario}}",
+    "message": "{{message}}",
+    "requestId": "{{request_id}}"
+  }
+extracts:
+  - variable: echoed_scenario
+    path: json.scenario

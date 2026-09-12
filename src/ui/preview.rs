@@ -485,20 +485,20 @@ pub(super) fn inline_dialog_layout(area: Rect, row_count: usize) -> DialogLayout
 
 pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, dialog: &Dialog) {
     let row_count = match dialog {
-        Dialog::Environments(_) => 0,
+        Dialog::Configurations(_) => 0,
         Dialog::Headers(dialog) => dialog.rows.len(),
         Dialog::Params(dialog) => dialog.rows.len(),
         Dialog::Variables(_) => 0,
     };
     let layout = inline_dialog_layout(area, row_count);
     match dialog {
-        Dialog::Environments(_) => {}
+        Dialog::Configurations(_) => {}
         Dialog::Headers(dialog) => draw_headers_dialog(frame, app, dialog, layout),
         Dialog::Params(dialog) => draw_params_dialog(frame, app, dialog, layout),
         Dialog::Variables(_) => {}
     }
     if !layout.add_button.is_empty()
-        && !matches!(dialog, Dialog::Variables(_) | Dialog::Environments(_))
+        && !matches!(dialog, Dialog::Variables(_) | Dialog::Configurations(_))
     {
         let theme = &app.global_config.theme;
         frame.render_widget(

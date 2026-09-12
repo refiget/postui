@@ -194,8 +194,8 @@ PostUI 仍只调用 `read_sync` 和 `write_sync`，不会启动 async-std runtim
 App
 ├── WorkspaceSession
 │   ├── requests
-│   ├── active_environment
-│   ├── environment_variables
+│   ├── active_configuration
+│   ├── configuration_variables
 │   ├── variables
 │   └── selected_request
 ├── RequestFileStore
@@ -221,7 +221,7 @@ App
 
 这里需要的是职责划分，不是动态多态。不要先创建大量 trait。阶段四已经将 `RequestFileStore` 和 `RequestExecutor` 接入 `App`；结果如何写入 `RequestSession` 仍由 `App` 编排。
 
-阶段十在会话层增加了环境边界：`WorkspaceSession` 持有当前环境及各环境的运行时变量，`RequestSession` 持有当前环境草稿，并把草稿提交为请求的稀疏 `overrides.<environment>`。切换环境时先提交当前草稿和变量，再从同一份公共请求重新生成目标环境草稿；因此不会复制请求，也不会让不同环境的响应状态相互混淆。
+阶段十在会话层增加了 workspace 配置边界：`WorkspaceSession` 持有当前配置及各配置的运行时变量，`RequestSession` 持有当前配置草稿，并把配置差异保存到对应的 `.postui/configs/<name>.yaml`。切换 workspace 配置时先提交当前草稿和变量，再从同一份公共请求重新生成目标配置草稿；因此不会复制请求，也不会让不同配置的响应状态相互混淆。
 
 ### 请求状态由多个平行容器维护
 
@@ -233,15 +233,14 @@ struct RequestSession {
     draft: RequestDraft,
     runtime: RequestRuntimeState,
     dirty: bool,
-    environment: String,
 }
 
 struct WorkspaceSession {
-    active_environment: String,
+    active_configuration: String,
     requests: Vec<RequestSession>,
     selected_request: Option<usize>,
     variables: BTreeMap<String, String>,
-    environment_variables: BTreeMap<String, BTreeMap<String, String>>,
+    configuration_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 ```
 

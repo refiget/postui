@@ -13,17 +13,11 @@ impl<'a> FocusStyles<'a> {
     }
 
     pub(super) fn sidebar_border(&self) -> Style {
-        self.panel(matches!(
-            self.focus,
-            Focus::Requests | Focus::Environment | Focus::Variables
-        ))
+        self.panel(matches!(self.focus, Focus::Requests | Focus::Variables))
     }
 
     pub(super) fn sidebar_focused(&self) -> bool {
-        matches!(
-            self.focus,
-            Focus::Requests | Focus::Environment | Focus::Variables
-        )
+        matches!(self.focus, Focus::Requests | Focus::Variables)
     }
 
     pub(super) fn preview_border(&self) -> Style {
@@ -44,10 +38,6 @@ impl<'a> FocusStyles<'a> {
 
     pub(super) fn variables_focused(&self) -> bool {
         self.focus == Focus::Variables
-    }
-
-    pub(super) fn environment_focused(&self) -> bool {
-        self.focus == Focus::Environment
     }
 
     fn panel(&self, active: bool) -> Style {

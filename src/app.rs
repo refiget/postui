@@ -21,7 +21,7 @@ mod session;
 
 use dialog::DialogAction;
 pub(crate) use dialog::{
-    DataPartSource, Dialog, DialogFocus, EnvironmentsDialog, HeaderRow, HeaderSource,
+    ConfigurationsDialog, DataPartSource, Dialog, DialogFocus, HeaderRow, HeaderSource,
     HeadersDialog, KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow, VariableRow,
     VariablesDialog,
 };
@@ -31,7 +31,6 @@ use session::{RequestDraft, WorkspaceSession};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
     Requests,
-    Environment,
     Variables,
     Preview,
     Actions,
@@ -40,8 +39,7 @@ pub(crate) enum Focus {
 impl Focus {
     fn next(self) -> Self {
         match self {
-            Self::Requests => Self::Environment,
-            Self::Environment => Self::Variables,
+            Self::Requests => Self::Variables,
             Self::Variables => Self::Preview,
             Self::Preview => Self::Actions,
             Self::Actions => Self::Requests,
@@ -51,8 +49,7 @@ impl Focus {
     fn previous(self) -> Self {
         match self {
             Self::Requests => Self::Actions,
-            Self::Environment => Self::Requests,
-            Self::Variables => Self::Environment,
+            Self::Variables => Self::Requests,
             Self::Preview => Self::Variables,
             Self::Actions => Self::Preview,
         }
@@ -352,13 +349,27 @@ impl App {
             self.status = self.text().request_url_required().to_string();
             return;
         }
-        self.workspace_state.commit_environment();
+        self.workspace_state.commit_configuration(&mut self.config);
         let Some(request) = self.current_request().cloned() else {
             return;
         };
         let id = request.id.clone();
         match self.request_files.save(&request) {
             Ok(path) => {
+                let configuration_save = self
+                    .config
+                    .configurations
+                    .values()
+                    .filter(|configuration| configuration.path.is_some())
+                    .try_for_each(|configuration| {
+                        self.request_files
+                            .save_configuration(configuration)
+                            .map(|_| ())
+                    });
+                if let Err(error) = configuration_save {
+                    self.status = self.text().request_save_failed(&error.to_string());
+                    return;
+                }
                 if let Some(session) = self.workspace_state.request_mut(&id) {
                     session.dirty = false;
                 }
@@ -450,7 +461,7 @@ impl App {
         let changed = previous != Some(index);
         if changed {
             self.commit_active_editors();
-            self.workspace_state.commit_environment();
+            self.workspace_state.commit_configuration(&mut self.config);
             self.close_response_menu();
             if self.editing_preview_tab().is_some() {
                 self.dialog = None;
@@ -483,15 +494,16 @@ impl App {
     }
 
     pub(crate) fn current_effective_request(&self) -> Option<ApiRequest> {
-        self.workspace_state
-            .current()
-            .map(|session| session.effective_request(&self.config.headers))
+        self.workspace_state.current_effective_request(&self.config)
     }
 
     fn effective_request(&self, request: &ApiRequest) -> ApiRequest {
         self.workspace_state
             .request(&request.id)
-            .map(|session| session.effective_request(&self.config.headers))
+            .and_then(|session| {
+                self.workspace_state
+                    .effective_request(&self.config, session)
+            })
             .unwrap_or_else(|| request.clone())
     }
 
@@ -843,46 +855,44 @@ impl App {
         self.config.editable_variables.len()
     }
 
-    pub(crate) fn active_environment(&self) -> &str {
-        &self.workspace_state.active_environment
+    pub(crate) fn active_configuration(&self) -> &str {
+        &self.workspace_state.active_configuration
     }
 
-    pub(crate) fn environment_names(&self) -> impl Iterator<Item = &str> {
-        self.config.environments.keys().map(String::as_str)
+    pub(crate) fn configuration_names(&self) -> impl Iterator<Item = &str> {
+        self.config.configurations.keys().map(String::as_str)
     }
 
     pub(crate) fn variable_default_value(&self, variable: &str) -> String {
         self.config
-            .environments
-            .get(self.active_environment())
-            .and_then(|environment| environment.variables.get(variable))
+            .configurations
+            .get(self.active_configuration())
+            .and_then(|configuration| configuration.variables.get(variable))
             .or_else(|| self.config.variables.get(variable))
             .and_then(|definition| definition.default.as_ref())
             .map(crate::config::value_to_string)
             .unwrap_or_else(|| "—".to_string())
     }
 
-    pub(crate) fn open_environments(&mut self) {
-        let rows: Vec<String> = self.environment_names().map(str::to_string).collect();
+    pub(crate) fn open_configurations(&mut self) {
+        let rows: Vec<String> = self.configuration_names().map(str::to_string).collect();
         let selected = rows
             .iter()
-            .position(|environment| environment == self.active_environment())
+            .position(|configuration| configuration == self.active_configuration())
             .unwrap_or_default();
-        self.dialog = Some(Dialog::Environments(EnvironmentsDialog {
+        self.dialog = Some(Dialog::Configurations(ConfigurationsDialog {
             rows,
             selected,
-            focus: DialogFocus::Content,
         }));
-        self.focus = Focus::Environment;
         tracing::debug!(
-            environment = %self.active_environment(),
-            environment_count = self.config.environments.len(),
-            "打开环境选择窗口"
+            configuration = %self.active_configuration(),
+            configuration_count = self.config.configurations.len(),
+            "打开 workspace 配置下拉菜单"
         );
     }
 
-    pub(crate) fn switch_environment(&mut self, environment: &str) {
-        if environment == self.active_environment() {
+    pub(crate) fn switch_configuration(&mut self, configuration: &str) {
+        if configuration == self.active_configuration() {
             self.close_dialog();
             return;
         }
@@ -898,15 +908,15 @@ impl App {
         self.commit_active_editors();
         if !self
             .workspace_state
-            .switch_environment(&self.config, environment)
+            .switch_configuration(&mut self.config, configuration)
         {
             return;
         }
         self.dialog = None;
         self.preview_state = PreviewContentState::default();
         self.response_state = ResponseContentState::default();
-        self.status = self.text().environment_switched(environment);
-        tracing::debug!(environment, "切换当前环境");
+        self.status = self.text().configuration_switched(configuration);
+        tracing::debug!(configuration, "切换 workspace 配置");
     }
 
     pub(crate) fn current_header_count(&self) -> usize {
@@ -1138,7 +1148,7 @@ impl App {
                     })
                     && !matches!(
                         self.dialog,
-                        Some(Dialog::Variables(_) | Dialog::Environments(_))
+                        Some(Dialog::Variables(_) | Dialog::Configurations(_))
                     )
                     && self.preview_state.editor.is_none()
                     && self.preview_state.file_editor.is_none()
@@ -1175,9 +1185,9 @@ impl App {
             return;
         };
         match dialog {
-            Dialog::Environments(dialog) => {
-                if let Some(environment) = dialog.rows.get(dialog.selected).cloned() {
-                    self.switch_environment(&environment);
+            Dialog::Configurations(dialog) => {
+                if let Some(configuration) = dialog.rows.get(dialog.selected).cloned() {
+                    self.switch_configuration(&configuration);
                 }
             }
             Dialog::Variables(dialog) => {
@@ -1249,7 +1259,7 @@ impl App {
         let changed = match &dialog_state {
             Dialog::Headers(dialog) => self.sync_header_dialog(dialog),
             Dialog::Params(dialog) => self.sync_params_dialog(dialog),
-            Dialog::Environments(_) | Dialog::Variables(_) => false,
+            Dialog::Configurations(_) | Dialog::Variables(_) => false,
         };
         self.dialog = Some(dialog_state);
         changed
@@ -1365,9 +1375,9 @@ impl App {
         }
     }
 
-    pub(crate) fn click_environment_row(&mut self, index: usize) {
+    pub(crate) fn click_configuration_row(&mut self, index: usize) {
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.click_environment_row(index);
+            dialog.click_configuration_row(index);
         }
     }
 
@@ -1403,10 +1413,8 @@ impl App {
     }
 
     pub(crate) fn focus_dialog(&mut self, focus: DialogFocus) {
-        match self.dialog.as_mut() {
-            Some(Dialog::Environments(dialog)) => dialog.focus = focus,
-            Some(Dialog::Variables(dialog)) => dialog.focus = focus,
-            _ => {}
+        if let Some(Dialog::Variables(dialog)) = self.dialog.as_mut() {
+            dialog.focus = focus;
         }
     }
 
@@ -1438,17 +1446,19 @@ impl App {
     }
 
     fn apply_response_extracts(&mut self, request_id: &str, body: &str) -> usize {
-        let Some(extracts) = self
+        let Some(session) = self.workspace_state.request(request_id) else {
+            return 0;
+        };
+        let Some(request) = self
             .workspace_state
-            .request(request_id)
-            .map(|session| session.effective_request(&self.config.headers).extracts)
+            .effective_request(&self.config, session)
         else {
             return 0;
         };
 
         let variables = &mut self.workspace_state.variables;
         let mut failures = 0;
-        for extract in &extracts {
+        for extract in &request.extracts {
             match template::extract_json_value(body, &extract.path) {
                 Ok(value) => {
                     variables.insert(extract.variable.clone(), value);
@@ -1660,7 +1670,7 @@ impl App {
                 tracing::debug!(focus = ?self.focus, "切换 TUI 区域焦点");
             }
             KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
-            KeyCode::Char('e') => self.open_environments(),
+            KeyCode::Char('w') => self.open_configurations(),
             KeyCode::Char('v') => self.open_variables(),
             KeyCode::Char('o') => self.open_response_menu(),
             KeyCode::Delete if self.focus == Focus::Requests => self.request_delete(),
@@ -1677,7 +1687,6 @@ impl App {
         tracing::debug!(focus = ?self.focus, "处理 Enter 操作");
         match self.focus {
             Focus::Requests => {}
-            Focus::Environment => self.open_environments(),
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
                 let action = PreviewAction::Edit(self.preview_state.active_tab);
@@ -1690,7 +1699,6 @@ impl App {
     fn move_focused(&mut self, direction: isize) {
         match self.focus {
             Focus::Requests => self.move_request(direction),
-            Focus::Environment => {}
             Focus::Preview => {
                 self.preview_state.scroll.move_by(direction);
             }
@@ -1860,6 +1868,7 @@ impl App {
             self.status = self.text().request_url_required().to_string();
             return;
         }
+        let timeout = effective_request.timeout_seconds;
         let effective_method = effective_request.method;
         if !supports_method(&effective_method) {
             self.status = self.text().unsupported_method(&effective_method);
@@ -1882,10 +1891,6 @@ impl App {
         let operation = self.request_executor.prepare(&request_id);
         let operation_id = operation.operation_id.clone();
         let display_url = resolved.url.clone();
-        let timeout = self
-            .current_effective_request()
-            .map(|request| request.timeout_seconds)
-            .unwrap_or(self.config.timeout_seconds);
         let file_directory = self.config.file_directory.clone();
         tracing::debug!(
             request_id = %request_id,

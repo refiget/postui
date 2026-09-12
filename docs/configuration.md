@@ -10,6 +10,9 @@ PostUI 把一个包含 `.postui/` 的目录视为一个工作区。项目配置�
 project/
 ├── .postui/
 │   ├── postui.yaml
+│   ├── configs/
+│   │   ├── dev.yaml
+│   │   └── test.yaml
 │   ├── cache/                  # 自动生成，不提交
 │   └── requests/
 │       ├── 01-health.yaml
@@ -44,16 +47,6 @@ headers:
 variables:
   token:
   item_id:
-
-environments:
-  dev:
-    variables:
-      host: https://dev-api.example.test
-  test:
-    variables:
-      host: https://test-api.example.test
-
-default_environment: dev
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -63,13 +56,38 @@ default_environment: dev
 | `directories.uploads` | `test_files` | 相对上传目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
 | `headers` | `[]` | 所有请求继承的 Header 条目，按列表顺序发送 |
-| `variables` | `{}` | 所有环境共享的默认变量；空值表示运行时填写 |
-| `environments` | `default` | 环境名到环境变量的映射；环境变量覆盖同名公共变量 |
-| `default_environment` | 第一个环境 | 启动时选中的环境 |
+| `variables` | `{}` | 所有 workspace 配置共享的默认变量；空值表示运行时填写 |
+| `default_configuration` | 第一个配置 | 启动时在 Workspace 下拉菜单中选中的配置 |
 
 目录相对路径始终以项目根目录为基准，也支持绝对路径。下载目录在保存响应时自动创建；上传目录或文件不存在时，发送操作会显示错误。
 
-未配置 `environments` 时，程序自动建立名为 `default` 的空环境；因此最简单的工作区只需要公共 `variables`，不需要额外填写环境字段。
+## Workspace 配置
+
+`.postui/configs/` 下的每个 YAML 文件都是 workspace 的一个可切换配置，文件名（去掉扩展名）作为下拉菜单显示名。没有配置文件时，程序自动提供一个名为 `default` 的运行时配置，因此公共请求仍可直接打开。
+
+配置文件只放当前场景和公共请求不同的内容：
+
+~~~yaml
+# .postui/configs/dev.yaml
+variables:
+  host: https://dev-api.example.test
+headers:
+  - name: X-PostUI-Scenario
+    value: dev
+
+# .postui/configs/test.yaml
+variables:
+  host: https://test-api.example.test
+timeout: 60
+overrides:
+  requests/users.yaml:
+    url: "{{host}}/staging/users"
+    headers:
+      - name: X-Debug
+        value: "true"
+~~~
+
+配置文件支持 `variables`、`headers`、`timeout` 和 `overrides`。`overrides` 的键是 `.postui/requests/` 下请求文件的稳定路径；覆盖只替换声明的字段。Workspace 下拉菜单切换配置时，公共请求不会复制，运行时按“工作区公共配置 → 当前配置 → 当前接口覆盖”合并。
 
 ## 用户界面配置
 
@@ -104,28 +122,11 @@ params:
 extracts:
   - variable: user_id
     path: data.id
-overrides:
-  dev:
-    headers:
-      - name: X-Debug
-        value: "true"
 ~~~
 
 子目录用于组织请求。请求文件相对于 `.postui/requests/` 的路径是稳定 ID。
 
-请求文件支持以下字段：`name`、`description`、`method`、`url`、`timeout`、`headers`、`params`、`body`、`form`、`files`、`extracts` 和 `overrides`。`headers`、`params`、`form` 使用条目数组，保留书写顺序和重复名称；`body` 是原始请求体文本。
-
-`overrides` 的键必须先在工作区 `environments` 中声明。每个环境覆盖只替换自己声明的字段，未声明字段继续使用请求公共配置。例如同一请求可以只在 `dev` 使用调试 Header，而不需要复制请求文件：
-
-~~~yaml
-overrides:
-  dev:
-    headers:
-      - name: X-Debug
-        value: "true"
-  test:
-    url: "{{host}}/staging/users/{{item_id}}"
-~~~
+请求文件支持以下字段：`name`、`description`、`method`、`url`、`timeout`、`headers`、`params`、`body`、`form`、`files` 和 `extracts`。`headers`、`params`、`form` 使用条目数组，保留书写顺序和重复名称；`body` 是原始请求体文本。配置差异统一写入对应的 `.postui/configs/<name>.yaml`，请求文件本身不包含环境或配置标签。
 
 文件上传使用 `files` 条目。相对文件名以 `directories.uploads` 为基准：
 
@@ -160,6 +161,6 @@ headers:
 
 ## 编辑、保存与缓存
 
-已加载请求可以在界面中编辑并直接发送，未保存修改以 `●` 标记。按 `Ctrl+S` 将修改写回当前请求文件。请求列表聚焦时按 `Delete` 会在确认后删除当前请求文件；存在未保存修改时退出会要求确认，避免误操作丢失内容。
+已加载请求可以在界面中编辑并直接发送，未保存修改以 `●` 标记。按 `Ctrl+S` 将修改写回当前请求文件，并保存已修改的 workspace 配置覆盖。请求列表聚焦时按 `Delete` 会在确认后删除当前请求文件；存在未保存修改时退出会要求确认，避免误操作丢失内容。
 
-`.postui/cache/` 使用 `cacache` 持久化项目配置和请求文件的解析结果。源内容的 BLAKE3 指纹变化后缓存自动失效；缓存损坏或读写失败时会回退到重新解析，不影响工作区启动。Variables 的修改只在当前环境和本次运行期间生效，不会回写 `postui.yaml`；接口草稿则通过 `Ctrl+S` 写回当前请求 YAML，并保留各环境的 `overrides`。
+`.postui/cache/` 使用 `cacache` 持久化项目配置、workspace 配置和请求文件的解析结果。源内容的 BLAKE3 指纹变化后缓存自动失效；缓存损坏或读写失败时会回退到重新解析，不影响工作区启动。Variables 的修改只在当前配置和本次运行期间生效，不会回写配置 YAML；接口草稿则通过 `Ctrl+S` 写回当前请求 YAML 和对应配置的 `overrides`。

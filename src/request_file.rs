@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{ApiRequest, RequestDocument};
+use crate::config::{ApiRequest, ConfigurationDocument, RequestDocument, WorkspaceConfiguration};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RequestFileStore {
@@ -24,32 +24,24 @@ impl RequestFileStore {
 
     pub(crate) fn save(&self, request: &ApiRequest) -> Result<PathBuf> {
         let path = self.path_for_id(&request.id)?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("请求路径缺少父目录"))?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("无法创建请求目录: {}", parent.display()))?;
-
-        let temporary = temporary_path(&path)?;
         let contents = serialize_request(request)?;
-        if let Err(error) = fs::write(&temporary, contents) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error)
-                .with_context(|| format!("无法写入请求临时文件: {}", temporary.display()));
-        }
-
-        #[cfg(windows)]
-        if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("无法替换请求文件: {}", path.display()))?;
-        }
-
-        if let Err(error) = fs::rename(&temporary, &path) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error).with_context(|| format!("无法保存请求文件: {}", path.display()));
-        }
+        write_file(&path, contents.as_bytes(), "请求")?;
         tracing::debug!(path = %path.display(), "保存请求文件");
         Ok(path)
+    }
+
+    pub(crate) fn save_configuration(
+        &self,
+        configuration: &WorkspaceConfiguration,
+    ) -> Result<Option<PathBuf>> {
+        let Some(path) = configuration.path.as_ref() else {
+            return Ok(None);
+        };
+        let contents = serde_saphyr::to_string(&ConfigurationDocument::from(configuration))
+            .context("序列化 workspace 配置 YAML 失败")?;
+        write_file(path, contents.as_bytes(), "配置")?;
+        tracing::debug!(path = %path.display(), "保存 workspace 配置");
+        Ok(Some(path.clone()))
     }
 
     pub(crate) fn delete(&self, request_id: &str) -> Result<()> {
@@ -77,6 +69,32 @@ impl RequestFileStore {
         }
         Ok(self.workspace_path.join("requests").join(relative_path))
     }
+}
+
+fn write_file(path: &Path, contents: &[u8], kind: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{kind}路径缺少父目录"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("无法创建{kind}目录: {}", parent.display()))?;
+
+    let temporary = temporary_path(path)?;
+    if let Err(error) = fs::write(&temporary, contents) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error)
+            .with_context(|| format!("无法写入{kind}临时文件: {}", temporary.display()));
+    }
+
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path).with_context(|| format!("无法替换{kind}文件: {}", path.display()))?;
+    }
+
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("无法保存{kind}文件: {}", path.display()));
+    }
+    Ok(())
 }
 
 fn temporary_path(path: &Path) -> Result<PathBuf> {

@@ -84,9 +84,11 @@ pub(crate) fn json_text_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>
 }
 
 pub(crate) fn json_text_lines_if_valid(value: &str, theme: &UiTheme) -> Option<Vec<Line<'static>>> {
-    serde_json::from_str::<Value>(value)
-        .ok()
-        .map(|_| json_text_lines(value, theme))
+    serde_json::from_str::<Value>(value).ok().and_then(|value| {
+        serde_json::to_string_pretty(&value)
+            .ok()
+            .map(|formatted| json_text_lines(&formatted, theme))
+    })
 }
 
 pub(crate) fn plain_lines(value: &str, theme: &UiTheme) -> Vec<Line<'static>> {

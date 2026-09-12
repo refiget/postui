@@ -74,7 +74,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_footer(frame, areas.footer, app);
     match &app.dialog {
         Some(Dialog::Variables(dialog)) => draw_dialog(frame, app, dialog),
-        Some(Dialog::Environments(dialog)) => draw_environment_dialog(frame, app, dialog),
+        Some(Dialog::Configurations(dialog)) => {
+            draw_configuration_dropdown(frame, app, dialog, areas.workspace_selector)
+        }
         _ => {}
     }
     if app.prompt.is_some() {
@@ -83,11 +85,12 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
-    if matches!(
-        app.dialog,
-        Some(Dialog::Variables(_) | Dialog::Environments(_))
-    ) {
+    if matches!(app.dialog, Some(Dialog::Variables(_))) {
         handle_dialog_mouse(app, event, area);
+        return;
+    }
+    if matches!(app.dialog, Some(Dialog::Configurations(_))) {
+        handle_configuration_mouse(app, event, area);
         return;
     }
     let areas = screen_layout_for_app(area, app);
@@ -136,6 +139,48 @@ fn update_response_hover(app: &mut App, column: u16, row: u16, areas: UiLayout) 
     }
 }
 
+fn handle_configuration_mouse(app: &mut App, event: MouseEvent, area: Rect) {
+    let areas = screen_layout_for_app(area, app);
+    let Some(row_count) = app.dialog.as_ref().and_then(|dialog| match dialog {
+        Dialog::Configurations(dialog) => Some(dialog.rows.len()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let menu = configuration_menu_area(area, areas.workspace_selector, row_count);
+    let content = menu.inner(Margin::new(1, 1));
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if contains(content, event.column, event.row) {
+                let index = usize::from(event.row.saturating_sub(content.y));
+                if index < row_count {
+                    app.click_configuration_row(index);
+                    app.apply_dialog();
+                }
+            } else {
+                app.close_dialog();
+            }
+        }
+        MouseEventKind::Moved if contains(content, event.column, event.row) => {
+            let index = usize::from(event.row.saturating_sub(content.y));
+            if index < row_count {
+                app.click_configuration_row(index);
+            }
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            if contains(content, event.column, event.row) =>
+        {
+            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                -1
+            } else {
+                1
+            };
+            app.move_dialog_selection(direction);
+        }
+        _ => {}
+    }
+}
+
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
     app.commit_active_editors();
 
@@ -153,9 +198,8 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout) {
         app.close_response_menu();
     }
 
-    if contains(areas.environment_button, column, row) {
-        app.focus = Focus::Environment;
-        app.open_environments();
+    if contains(areas.workspace_selector, column, row) {
+        app.open_configurations();
     } else if contains(areas.variables_button, column, row) {
         app.focus = Focus::Variables;
         app.open_variables();

@@ -307,7 +307,7 @@ fn print_help() {
         "用法:\n\
   postui [项目目录] [--debug] [--log-file <路径>]\n\
   postui init\n\n\
-不传项目目录时，从当前目录向上查找 .postui。项目配置位于 .postui/postui.yaml。\n\
+不传项目目录时，从当前目录向上查找 .postui。公共请求位于 .postui/requests，workspace 配置位于 .postui/configs。\n\
 个人语言和主题配置位于用户配置目录的 postui/config.yaml。\n\
 默认 debug 日志: .postui/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\

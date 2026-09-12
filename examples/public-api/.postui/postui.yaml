@@ -1,0 +1,13 @@
+name: 公开 Echo API 双场景示例
+timeout: 20
+
+headers:
+  - name: Accept
+    value: application/json
+
+variables:
+  client_name: postui-public-demo
+  message: shared request across environments
+  request_id: postui-example-001
+
+default_configuration: dev

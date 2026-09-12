@@ -25,90 +25,69 @@ pub(super) fn draw_dialog(frame: &mut Frame<'_>, app: &App, dialog: &crate::app:
     draw_variables_dialog(frame, app, dialog, layout);
 }
 
-pub(super) fn draw_environment_dialog(
+pub(super) fn draw_configuration_dropdown(
     frame: &mut Frame<'_>,
     app: &App,
-    dialog: &crate::app::EnvironmentsDialog,
+    dialog: &crate::app::ConfigurationsDialog,
+    selector: Rect,
 ) {
-    let layout = dialog_layout(frame.area(), dialog.rows.len().max(1));
-    if layout.area.is_empty() {
+    let area = configuration_menu_area(frame.area(), selector, dialog.rows.len());
+    if area.is_empty() {
         return;
     }
 
     let theme = &app.global_config.theme;
     let text = app.text();
-    frame.render_widget(Clear, layout.area);
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        dialog_block(
-            Line::from(format!(" {} ", text.environment())),
-            layout.area,
-            theme,
-        ),
-        layout.area,
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .style(Style::default().bg(theme.surface).fg(theme.text))
+            .title(format!(" {} ", text.workspace())),
+        area,
     );
-
-    let visible = usize::from(layout.rows.content.height);
-    let offset = request_list_offset(dialog.selected, dialog.rows.len(), visible);
-    frame.render_widget(
-        Table::new(Vec::<Row<'static>>::new(), [Constraint::Min(0)])
-            .header(Row::new(vec![Cell::from(text.environment())]).style(section_style(theme)))
-            .column_spacing(TABLE_COLUMN_SPACING)
-            .highlight_symbol("▸ ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .style(Style::default().bg(theme.surface).fg(theme.text)),
-        layout.table_header,
-    );
-
-    if dialog.rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new(text.environment()).style(label_style(theme)),
-            layout.rows.content,
-        );
-    } else {
-        let rows = dialog
-            .rows
-            .iter()
-            .skip(offset)
-            .take(visible)
-            .map(|environment| {
-                let active = environment == app.active_environment();
-                let marker = if active { "● " } else { "  " };
-                let style = if active {
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                Row::new(vec![Cell::from(Span::styled(
-                    format!("{marker}{environment}"),
-                    style,
-                ))])
-                .style(style)
-            })
-            .collect::<Vec<_>>();
-        let table = Table::new(rows, [Constraint::Min(0)])
-            .column_spacing(TABLE_COLUMN_SPACING)
-            .row_highlight_style(dialog_row_highlight(
-                theme,
-                dialog.focus == DialogFocus::Content,
-            ))
-            .highlight_symbol("▸ ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .style(Style::default().bg(theme.surface).fg(theme.text));
-        let mut state = TableState::default();
-        state.select(Some(dialog.selected.saturating_sub(offset)));
-        frame.render_stateful_widget(table, layout.rows.content, &mut state);
+    let content = area.inner(Margin::new(1, 1));
+    let items = dialog
+        .rows
+        .iter()
+        .map(|configuration| ListItem::new(Line::from(configuration.clone())))
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .style(Style::default().bg(theme.surface).fg(theme.text))
+        .highlight_style(
+            Style::default()
+                .bg(theme.selection)
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+    let mut state = ListState::default();
+    if !dialog.rows.is_empty() {
+        state.select(Some(dialog.selected));
     }
-    draw_scrollbar(
-        frame,
-        layout.rows.scrollbar,
-        dialog.rows.len(),
-        visible,
-        offset,
-        theme,
-    );
-    draw_dialog_footer(frame, app, dialog.focus, layout);
+    frame.render_stateful_widget(list, content, &mut state);
+}
+
+pub(super) fn configuration_menu_area(screen: Rect, selector: Rect, row_count: usize) -> Rect {
+    if screen.is_empty() || selector.is_empty() {
+        return Rect::default();
+    }
+    let width = selector.width.max(18).min(screen.width);
+    let height = u16::try_from(row_count.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(screen.height);
+    if width == 0 || height == 0 {
+        return Rect::default();
+    }
+    let x = selector.x.min(screen.right().saturating_sub(width));
+    let below = selector.y.saturating_add(selector.height);
+    let y = if below.saturating_add(height) <= screen.bottom() {
+        below
+    } else {
+        selector.y.saturating_sub(height)
+    };
+    Rect::new(x, y.max(screen.y), width, height)
 }
 
 pub(super) fn dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
@@ -540,9 +519,8 @@ pub(super) fn draw_dialog_footer(
 }
 
 pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) {
-    let (row_count, selected, environment_dialog) = match app.dialog.as_ref() {
-        Some(Dialog::Variables(dialog)) => (dialog.rows.len(), dialog.selected, false),
-        Some(Dialog::Environments(dialog)) => (dialog.rows.len(), dialog.selected, true),
+    let (row_count, selected) = match app.dialog.as_ref() {
+        Some(Dialog::Variables(dialog)) => (dialog.rows.len(), dialog.selected),
         _ => return,
     };
     let layout = dialog_layout(area, row_count);
@@ -564,11 +542,6 @@ pub(super) fn handle_dialog_mouse(app: &mut App, event: MouseEvent, area: Rect) 
             let offset = request_list_offset(selected, row_count, visible);
             let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
             if index >= row_count {
-                return;
-            }
-
-            if environment_dialog {
-                app.click_environment_row(index);
                 return;
             }
 
