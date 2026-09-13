@@ -1,6 +1,6 @@
 use super::{
-    App, ConfigurationsDialog, Dialog, Feedback, Focus, PreviewContentState, RequestDraft,
-    RequestStatus, ResponseContentState, WorkspaceSession,
+    App, ConfigurationsDialog, Dialog, ErrorPage, Feedback, Focus, PreviewContentState,
+    RequestDraft, RequestStatus, ResponseContentState, WorkspaceSession,
 };
 
 pub(super) struct ReloadedWorkspace {
@@ -11,6 +11,18 @@ pub(super) struct ReloadedWorkspace {
 }
 
 impl App {
+    pub(super) fn has_request_changes(&self) -> bool {
+        self.workspace_state.requests.iter().any(|session| {
+            self.request_modified(&session.source.id)
+                || self
+                    .baseline_requests
+                    .get(&session.source.id)
+                    .is_some_and(|baseline| {
+                        session.has_inactive_header_changes(baseline, &self.baseline_config)
+                    })
+        })
+    }
+
     pub(crate) fn request_modified(&self, request_id: &str) -> bool {
         let Some(session) = self.workspace_state.request(request_id) else {
             return false;
@@ -25,7 +37,7 @@ impl App {
         else {
             return false;
         };
-        session.draft != RequestDraft::from(&source.for_configuration(configuration))
+        !session.draft.matches_configuration(source, configuration)
     }
 
     pub(super) fn restore_current_request(&mut self) {
@@ -124,7 +136,7 @@ impl App {
         self.view.preview = PreviewContentState::default();
         self.view.response = ResponseContentState::default();
         self.view.notice = Some(Feedback::Success(
-            self.text().configuration_switched(configuration),
+            self.text().configuration_switched().to_string(),
         ));
         tracing::debug!(configuration, "切换 workspace 配置");
     }
@@ -149,12 +161,13 @@ impl App {
         let path = self.workspace_path().to_path_buf();
         let (sender, receiver) = std::sync::mpsc::channel();
         self.workspace_reload = Some(receiver);
-        self.view.notice = Some(Feedback::Info("正在重新加载配置…".to_string()));
+        self.view.notice = None;
         std::thread::spawn(move || {
             let loaded = match crate::config::reload(&path) {
                 Ok(config) => config,
                 Err(error) => {
-                    let _ = sender.send(Err(format!("{error:#}")));
+                    let _ =
+                        sender.send(Err(ErrorPage::from_error(&error, path.join("postui.yaml"))));
                     return;
                 }
             };
@@ -185,15 +198,21 @@ impl App {
         let loaded = match receiver.try_recv() {
             Ok(loaded) => loaded,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("配置加载任务异常结束".to_string())
-            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(ErrorPage::from_message(
+                self.workspace_path().join("postui.yaml"),
+                crate::diagnostics::invalid(
+                    &self.workspace_path().join("postui.yaml"),
+                    "workspace reload",
+                    "Workspace reload ended unexpectedly",
+                )
+                .to_string(),
+            )),
         };
         self.workspace_reload = None;
         let loaded = match loaded {
             Ok(loaded) => loaded,
-            Err(details) => {
-                self.view.notice = Some(Feedback::Error(self.text().reload_failed(&details)));
+            Err(error_page) => {
+                self.error_page = Some(error_page);
                 return true;
             }
         };
@@ -210,6 +229,7 @@ impl App {
         self.baseline_config = loaded.baseline_config;
         self.baseline_requests = loaded.baseline_requests;
         self.workspace_state = workspace_state;
+        self.error_page = None;
         self.view = super::ViewState::default();
         self.view.notice = Some(Feedback::Success(
             self.text().workspace_reloaded().to_string(),

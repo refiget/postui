@@ -1,6 +1,6 @@
 # 配置与请求文件
 
-配置只分四种用途，按需增加，不需要先准备完整目录：
+配置分为四种用途：
 
 | 用途 | 位置 | 内容 |
 | --- | --- | --- |
@@ -62,7 +62,7 @@ headers:
 | `name` | 项目目录名 | 工作区显示名称 |
 | `default_scenario` | 场景名称排序后的第一项 | 启动场景；没有场景文件时为 `default` |
 | `timeout` | `30` | 默认超时秒数，必须是正整数 |
-| `skip_ssl_verification` | `false` | 跳过 HTTPS 证书校验；可由场景或请求覆盖，仅在明确需要时开启 |
+| `skip_ssl_verification` | `false` | 跳过 HTTPS 证书校验；可由场景或请求覆盖 |
 | `directories.uploads` | `test_files` | 上传文件基准目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
 | `variables` | `{}` | 公共变量；空值表示运行时填写 |
@@ -129,7 +129,7 @@ postui /path/to/project --scenario test
 - Windows：`%APPDATA%\postui\config.yaml`；显式设置 `XDG_CONFIG_HOME` 时优先使用该目录。
 
 ```yaml
-language: zh
+language: en
 theme: catppuccin-mocha
 max_response_display_bytes: 16777216
 max_response_bytes: 67108864
@@ -154,7 +154,7 @@ postui /path/to/project --config /path/to/ui.yaml --scenario test
 
 `--config` 替代自动发现的个人配置，不合并两份文件。相对路径以启动目录为基准；项目根目录的 `config.yaml` 不会自动读取。个人配置仅包含上述三个选项，请求行为不放在这里。
 
-Debug 构建使用 `--debug` 启动后，可按 `F5` 依次热加载全部内置主题。切换仅影响当前进程，不写回个人配置，适合演示和录屏。
+Debug 构建使用 `--debug` 启动后，可按 `F5` 依次热加载全部内置主题。切换仅影响当前进程，不写回个人配置。
 
 ## 请求定义
 

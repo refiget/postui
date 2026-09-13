@@ -1,3 +1,0 @@
-name: Markdown 高亮
-description: 在响应区切换 Raw、Formatted、Headers；复制与下载始终使用原始响应。
-url: http://{{host}}/v1/responses/markdown

@@ -1,3 +1,0 @@
-name: 无效 JSON 容错展示
-description: 在响应区切换 Raw、Formatted、Headers；复制与下载始终使用原始响应。
-url: http://{{host}}/v1/responses/invalid-json

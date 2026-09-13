@@ -12,7 +12,8 @@ usage() {
 
 选项:
   --prefix DIR       安装目录，默认是 ~/.local/share/postui
-  --archive-url URL  本地没有二进制时使用的发布包地址
+  --archive-url URL  使用指定发布包地址（优先于本地包和版本号）
+  --version VERSION 安装指定发布版本，例如 0.1.1（默认最新版本）
   --skip-init        安装后不执行 postui init
   -h, --help         显示帮助
 
@@ -20,6 +21,7 @@ usage() {
   POSTUI_INSTALL_DIR  等同于 --prefix
   POSTUI_ARCHIVE_URL  等同于 --archive-url
   POSTUI_SKIP_INIT=1  等同于 --skip-init
+  POSTUI_VERSION     等同于 --version
 EOF
 }
 
@@ -91,7 +93,8 @@ if [ -z "${HOME:-}" ]; then
     die "无法确定 HOME"
 fi
 
-archive_url=${POSTUI_ARCHIVE_URL:-$DEFAULT_RELEASE_URL/$release_archive_name}
+archive_url=${POSTUI_ARCHIVE_URL:-}
+version=${POSTUI_VERSION:-}
 skip_init=${POSTUI_SKIP_INIT:-0}
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 install_dir=${POSTUI_INSTALL_DIR:-$data_home/postui}
@@ -117,6 +120,11 @@ while [ "$#" -gt 0 ]; do
             archive_url=$2
             shift 2
             ;;
+        --version)
+            [ "$#" -ge 2 ] || die "--version 需要一个版本号"
+            version=$2
+            shift 2
+            ;;
         --skip-init)
             skip_init=1
             shift
@@ -136,12 +144,28 @@ case "$skip_init" in
     *) die "POSTUI_SKIP_INIT 只能是 0 或 1" ;;
 esac
 
+use_local_package=0
+if [ -z "$archive_url" ] && [ -z "$version" ]; then
+    use_local_package=1
+fi
+if [ -z "$archive_url" ]; then
+    if [ -n "$version" ]; then
+        version=${version#v}
+        case "$version" in
+            ''|*[!0-9A-Za-z.-]*) die "无效版本号: $version" ;;
+        esac
+        archive_url="https://github.com/refiget/postui/releases/download/v$version/$release_archive_name"
+    else
+        archive_url=$DEFAULT_RELEASE_URL/$release_archive_name
+    fi
+fi
+
 if [ -z "$package_dir" ]; then
     case "$0" in
-        */*) local_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) ;;
-        *) local_dir=$(pwd) ;;
+        */*) local_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) ;;
+        *) local_dir= ;;
     esac
-    if [ -f "$local_dir/postui.bin" ]; then
+    if [ -n "$local_dir" ] && [ "$use_local_package" -eq 1 ] && [ -f "$local_dir/postui.bin" ]; then
         package_dir=$local_dir
     else
         download_package "$archive_url"
@@ -155,7 +179,7 @@ command_exists cp || die "系统没有 cp 命令"
 command_exists mkdir || die "系统没有 mkdir 命令"
 
 mkdir -p "$install_dir"
-install_dir=$(CDPATH= cd -- "$install_dir" && pwd)
+install_dir=$(CDPATH='' cd -- "$install_dir" && pwd)
 
 copy_file "$binary_path" "$install_dir/postui.bin" 755
 if [ -f "$package_dir/postui" ]; then

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing version tag to update, for example v0.1.0"
+        description: "Existing version tag to update, for example v0.1.1"
         required: false
         type: string
 
@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install musl linker
         run: |
@@ -49,6 +51,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install Rust target
         shell: pwsh
@@ -71,6 +75,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install Rust target
         run: rustup target add x86_64-apple-darwin
@@ -91,6 +97,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install Rust target
         run: rustup target add aarch64-apple-darwin

@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-
-: "${POSTUI_TEST_CLIPBOARD_FILE:?POSTUI_TEST_CLIPBOARD_FILE is required}"
-cat "$POSTUI_TEST_CLIPBOARD_FILE"

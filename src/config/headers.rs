@@ -18,7 +18,9 @@ where
         type Value = Vec<NameValue>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("Header 映射；值为字符串，重复 Header 使用字符串列表")
+            formatter.write_str(
+                "a Header map whose values are strings; use a string list for repeated headers",
+            )
         }
 
         fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
@@ -30,7 +32,7 @@ where
             while let Some((name, values)) = map.next_entry::<String, HeaderValues>()? {
                 if !names.insert(name.trim().to_ascii_lowercase()) {
                     return Err(serde::de::Error::custom(format!(
-                        "Header {name} 重复声明；请将多个值放在同一个字符串列表中"
+                        "Header {name} is declared more than once; put multiple values in one string list"
                     )));
                 }
                 let values = match values {
@@ -38,7 +40,7 @@ where
                     HeaderValues::Multiple(values) if !values.is_empty() => values,
                     HeaderValues::Multiple(_) => {
                         return Err(serde::de::Error::custom(format!(
-                            "Header {name} 的值列表不能为空；空值使用 \"\""
+                            "Header {name} value list cannot be empty; use \"\" for an empty value"
                         )));
                     }
                 };

@@ -5,52 +5,30 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let text = app.text();
     let feedback = app.current_feedback();
     let (symbol, color) = match feedback {
-        Some(crate::app::Feedback::Info(_)) => ("◆", theme.primary),
         Some(crate::app::Feedback::Success(_)) => ("✓", theme.success),
         Some(crate::app::Feedback::Warning(_)) => ("!", theme.warning),
         Some(crate::app::Feedback::Error(_)) => ("×", theme.error),
-        _ => ("›", theme.muted),
+        None => ("", theme.muted),
     };
-    let owner = if app.view.variables.is_some() {
-        text.variables()
-    } else if app.view.notice.is_some() {
-        text.operation_feedback()
+    let context = if app.view.help_scroll.is_some() {
+        crate::shortcuts::Context::Help
     } else {
-        app.current_request()
-            .map_or(app.config.name.as_str(), |request| request.name.as_str())
+        app.key_context()
     };
-    let message = feedback.map_or(text.ready(), |feedback| feedback.message());
-    let hint = if app.view.prompt.is_some() {
-        text.confirmation_hint()
-    } else if app.view.is_editing() {
-        text.editing_hint()
-    } else if app.view.variables.is_some() {
-        text.variables_page_hint()
-    } else if app.view.dialog.is_some() || app.view.response.menu_selection.is_some() {
-        text.menu_hint()
-    } else if app.response_zoomed() {
-        text.response_hint()
-    } else if app.debug_mode {
-        text.debug_navigation_hint()
-    } else {
-        text.navigation_hint()
-    };
+    let hint = text.shortcut_hint(context, app.debug_mode);
+    let mut lines = Vec::with_capacity(2);
+    if let Some(feedback) = feedback {
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {symbol} "), Style::default().fg(color)),
+            Span::styled(feedback.message(), Style::default().fg(color)),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!(" {hint}"),
+        Style::default().fg(theme.muted),
+    )));
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(format!(" {symbol} "), Style::default().fg(color)),
-                Span::styled(
-                    format!("{} · ", truncate(owner, 20)),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(message, Style::default().fg(color)),
-            ]),
-            Line::from(Span::styled(
-                format!(" {hint}"),
-                Style::default().fg(theme.muted),
-            )),
-        ])
-        .style(Style::default().bg(theme.background)),
+        Paragraph::new(lines).style(Style::default().bg(theme.background)),
         area,
     );
 }
@@ -83,12 +61,6 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, content_area: Rect,
         line.push(Span::styled(
             format!("  │  {}", app.workspace_path().display()),
             Style::default().fg(theme.muted),
-        ));
-    }
-    if app.debug_mode {
-        line.push(Span::styled(
-            format!("  ◆ {}", theme.name),
-            Style::default().fg(theme.secondary),
         ));
     }
     frame.render_widget(
@@ -145,29 +117,18 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     );
 
     if !workspace_selector_area.is_empty() {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(workspace_selector_area);
-        let fixed_width = Line::from(" ▾").width();
-        let configuration = format!(
-            "{} ▾",
-            truncate(
-                app.active_configuration(),
-                usize::from(workspace_selector_area.width).saturating_sub(fixed_width)
-            )
-        );
-        frame.render_widget(
-            Paragraph::new(text.workspace())
-                .style(Style::default().fg(theme.muted).bg(theme.surface)),
-            rows[0],
-        );
-        draw_primary_button(
+        let value_width = usize::from(workspace_selector_area.width)
+            .saturating_sub(Line::from(" ▾").width())
+            .saturating_sub(Line::from("▌  ").width());
+        let configuration = format!("{} ▾", truncate(app.active_configuration(), value_width));
+        draw_flat_button_colored(
             frame,
-            rows[1],
+            workspace_selector_area,
             &configuration,
-            focus.workspace_focused(),
+            FlatButtonState::new(true, focus.workspace_focused()),
+            theme.secondary,
             theme,
+            Alignment::Center,
         );
     }
     if !variables_button_area.is_empty() {
@@ -187,11 +148,11 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         .workspace_state
         .selected_request
         .and_then(|selected| visible.iter().position(|index| *index == selected));
-    let offset = request_list_offset(
-        selected.unwrap_or_default(),
-        visible.len(),
-        usize::from(request_list_area.height),
-    );
+    let offset = app
+        .view
+        .requests
+        .scroll
+        .offset(visible.len(), usize::from(request_list_area.height));
     let items = visible
         .iter()
         .skip(offset)
@@ -211,10 +172,13 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     let list = List::new(items)
         .style(Style::default().bg(theme.surface).fg(theme.text))
         .highlight_style(focus.request_selection())
-        .highlight_symbol("› ");
+        .highlight_symbol("› ")
+        .highlight_spacing(HighlightSpacing::Always);
     let mut state = ListState::default();
-    if let Some(selected) = selected {
-        state.select(Some(selected.saturating_sub(offset)));
+    if let Some(selected) = selected.filter(|selected| {
+        (offset..offset.saturating_add(usize::from(request_list_area.height))).contains(selected)
+    }) {
+        state.select(Some(selected - offset));
     }
     frame.render_stateful_widget(list, request_list_area, &mut state);
     draw_scrollbar(
@@ -231,12 +195,11 @@ pub(super) fn click_request_list_scrollbar(app: &mut App, row: u16, areas: UiLay
     let visible = app.visible_request_indices();
     let visible_count = visible.len();
     let visible_height = usize::from(areas.request_list.height);
-    let selected_position = app
-        .workspace_state
-        .selected_request
-        .and_then(|selected| visible.iter().position(|index| *index == selected))
-        .unwrap_or_default();
-    let offset = request_list_offset(selected_position, visible_count, visible_height);
+    let offset = app
+        .view
+        .requests
+        .scroll
+        .offset(visible_count, visible_height);
     let Some(bar) = scrollbar_track_state(
         areas.request_scrollbar,
         visible_count,
@@ -246,20 +209,38 @@ pub(super) fn click_request_list_scrollbar(app: &mut App, row: u16, areas: UiLay
         return;
     };
 
-    let selected_visible = selected_position
-        .saturating_sub(offset)
-        .min(visible_height.saturating_sub(1));
-    let selected = scrollbar_offset_from_track(&bar, row)
-        .saturating_add(selected_visible)
-        .min(visible_count.saturating_sub(1));
-
-    if let Some(index) = visible.get(selected).copied() {
-        app.select_request(index);
-    }
+    let target = scrollbar_offset_from_track(&bar, row);
+    app.view
+        .requests
+        .scroll
+        .set_offset(target, visible_count, visible_height);
+    app.view.requests.scroll.drag_anchor = Some((row, target));
 }
 
 pub(super) fn drag_request_list_scrollbar(app: &mut App, row: u16, areas: UiLayout) {
-    click_request_list_scrollbar(app, row, areas);
+    let visible_count = app.visible_request_indices().len();
+    let visible_height = usize::from(areas.request_list.height);
+    let offset = app
+        .view
+        .requests
+        .scroll
+        .offset(visible_count, visible_height);
+    let Some((anchor_row, anchor_offset)) = app.view.requests.scroll.drag_anchor else {
+        return;
+    };
+    let Some(bar) = scrollbar_track_state(
+        areas.request_scrollbar,
+        visible_count,
+        visible_height,
+        offset,
+    ) else {
+        return;
+    };
+    let target = scrollbar_offset_from_drag(&bar, anchor_row, anchor_offset, row);
+    app.view
+        .requests
+        .scroll
+        .set_offset(target, visible_count, visible_height);
 }
 
 pub(super) fn request_item(

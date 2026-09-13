@@ -1,7 +1,0 @@
-name: 部分更新项目（长参数）
-description: PATCH 请求和 JSON body。
-method: PATCH
-url: http://{{host}}/v1/items/{{item_id}}
-headers:
-  Content-Type: application/json
-body: '{"value":"{{item_value}}"}'

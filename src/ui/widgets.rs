@@ -7,15 +7,6 @@ pub(super) fn constraint_length(constraint: Constraint) -> u16 {
     }
 }
 
-pub(super) fn request_list_offset(selected: usize, item_count: usize, visible: usize) -> usize {
-    if visible == 0 || item_count <= visible {
-        return 0;
-    }
-    selected
-        .saturating_sub(visible.saturating_sub(1))
-        .min(item_count.saturating_sub(visible))
-}
-
 pub(super) fn scroll_offset(offset: usize, content_length: usize, viewport_length: usize) -> usize {
     let max_offset = content_length.saturating_sub(viewport_length);
     offset.min(max_offset)
@@ -256,31 +247,7 @@ pub(super) fn draw_send_button_aligned(
     theme: &crate::settings::UiTheme,
     alignment: Alignment,
 ) {
-    let line = if enabled {
-        let edge = if focused {
-            theme.secondary
-        } else {
-            theme.accent
-        };
-        Line::from(vec![
-            Span::styled("▐", Style::default().fg(edge)),
-            Span::styled(
-                format!(" {label} "),
-                Style::default()
-                    .fg(theme.background)
-                    .bg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("▌", Style::default().fg(edge)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("│", Style::default().fg(theme.muted)),
-            Span::styled(format!(" {label} "), Style::default().fg(theme.muted)),
-            Span::styled("│", Style::default().fg(theme.muted)),
-        ])
-    };
-    frame.render_widget(Paragraph::new(line).alignment(alignment), area);
+    draw_flat_button_aligned(frame, area, label, enabled, focused, theme, alignment);
 }
 
 pub(super) fn draw_primary_button(
@@ -290,72 +257,89 @@ pub(super) fn draw_primary_button(
     focused: bool,
     theme: &crate::settings::UiTheme,
 ) {
-    draw_single_line_button(
-        frame,
-        area,
-        label,
-        true,
-        focused,
-        ButtonPalette::new(
-            theme.text,
-            theme.primary,
-            theme.background,
-            theme.accent,
-            theme.muted,
-        ),
-    );
+    draw_flat_button_aligned(frame, area, label, true, focused, theme, Alignment::Center);
 }
 
-fn draw_single_line_button(
+pub(super) fn draw_flat_button_aligned(
     frame: &mut Frame<'_>,
     area: Rect,
     label: &str,
     enabled: bool,
     focused: bool,
-    palette: ButtonPalette,
+    theme: &crate::settings::UiTheme,
+    alignment: Alignment,
 ) {
-    render_button_line(frame, area, label, palette.style(enabled, focused));
-}
-
-fn render_button_line(frame: &mut Frame<'_>, area: Rect, label: &str, style: Style) {
-    let line = Line::from(Span::styled(format!(" {label} "), style));
-    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
+    let state = FlatButtonState::new(enabled, focused);
+    draw_flat_button_colored(frame, area, label, state, theme.accent, theme, alignment);
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ButtonPalette {
-    focused: Style,
-    unfocused: Style,
-    disabled: Style,
+pub(super) enum FlatButtonState {
+    Disabled,
+    Idle,
+    Focused,
 }
 
-impl ButtonPalette {
-    fn new(
-        focused_fg: Color,
-        focused_bg: Color,
-        unfocused_fg: Color,
-        unfocused_bg: Color,
-        disabled_fg: Color,
-    ) -> Self {
-        Self {
-            focused: Style::default()
-                .fg(focused_fg)
-                .bg(focused_bg)
-                .add_modifier(Modifier::BOLD),
-            unfocused: Style::default().fg(unfocused_fg).bg(unfocused_bg),
-            disabled: Style::default().fg(disabled_fg),
+impl FlatButtonState {
+    pub(super) fn new(enabled: bool, focused: bool) -> Self {
+        match (enabled, focused) {
+            (false, _) => Self::Disabled,
+            (true, true) => Self::Focused,
+            (true, false) => Self::Idle,
         }
     }
+}
 
-    fn style(self, enabled: bool, focused: bool) -> Style {
-        if !enabled {
-            self.disabled
-        } else if focused {
-            self.focused
-        } else {
-            self.unfocused
+pub(super) fn draw_flat_button_colored(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    state: FlatButtonState,
+    color: Color,
+    theme: &crate::settings::UiTheme,
+    alignment: Alignment,
+) {
+    let line = match state {
+        FlatButtonState::Disabled => Line::from(vec![
+            Span::styled("│", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(theme.muted)
+                    .underline_color(theme.selection)
+                    .add_modifier(Modifier::DIM | Modifier::UNDERLINED),
+            ),
+        ]),
+        FlatButtonState::Idle | FlatButtonState::Focused => {
+            let fill = if matches!(state, FlatButtonState::Focused) {
+                theme.text
+            } else {
+                color
+            };
+            let edge = blend_rgb(color, theme.surface, 65);
+            let style = Style::default()
+                .fg(theme.background)
+                .bg(fill)
+                .underline_color(edge)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+            Line::from(vec![
+                Span::styled("▌", Style::default().fg(edge).bg(fill)),
+                Span::styled(format!(" {label} "), style),
+            ])
         }
-    }
+    };
+    frame.render_widget(Paragraph::new(line).alignment(alignment), area);
+}
+
+pub(super) fn blend_rgb(foreground: Color, background: Color, foreground_percent: u16) -> Color {
+    let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (foreground, background) else {
+        return foreground;
+    };
+    let background_percent = 100 - foreground_percent;
+    let blend = |front: u8, back: u8| {
+        ((u16::from(front) * foreground_percent + u16::from(back) * background_percent) / 100) as u8
+    };
+    Color::Rgb(blend(fr, br), blend(fg, bg), blend(fb, bb))
 }
 
 fn bordered_block(

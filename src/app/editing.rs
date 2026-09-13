@@ -11,7 +11,13 @@ use crossterm::event::KeyEvent;
 
 impl App {
     pub(crate) fn display_url(&self, request: &ApiRequest) -> String {
-        template::display_url(&self.effective_request(request))
+        match self.request_draft(&request.id) {
+            Some(draft) => template::append_display_query(
+                draft.url.as_deref().unwrap_or(&request.url),
+                &draft.query_parts,
+            ),
+            None => template::display_url(request),
+        }
     }
 
     pub(crate) fn cycle_method(&mut self) {

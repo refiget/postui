@@ -118,9 +118,9 @@ impl RequestRuntimeState {
         self.feedback.as_ref()
     }
 
-    pub(super) fn start(&mut self, operation_id: String, feedback: Feedback) {
+    pub(super) fn start(&mut self, operation_id: String) {
         self.phase = RequestPhase::Sending { operation_id };
-        self.feedback = Some(feedback);
+        self.feedback = None;
     }
 
     pub(super) fn receive_response(
@@ -158,6 +158,7 @@ pub(crate) struct RequestSession {
     pub(crate) source: ApiRequest,
     pub(crate) draft: RequestDraft,
     pub(super) runtime: RequestRuntimeState,
+    inactive_headers: BTreeMap<String, Vec<HeaderRow>>,
 }
 
 impl RequestSession {
@@ -171,13 +172,14 @@ impl RequestSession {
             source,
             draft,
             runtime: RequestRuntimeState::default(),
+            inactive_headers: BTreeMap::new(),
         }
     }
 
     pub(super) fn effective_request(
         &self,
         configuration: &WorkspaceConfiguration,
-        collection_headers: &[NameValue],
+        config: &WorkspaceConfig,
     ) -> ApiRequest {
         let mut effective = self.source.for_configuration(configuration);
         effective.method = self.draft.method.clone();
@@ -185,15 +187,9 @@ impl RequestSession {
             effective.url = url.clone();
         }
         effective.timeout_seconds = self.draft.timeout_seconds;
-        let headers = collection_headers
-            .iter()
-            .filter(|header| {
-                !self
-                    .draft
-                    .headers
-                    .iter()
-                    .any(|row| row.name.eq_ignore_ascii_case(&header.name))
-            })
+        let headers = self
+            .draft
+            .inherited_headers(config, configuration)
             .cloned()
             .chain(self.draft.enabled_headers())
             .collect();
@@ -205,9 +201,38 @@ impl RequestSession {
         effective
     }
 
-    pub(super) fn activate_configuration(&mut self, configuration: &WorkspaceConfiguration) {
-        self.draft = RequestDraft::from(&self.source.for_configuration(configuration));
+    fn activate_configuration(
+        &mut self,
+        previous_name: &str,
+        name: &str,
+        configuration: &WorkspaceConfiguration,
+    ) {
+        let mut draft = RequestDraft::from(&self.source.for_configuration(configuration));
+        if let Some(headers) = self.inactive_headers.remove(name) {
+            draft.headers = headers;
+        }
+        let previous = std::mem::replace(&mut self.draft, draft);
+        self.inactive_headers
+            .insert(previous_name.to_string(), previous.headers);
         self.runtime.reset();
+    }
+
+    pub(super) fn has_inactive_header_changes(
+        &self,
+        baseline: &ApiRequest,
+        config: &WorkspaceConfig,
+    ) -> bool {
+        self.inactive_headers.iter().any(|(name, headers)| {
+            config.configurations.get(name).is_none_or(|configuration| {
+                let overrides = configuration.request_overrides.get(&baseline.id);
+                !headers_match(
+                    headers,
+                    overrides
+                        .and_then(|value| value.headers.as_deref())
+                        .unwrap_or(&baseline.headers),
+                )
+            })
+        })
     }
 
     fn commit_draft(&mut self, configuration: &mut WorkspaceConfiguration) {
@@ -342,7 +367,11 @@ impl WorkspaceSession {
             .expect("已验证配置存在")
             .clone();
         for session in &mut self.requests {
-            session.activate_configuration(&target_configuration);
+            session.activate_configuration(
+                &self.active_configuration,
+                configuration,
+                &target_configuration,
+            );
         }
         self.active_configuration = configuration.to_string();
         self.variables = self
@@ -374,8 +403,7 @@ impl WorkspaceSession {
         session: &RequestSession,
     ) -> Option<ApiRequest> {
         let configuration = config.configurations.get(&self.active_configuration)?;
-        let headers = collection_headers(config, configuration);
-        Some(session.effective_request(configuration, &headers))
+        Some(session.effective_request(configuration, config))
     }
 
     pub(super) fn current(&self) -> Option<&RequestSession> {
@@ -399,21 +427,6 @@ impl WorkspaceSession {
             .iter_mut()
             .find(|session| session.source.id == request_id)
     }
-}
-
-fn collection_headers(
-    config: &WorkspaceConfig,
-    configuration: &WorkspaceConfiguration,
-) -> Vec<NameValue> {
-    let mut headers = config.headers.clone();
-    headers.retain(|existing| {
-        !configuration
-            .headers
-            .iter()
-            .any(|header| existing.name.eq_ignore_ascii_case(&header.name))
-    });
-    headers.extend(configuration.headers.iter().cloned());
-    headers
 }
 
 fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<String, String> {
@@ -450,6 +463,74 @@ pub(crate) struct RequestDraft {
 }
 
 impl RequestDraft {
+    pub(super) fn inherited_headers<'a>(
+        &'a self,
+        config: &'a WorkspaceConfig,
+        configuration: &'a WorkspaceConfiguration,
+    ) -> impl Iterator<Item = &'a NameValue> {
+        config
+            .headers
+            .iter()
+            .filter(|existing| {
+                !configuration
+                    .headers
+                    .iter()
+                    .any(|header| existing.name.eq_ignore_ascii_case(&header.name))
+            })
+            .chain(&configuration.headers)
+            .filter(|header| {
+                !self
+                    .headers
+                    .iter()
+                    .any(|row| row.name.eq_ignore_ascii_case(&header.name))
+            })
+    }
+
+    pub(super) fn matches_configuration(
+        &self,
+        source: &ApiRequest,
+        configuration: &WorkspaceConfiguration,
+    ) -> bool {
+        let overrides = configuration.request_overrides.get(&source.id);
+        self.method
+            == *overrides
+                .and_then(|value| value.method.as_ref())
+                .unwrap_or(&source.method)
+            && self.url.as_ref()
+                == Some(
+                    overrides
+                        .and_then(|value| value.url.as_ref())
+                        .unwrap_or(&source.url),
+                )
+            && self.timeout_seconds
+                == overrides
+                    .and_then(|value| value.timeout_seconds)
+                    .or(configuration.timeout_seconds)
+                    .unwrap_or(source.timeout_seconds)
+            && headers_match(
+                &self.headers,
+                overrides
+                    .and_then(|value| value.headers.as_deref())
+                    .unwrap_or(&source.headers),
+            )
+            && self.query_parts
+                == *overrides
+                    .and_then(|value| value.query_parts.as_ref())
+                    .unwrap_or(&source.query_parts)
+            && self.body_parts
+                == *overrides
+                    .and_then(|value| value.body_parts.as_ref())
+                    .unwrap_or(&source.body_parts)
+            && self.form
+                == *overrides
+                    .and_then(|value| value.form.as_ref())
+                    .unwrap_or(&source.form)
+            && self.files
+                == *overrides
+                    .and_then(|value| value.files.as_ref())
+                    .unwrap_or(&source.files)
+    }
+
     fn enabled_headers(&self) -> impl Iterator<Item = NameValue> + '_ {
         self.headers
             .iter()
@@ -459,6 +540,16 @@ impl RequestDraft {
                 value: row.value.clone(),
             })
     }
+}
+
+fn headers_match(rows: &[HeaderRow], headers: &[NameValue]) -> bool {
+    rows.len() == headers.len()
+        && rows.iter().zip(headers).all(|(row, header)| {
+            row.enabled
+                && row.source == HeaderSource::Request
+                && row.name == header.name
+                && row.value == header.value
+        })
 }
 
 impl From<&ApiRequest> for RequestDraft {

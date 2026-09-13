@@ -6,14 +6,6 @@ pub(super) struct ResponseLayout {
     pub(super) body: ScrollAreas,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ScrollAreas {
-    pub(super) content: Rect,
-    pub(super) scrollbar: Rect,
-}
-
-type ResponseScrollbar = ScrollbarTrackState;
-
 enum ResponseContent<'a> {
     Lines(Vec<Line<'static>>),
     Document {
@@ -119,7 +111,7 @@ pub(super) fn sync_response_scroll(app: &mut App, areas: UiLayout) {
         .update_bounds(length.saturating_sub(usize::from(body.content.height)));
 }
 
-fn response_scrollbar(app: &App, areas: UiLayout) -> Option<ResponseScrollbar> {
+fn response_scrollbar(app: &App, areas: UiLayout) -> Option<ScrollbarTrackState> {
     let body = response_sections(areas.response).body;
     let viewport = usize::from(body.content.height);
     let length = response_content(app)?.line_count(body.content.width);
@@ -339,28 +331,6 @@ pub(super) fn draw_response(
     }
 }
 
-pub(super) fn draw_response_format_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let enabled = app.current_response().is_some();
-    let (symbol, label) = match app.view.response.active_tab {
-        ResponseTab::Raw => ("↔", app.text().response_show_formatted()),
-        ResponseTab::Formatted => ("↔", app.text().response_show_raw()),
-        ResponseTab::Headers => ("↔", app.text().response_show_formatted()),
-    };
-    let focused = app.view.response.active_tab != ResponseTab::Headers;
-    draw_response_toolbar_button(
-        frame,
-        area,
-        &format!("{symbol} {label}"),
-        symbol,
-        enabled,
-        focused,
-        &app.global_config.theme,
-    );
-}
-
 fn render_response_document(
     frame: &mut Frame<'_>,
     areas: ScrollAreas,
@@ -456,214 +426,6 @@ fn render_response_lines(
         offset,
         theme,
     );
-}
-
-pub(super) fn response_menu_area(panel: Rect, trigger: Rect) -> Rect {
-    if panel.is_empty() || trigger.is_empty() {
-        return Rect::default();
-    }
-    let width = 20.min(panel.width.saturating_sub(2));
-    let height = u16::try_from(ResponseMenuAction::all().len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2)
-        .min(panel.height);
-    if width < 3 || height < 3 {
-        return Rect::default();
-    }
-    let y = trigger
-        .bottom()
-        .min(panel.bottom().saturating_sub(height))
-        .max(panel.y);
-    Rect::new(
-        panel.right().saturating_sub(width).saturating_sub(1),
-        y,
-        width,
-        height,
-    )
-}
-
-pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let label = format!("{} ▾", app.text().response_menu());
-    draw_response_toolbar_button(
-        frame,
-        area,
-        &label,
-        "▾",
-        app.view.focus == Focus::ResponseActions,
-        true,
-        &app.global_config.theme,
-    );
-}
-
-pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let (symbol, label) = if app.response_zoomed() {
-        ("↙", app.text().response_restore())
-    } else {
-        ("↗", app.text().response_zoom())
-    };
-    draw_response_toolbar_button(
-        frame,
-        area,
-        &format!("{symbol} {label}"),
-        symbol,
-        app.view.focus == Focus::ResponseZoom,
-        true,
-        &app.global_config.theme,
-    );
-}
-
-fn draw_response_toolbar_button(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    symbol: &str,
-    enabled: bool,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-) {
-    let width = usize::from(area.width);
-    if width == 0 || area.is_empty() {
-        return;
-    }
-
-    let content_width = width.saturating_sub(2);
-    let full_label = format!(" {label} ");
-    let compact_label = format!(" {symbol} ");
-    let text = if Line::from(full_label.as_str()).width() <= content_width {
-        full_label
-    } else if Line::from(compact_label.as_str()).width() <= content_width {
-        compact_label
-    } else {
-        symbol.chars().take(content_width).collect()
-    };
-    let text_width = Line::from(text.as_str()).width();
-    let left_padding = width.saturating_sub(text_width) / 2;
-    let right_padding = width.saturating_sub(text_width + left_padding);
-
-    let (cap, body) = if !enabled {
-        (
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-        )
-    } else if focused {
-        (
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .fg(theme.background)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            Style::default().fg(theme.accent),
-            Style::default()
-                .fg(theme.text)
-                .bg(theme.selection)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
-
-    let line = Line::from(vec![
-        Span::raw(" ".repeat(left_padding)),
-        Span::styled("[", cap),
-        Span::styled(text, body),
-        Span::styled("]", cap),
-        Span::raw(" ".repeat(right_padding.saturating_sub(2))),
-    ]);
-    frame.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
-}
-
-pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() || area.width < 3 || area.height < 3 {
-        return;
-    }
-    let theme = &app.global_config.theme;
-    let text = app.text();
-    let items = ResponseMenuAction::all()
-        .into_iter()
-        .map(|action| {
-            let style = Style::default().fg(theme.text).bg(theme.surface);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{}  ", response_action_symbol(action)), style),
-                Span::styled(response_action_label(action, text), style),
-            ]))
-            .style(style)
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_set(border::PLAIN)
-            .border_style(Style::default().fg(theme.accent))
-            .style(Style::default().bg(theme.surface)),
-        area,
-    );
-    let inner = area.inner(Margin::new(1, 1));
-    if inner.is_empty() {
-        return;
-    }
-    let mut state = ListState::default().with_selected(Some(
-        app.view
-            .response
-            .menu_selection
-            .unwrap_or_default()
-            .min(ResponseMenuAction::all().len().saturating_sub(1)),
-    ));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .fg(theme.background)
-            .bg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    frame.render_stateful_widget(list, inner, &mut state);
-}
-
-fn response_action_symbol(action: ResponseMenuAction) -> &'static str {
-    match action {
-        ResponseMenuAction::Download => "↓",
-        ResponseMenuAction::CopyBody | ResponseMenuAction::CopyHeaders => "⧉",
-    }
-}
-
-fn response_action_label(action: ResponseMenuAction, text: crate::i18n::UiText) -> &'static str {
-    match action {
-        ResponseMenuAction::Download => text.response_download(),
-        ResponseMenuAction::CopyBody => text.response_copy_body(),
-        ResponseMenuAction::CopyHeaders => text.response_copy_headers(),
-    }
-}
-
-pub(super) fn panel_scroll_areas(area: Rect) -> ScrollAreas {
-    inner_scroll_areas(area.inner(Margin::new(1, 1)))
-}
-
-pub(super) fn inner_scroll_areas(area: Rect) -> ScrollAreas {
-    if area.is_empty() {
-        return ScrollAreas {
-            content: Rect::default(),
-            scrollbar: Rect::default(),
-        };
-    }
-    let scrollbar_width = u16::from(area.width > 1);
-    let content_width = area.width.saturating_sub(scrollbar_width);
-    ScrollAreas {
-        content: Rect::new(area.x, area.y, content_width, area.height),
-        scrollbar: Rect::new(
-            area.x.saturating_add(content_width),
-            area.y,
-            scrollbar_width,
-            area.height,
-        ),
-    }
 }
 
 fn response_tab_labels(app: &App) -> [(ResponseTab, String); 3] {

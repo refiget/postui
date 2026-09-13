@@ -66,7 +66,7 @@ try {
     $script:RustFlagsConfigured = $true
 
     Write-Host "构建 Windows amd64 release: $target"
-    & $cargoPath build --manifest-path (Join-Path $projectRoot "Cargo.toml") --release --target $target
+    & $cargoPath build --locked --manifest-path (Join-Path $projectRoot "Cargo.toml") --release --target $target
     if ($LASTEXITCODE -ne 0) {
         Fail "cargo build 执行失败"
     }

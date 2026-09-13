@@ -15,6 +15,17 @@ pub(crate) enum Focus {
     Response,
 }
 
+impl Focus {
+    pub(crate) const fn container(self) -> Self {
+        match self {
+            Self::Header => Self::Header,
+            Self::Requests | Self::WorkspaceButton | Self::Variables => Self::Requests,
+            Self::Preview | Self::SendButton => Self::Preview,
+            Self::ResponseActions | Self::ResponseZoom | Self::Response => Self::Response,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewMode {
     #[default]
@@ -128,6 +139,46 @@ pub(crate) struct RequestListState {
     pub(crate) search: Option<EditInput>,
     pub(crate) filter: String,
     pub(crate) filter_origin: Option<String>,
+    pub(crate) scroll: ListScrollState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ListScrollState {
+    offset: usize,
+    pub(crate) drag_anchor: Option<(u16, usize)>,
+}
+
+impl ListScrollState {
+    const STEP: usize = 3;
+
+    pub(crate) fn offset(&self, content_length: usize, viewport_length: usize) -> usize {
+        self.offset
+            .min(content_length.saturating_sub(viewport_length))
+    }
+
+    pub(crate) fn set_offset(
+        &mut self,
+        offset: usize,
+        content_length: usize,
+        viewport_length: usize,
+    ) {
+        self.offset = offset.min(content_length.saturating_sub(viewport_length));
+    }
+
+    pub(crate) fn move_by(
+        &mut self,
+        direction: isize,
+        content_length: usize,
+        viewport_length: usize,
+    ) {
+        let max_offset = content_length.saturating_sub(viewport_length);
+        self.offset = match direction {
+            value if value < 0 => self.offset.saturating_sub(Self::STEP),
+            value if value > 0 => self.offset.saturating_add(Self::STEP),
+            _ => self.offset,
+        }
+        .min(max_offset);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +228,7 @@ pub(crate) struct ViewState {
     pub(crate) dialog: Option<Dialog>,
     pub(crate) prompt: Option<AppPrompt>,
     pub(crate) notice: Option<Feedback>,
-    pub(crate) help_visible: bool,
+    pub(crate) help_scroll: Option<u16>,
     pub(crate) animation_frame: usize,
     pub(crate) clicks: ClickSequence,
 }
@@ -194,7 +245,7 @@ impl Default for ViewState {
             dialog: None,
             prompt: None,
             notice: None,
-            help_visible: false,
+            help_scroll: None,
             animation_frame: 0,
             clicks: ClickSequence::default(),
         }
@@ -202,6 +253,19 @@ impl Default for ViewState {
 }
 
 impl ViewState {
+    pub(crate) fn cancel_scroll_drag(&mut self) {
+        self.response.scroll.drag_anchor = None;
+        self.requests.scroll.drag_anchor = None;
+        match self.dialog.as_mut() {
+            Some(Dialog::Headers(dialog)) => dialog.scroll.drag_anchor = None,
+            Some(Dialog::Params(dialog)) => dialog.scroll.drag_anchor = None,
+            _ => {}
+        }
+        if let Some(page) = self.variables.as_mut() {
+            page.scroll.drag_anchor = None;
+        }
+    }
+
     pub(crate) fn is_editing(&self) -> bool {
         self.preview.is_editing()
             || self.response.search.is_some()
@@ -225,25 +289,11 @@ impl ViewState {
 
     pub(super) fn next_focus(&self, reverse: bool) -> Focus {
         let order: &[Focus] = match self.mode {
-            ViewMode::Standard => &[
-                Focus::Header,
-                Focus::Requests,
-                Focus::WorkspaceButton,
-                Focus::Variables,
-                Focus::Preview,
-                Focus::SendButton,
-                Focus::ResponseActions,
-                Focus::ResponseZoom,
-                Focus::Response,
-            ],
-            ViewMode::ResponseZoom { .. } => &[
-                Focus::Header,
-                Focus::ResponseActions,
-                Focus::ResponseZoom,
-                Focus::Response,
-            ],
+            ViewMode::Standard => &[Focus::Requests, Focus::Preview, Focus::Response],
+            ViewMode::ResponseZoom { .. } => &[Focus::Response],
         };
-        let Some(index) = order.iter().position(|focus| *focus == self.focus) else {
+        let container = self.focus.container();
+        let Some(index) = order.iter().position(|focus| *focus == container) else {
             return Focus::Response;
         };
         let next = if reverse {

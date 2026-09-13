@@ -1,1 +1,0 @@
-This file is sent by the PostUI FastAPI mock configuration.

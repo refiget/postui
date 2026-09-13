@@ -1,4 +1,5 @@
 use crate::settings::Language;
+use crate::shortcuts::{self, Command, Context};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UiText {
@@ -37,6 +38,10 @@ impl UiText {
         self.pick("Params", "参数")
     }
 
+    pub(crate) fn add_entry(self) -> &'static str {
+        self.pick("Add row", "添加行")
+    }
+
     pub(crate) fn body(self) -> &'static str {
         self.pick("Body", "请求体")
     }
@@ -54,23 +59,23 @@ impl UiText {
     }
 
     pub(crate) fn no_content(self) -> &'static str {
-        self.pick("No request content", "无请求内容")
+        self.pick("Request body: empty", "请求体：空")
     }
 
     pub(crate) fn no_requests(self) -> &'static str {
-        self.pick("No requests yet", "暂无请求")
+        self.pick("Request list: empty", "接口列表：空")
     }
 
     pub(crate) fn enter_url(self) -> &'static str {
-        self.pick("Enter URL", "输入地址")
+        self.pick("URL required", "地址未设置")
     }
 
     pub(crate) fn request_url_required(self) -> &'static str {
-        self.pick("Enter a request URL first", "请先填写请求地址")
+        self.pick("URL required", "地址未设置")
     }
 
     pub(crate) fn request_selection_required(self) -> &'static str {
-        self.pick("Select or create a request first", "请先选择或新建请求")
+        self.pick("No request selected", "未选择接口")
     }
 
     pub(crate) fn delete_request(self) -> &'static str {
@@ -78,14 +83,11 @@ impl UiText {
     }
 
     pub(crate) fn delete_request_message(self) -> &'static str {
-        self.pick(
-            "Delete this request and its saved file?",
-            "删除此请求及其已保存文件吗？",
-        )
+        self.pick("Delete request and source file?", "删除接口及其源文件？")
     }
 
-    pub(crate) fn delete_request_hint(self) -> &'static str {
-        self.pick("Y Delete · N Cancel", "Y 删除 · N 取消")
+    pub(crate) fn delete_request_hint(self) -> String {
+        self.confirmation_hint()
     }
 
     pub(crate) fn request_deleted(self) -> &'static str {
@@ -93,13 +95,13 @@ impl UiText {
     }
 
     pub(crate) fn quit_title(self) -> &'static str {
-        self.pick("Discard temporary changes?", "丢弃临时修改？")
+        self.pick("Discard session changes?", "丢弃会话修改？")
     }
 
     pub(crate) fn quit_modified_message(self) -> &'static str {
         self.pick(
-            "Temporary request changes will be lost when PostUI exits.",
-            "退出 PostUI 后，当前会话的请求修改将丢失。",
+            "Exit clears all unsaved request changes.",
+            "退出后清除全部未保存的请求修改。",
         )
     }
 
@@ -114,21 +116,6 @@ impl UiText {
         self.pick("Requests", "接口")
     }
 
-    pub(crate) fn ready(self) -> &'static str {
-        self.pick("Ready", "就绪")
-    }
-
-    pub(crate) fn operation_feedback(self) -> &'static str {
-        self.pick("Action", "操作")
-    }
-
-    pub(crate) fn theme_loaded(self, name: &str) -> String {
-        match self.language {
-            Language::English => format!("Theme loaded: {name}"),
-            Language::Chinese => format!("主题已加载：{name}"),
-        }
-    }
-
     pub(crate) fn theme_load_failed(self, error: &str) -> String {
         match self.language {
             Language::English => format!("Could not load theme: {error}"),
@@ -136,114 +123,71 @@ impl UiText {
         }
     }
 
-    pub(crate) fn navigation_hint(self) -> &'static str {
-        self.pick(
-            "Tab Focus · / Search · r Send/Cancel · R Reload · ? Help · q Quit",
-            "Tab 切换 · / 搜索 · r 发送/取消 · R 重载 · ? 帮助 · q 退出",
-        )
+    pub(crate) fn shortcut_hint(self, context: Context, debug: bool) -> String {
+        use Command::*;
+        let commands: &[Command] = match context {
+            Context::Editor => &[Confirm, Back, SelectAll, Help],
+            Context::Confirm => &[Confirm, Back],
+            Context::Help => &[Up, Down, Back],
+            Context::Menu => &[Up, Down, Activate, Back, Help],
+            Context::Variables => &[Up, Down, Activate, FocusNext, Back, Help],
+            Context::Headers => &[Activate, Add, Delete, Toggle, FocusNext, Help],
+            Context::Params => &[Activate, Add, Delete, FocusNext, Help],
+            Context::Response => &[
+                Up,
+                Down,
+                Search,
+                NextMatch,
+                PreviousMatch,
+                ResponseMenu,
+                Help,
+            ],
+            _ => &[FocusNext, Search, Send, Reload, Help, Back],
+        };
+        shortcuts::hint(context, self.language, commands, debug)
     }
 
     pub(crate) fn help_title(self) -> &'static str {
-        self.pick("Keyboard help", "快捷键帮助")
+        self.pick("Key map", "按键表")
     }
 
-    pub(crate) fn help_content(self) -> &'static str {
-        self.pick(
-            "r   Send or cancel request\nR   Reload and validate YAML\nw   Switch scenario\nv   Open variables\n/   Search requests (name, path, method, URL)\n←/→ Response Raw / Formatted / Headers\no   Response actions\nu   Restore current request\nX   Restore all request changes in this scenario\n?   Open this help\nq   Quit\n\nEdits are temporary for this session. PostUI is not a YAML editor.\nPress any key to close.",
-            "r   发送或取消请求\nR   重新加载并校验 YAML\nw   切换场景\nv   打开变量页\n/   搜索请求（名称、路径、方法、URL）\n←/→ 响应区 Raw / Formatted / Headers\no   响应操作\nu   恢复当前请求配置\nX   恢复当前场景的全部请求修改\n?   打开本帮助\nq   退出\n\n所有修改仅在当前会话生效。PostUI 不是 YAML 编辑器。\n按任意键关闭。",
-        )
+    pub(crate) fn help_content(self, context: Context, debug: bool) -> String {
+        shortcuts::help(context, self.language, debug)
     }
 
     pub(crate) fn request_restored(self) -> &'static str {
-        self.pick("Request restored from YAML", "已恢复当前请求配置")
+        self.pick("Reset", "已重置")
     }
 
     pub(crate) fn configuration_restored(self) -> &'static str {
-        self.pick(
-            "All request changes in this scenario were restored",
-            "已恢复当前场景的全部请求修改",
-        )
+        self.pick("Reset", "已重置")
     }
 
-    pub(crate) fn debug_navigation_hint(self) -> &'static str {
-        self.pick(
-            "Tab Focus · r Send/Cancel · R Reload · o Actions · F5 Theme · q Quit",
-            "Tab 切换 · r 发送/取消 · R 重载 · o 操作 · F5 主题 · q 退出",
-        )
-    }
-
-    pub(crate) fn editing_hint(self) -> &'static str {
-        self.pick(
-            "Editing · Enter/Tab Confirm · Esc Cancel",
-            "编辑中 · Enter/Tab 确认 · Esc 取消",
-        )
-    }
-
-    pub(crate) fn menu_hint(self) -> &'static str {
-        self.pick(
-            "↑↓ Select · Enter Apply · Esc Close",
-            "↑↓ 选择 · Enter 应用 · Esc 关闭",
-        )
-    }
-
-    pub(crate) fn variables_page_hint(self) -> &'static str {
-        self.pick(
-            "↑↓ Select · Enter Edit · Tab Actions · Esc Back",
-            "↑↓ 选择 · Enter 编辑 · Tab 切换操作 · Esc 返回",
-        )
-    }
-
-    pub(crate) fn response_hint(self) -> &'static str {
-        self.pick(
-            "↑↓ Scroll · ←→ Tabs · / Search · n/N Next/Previous · o Actions · Esc Restore",
-            "↑↓ 滚动 · ←→ 页签 · / 搜索 · n/N 下一处/上一处 · o 操作 · Esc 恢复布局",
-        )
-    }
-
-    pub(crate) fn confirmation_hint(self) -> &'static str {
-        self.pick("Y Confirm · N Cancel", "Y 确认 · N 取消")
-    }
-
-    pub(crate) fn request_complete(self, status: u16, elapsed_ms: u128) -> String {
-        match self.language {
-            Language::English => format!("HTTP {status} · {elapsed_ms} ms"),
-            Language::Chinese => format!("HTTP {status} · {elapsed_ms} ms"),
-        }
+    pub(crate) fn confirmation_hint(self) -> String {
+        self.shortcut_hint(Context::Confirm, false)
     }
 
     pub(crate) fn response_extract_failures(self, count: usize) -> String {
         match self.language {
-            Language::English => format!(
-                "{count} field(s) not extracted; check the response JSON and extraction paths"
-            ),
-            Language::Chinese => format!("{count} 个字段提取失败；请检查响应 JSON 和提取路径"),
+            Language::English => format!("{count} field(s) failed"),
+            Language::Chinese => format!("{count} 个字段提取失败"),
         }
     }
 
     pub(crate) fn request_in_progress(self) -> &'static str {
-        self.pick("Request is already in progress", "请求正在发送")
+        self.pick("Request in progress", "请求处理中")
     }
 
     pub(crate) fn request_cancelled(self) -> &'static str {
-        self.pick("Request cancelled", "请求已取消")
+        self.pick("Cancelled", "已取消")
     }
 
     pub(crate) fn workspace_reloaded(self) -> &'static str {
-        self.pick("Workspace configuration reloaded", "工作区配置已重新加载")
+        self.pick("Reloaded", "已重载")
     }
 
     pub(crate) fn reload_while_sending(self) -> &'static str {
-        self.pick(
-            "Cancel running requests before reloading",
-            "请先取消正在发送的请求再重新加载",
-        )
-    }
-
-    pub(crate) fn reload_failed(self, error: &str) -> String {
-        match self.language {
-            Language::English => format!("Could not reload workspace: {error}"),
-            Language::Chinese => format!("重新加载工作区失败：{error}"),
-        }
+        self.pick("Request in progress", "请求处理中")
     }
 
     pub(crate) fn missing_variables(self, names: &[String]) -> String {
@@ -316,13 +260,6 @@ impl UiText {
         }
     }
 
-    pub(crate) fn request_started(self, method: &str, url: &str) -> String {
-        match self.language {
-            Language::English => format!("Sending {method} {url}"),
-            Language::Chinese => format!("正在发送 {method} {url}"),
-        }
-    }
-
     pub(crate) fn address(self) -> &'static str {
         self.pick("URL", "地址")
     }
@@ -348,11 +285,11 @@ impl UiText {
     }
 
     pub(crate) fn no_variables(self) -> &'static str {
-        self.pick("No variables", "暂无变量")
+        self.pick("Variables: empty", "变量：空")
     }
 
     pub(crate) fn no_headers(self) -> &'static str {
-        self.pick("No headers", "暂无请求头")
+        self.pick("Headers: empty", "请求头：空")
     }
 
     pub(crate) fn apply(self) -> &'static str {
@@ -364,20 +301,15 @@ impl UiText {
     }
 
     pub(crate) fn variables_applied(self) -> &'static str {
-        self.pick("Variables applied to this session", "变量已应用到当前会话")
+        self.pick("Applied", "已应用")
     }
 
-    pub(crate) fn configuration_switched(self, configuration: &str) -> String {
-        match self.language {
-            Language::English => format!(
-                "Configuration switched to {configuration}; temporary changes are kept per scenario"
-            ),
-            Language::Chinese => format!("已切换到配置 {configuration}；临时修改按场景保留"),
-        }
+    pub(crate) fn configuration_switched(self) -> &'static str {
+        self.pick("Switched", "已切换")
     }
 
     pub(crate) fn no_params(self) -> &'static str {
-        self.pick("No params", "暂无参数")
+        self.pick("Params: empty", "参数：空")
     }
 
     pub(crate) fn unsupported_method(self, method: &str) -> String {
@@ -451,7 +383,7 @@ impl UiText {
     }
 
     pub(crate) fn response_preparing_highlight(self) -> &'static str {
-        self.pick("Preparing syntax highlighting…", "正在准备语法高亮…")
+        self.pick("INDEXING SYNTAX…", "语法索引中…")
     }
 
     pub(crate) fn response_format_note(
@@ -476,15 +408,12 @@ impl UiText {
         self.pick("Response headers", "响应头")
     }
 
-    pub(crate) fn response_search_no_match(self, query: &str) -> String {
-        match self.language {
-            Language::English => format!("No response match for: {query}"),
-            Language::Chinese => format!("响应中未找到：{query}"),
-        }
+    pub(crate) fn response_search_no_match(self) -> &'static str {
+        self.pick("No match", "未找到匹配项")
     }
 
     pub(crate) fn response_action_no_response(self) -> &'static str {
-        self.pick("No response to act on", "暂无可操作的响应")
+        self.pick("No response", "无响应")
     }
 
     pub(crate) fn binary_response_download(self) -> &'static str {
@@ -504,7 +433,7 @@ impl UiText {
     }
 
     pub(crate) fn response_copied(self) -> &'static str {
-        self.pick("Response copied", "响应已复制")
+        self.pick("Copied", "已复制")
     }
 
     pub(crate) fn response_copy_failed(self, error: &str) -> String {
@@ -514,11 +443,8 @@ impl UiText {
         }
     }
 
-    pub(crate) fn response_downloaded(self, path: &str) -> String {
-        match self.language {
-            Language::English => format!("Response saved to {path}"),
-            Language::Chinese => format!("响应已保存至 {path}"),
-        }
+    pub(crate) fn response_downloaded(self) -> &'static str {
+        self.pick("Saved", "已保存")
     }
 
     pub(crate) fn response_download_failed(self, error: &str) -> String {
@@ -529,11 +455,11 @@ impl UiText {
     }
 
     pub(crate) fn waiting_response(self) -> &'static str {
-        self.pick("Sending request…", "正在发送请求…")
+        self.pick("REQUEST IN FLIGHT…", "请求传输中…")
     }
 
     pub(crate) fn request_not_sent(self) -> &'static str {
-        self.pick("No response yet", "暂无响应")
+        self.pick("Response: not available", "响应：不可用")
     }
 
     pub(crate) fn response_body(self) -> &'static str {

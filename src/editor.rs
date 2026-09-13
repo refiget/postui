@@ -1,8 +1,52 @@
-use std::ops::Range;
+use std::{env, ffi::OsString, ops::Range, path::Path, process::Command as ProcessCommand};
 
+use crate::shortcuts::{self, Command, Context};
+use anyhow::{Context as _, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
+
+pub(crate) fn open_file(path: &Path) -> Result<()> {
+    if let Some(editor) = configured_editor("VISUAL").or_else(|| configured_editor("EDITOR")) {
+        return run_editor(editor, &[], path);
+    }
+
+    #[cfg(windows)]
+    {
+        return run_editor(OsString::from("notepad.exe"), &[], path);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return run_editor(OsString::from("open"), &["-W", "-t"], path);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        run_editor(OsString::from("vi"), &[], path)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    {
+        bail!("No default editor is available")
+    }
+}
+
+fn configured_editor(name: &str) -> Option<OsString> {
+    env::var_os(name).filter(|value| !value.to_string_lossy().trim().is_empty())
+}
+
+fn run_editor(editor: OsString, arguments: &[&str], path: &Path) -> Result<()> {
+    let status = ProcessCommand::new(&editor)
+        .args(arguments)
+        .arg(path)
+        .status()
+        .with_context(|| format!("Could not start editor: {}", editor.to_string_lossy()))?;
+    if !status.success() {
+        bail!("Editor exited with status {status}")
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct EditInput {
@@ -165,46 +209,36 @@ impl EditInput {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> EditAction {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('a') => self.mode = EditMode::Replace,
-                KeyCode::Char('e') => {
-                    self.cursor = self.value.len();
-                    self.mode = EditMode::Insert;
-                }
-                KeyCode::Char('u') => self.delete_line(),
-                KeyCode::Left => self.move_word_left(),
-                KeyCode::Right => self.move_word_right(),
-                KeyCode::Delete => self.delete_word_right(),
-                KeyCode::Char('k') => self.delete_to_end(),
-                _ => {}
-            }
-            return EditAction::Continue;
-        }
-
-        match key.code {
-            KeyCode::Char(character) => self.insert(character),
-            KeyCode::Backspace
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::META) =>
-            {
-                self.delete_word_left();
-            }
-            KeyCode::Backspace => self.backspace(),
-            KeyCode::Delete => self.delete(),
-            KeyCode::Left => self.move_left(),
-            KeyCode::Right => self.move_right(),
-            KeyCode::Home => {
+        let key = shortcuts::normalize(key);
+        match shortcuts::resolve(Context::Editor, key, false) {
+            Some(Command::SelectAll) => self.mode = EditMode::Replace,
+            Some(Command::Clear) => self.delete_line(),
+            Some(Command::WordLeft) => self.move_word_left(),
+            Some(Command::WordRight) => self.move_word_right(),
+            Some(Command::DeleteWordRight) => self.delete_word_right(),
+            Some(Command::DeleteWordLeft) => self.delete_word_left(),
+            Some(Command::DeleteToEnd) => self.delete_to_end(),
+            Some(Command::Backspace) => self.backspace(),
+            Some(Command::Delete) => self.delete(),
+            Some(Command::Left) => self.move_left(),
+            Some(Command::Right) => self.move_right(),
+            Some(Command::Home) => {
                 self.cursor = 0;
                 self.mode = EditMode::Insert;
             }
-            KeyCode::End => {
+            Some(Command::End) => {
                 self.cursor = self.value.len();
                 self.mode = EditMode::Insert;
             }
-            KeyCode::Enter | KeyCode::Tab => return EditAction::Confirm,
-            KeyCode::Esc => return EditAction::Cancel,
+            Some(Command::Confirm) => return EditAction::Confirm,
+            Some(Command::Back) => return EditAction::Cancel,
+            None if key.kind != crossterm::event::KeyEventKind::Release
+                && key.modifiers == KeyModifiers::NONE =>
+            {
+                if let KeyCode::Char(character) = key.code {
+                    self.insert(character);
+                }
+            }
             _ => {}
         }
         EditAction::Continue

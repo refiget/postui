@@ -1,7 +1,0 @@
-name: 文件不存在
-description: 上传文件读取失败时显示明确错误。
-method: POST
-url: http://{{host}}/v1/upload
-files:
-  - field: file
-    path: "{{missing_file}}"

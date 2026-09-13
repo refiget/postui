@@ -5,8 +5,15 @@ const SIDEBAR_MEDIUM: u16 = 22;
 const SIDEBAR_NARROW: u16 = 22;
 pub(super) const PREVIEW_ACTION_WIDTH: u16 = 14;
 pub(super) const SEND_BUTTON_HEIGHT: u16 = 1;
+// Keep the primary action visually detached from the preview panel frame.
+const SEND_BUTTON_BORDER_GAP: u16 = 1;
+const SEND_BUTTON_RESERVED_HEIGHT: u16 = SEND_BUTTON_HEIGHT + SEND_BUTTON_BORDER_GAP;
 
-use super::{ScrollAreas, inner_scroll_areas, panel_scroll_areas};
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScrollAreas {
+    pub(super) content: Rect,
+    pub(super) scrollbar: Rect,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct UiLayout {
@@ -116,7 +123,9 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         preview_details.x,
         preview_details.y,
         preview_details.width,
-        preview_details.height.saturating_sub(SEND_BUTTON_HEIGHT),
+        preview_details
+            .height
+            .saturating_sub(SEND_BUTTON_RESERVED_HEIGHT),
     );
     let preview = preview_sections(preview_content_area, summary_height);
     let (response_format_button, response_zoom_button, response_menu_button) =
@@ -142,10 +151,6 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         response_menu_button,
         response_zoom_button,
     }
-}
-
-pub(super) fn preview_summary_height(width: u16) -> u16 {
-    u16::from(width > 0) * 2
 }
 
 pub(super) fn preview_sections(area: Rect, requested_summary_height: u16) -> PreviewSections {
@@ -212,7 +217,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -223,7 +228,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
@@ -254,10 +259,19 @@ fn request_send_button(area: Rect) -> Rect {
         return Rect::default();
     }
     let inner = area.inner(Margin::new(1, 1));
-    let width = PREVIEW_ACTION_WIDTH.min(inner.width);
+    if inner.width <= SEND_BUTTON_BORDER_GAP || inner.height < SEND_BUTTON_RESERVED_HEIGHT {
+        return Rect::default();
+    }
+    let width = PREVIEW_ACTION_WIDTH.min(inner.width - SEND_BUTTON_BORDER_GAP);
     Rect::new(
-        inner.right().saturating_sub(width),
-        inner.bottom().saturating_sub(SEND_BUTTON_HEIGHT),
+        inner
+            .right()
+            .saturating_sub(SEND_BUTTON_BORDER_GAP)
+            .saturating_sub(width),
+        inner
+            .bottom()
+            .saturating_sub(SEND_BUTTON_BORDER_GAP)
+            .saturating_sub(SEND_BUTTON_HEIGHT),
         width,
         SEND_BUTTON_HEIGHT,
     )
@@ -291,4 +305,28 @@ fn response_action_buttons(area: Rect) -> (Rect, Rect, Rect) {
         Rect::new(zoom_x, inner.y, width, 1),
         Rect::new(menu_x, inner.y, width, 1),
     )
+}
+
+pub(super) fn panel_scroll_areas(area: Rect) -> ScrollAreas {
+    inner_scroll_areas(area.inner(Margin::new(1, 1)))
+}
+
+pub(super) fn inner_scroll_areas(area: Rect) -> ScrollAreas {
+    if area.is_empty() {
+        return ScrollAreas {
+            content: Rect::default(),
+            scrollbar: Rect::default(),
+        };
+    }
+    let scrollbar_width = u16::from(area.width > 1);
+    let content_width = area.width.saturating_sub(scrollbar_width);
+    ScrollAreas {
+        content: Rect::new(area.x, area.y, content_width, area.height),
+        scrollbar: Rect::new(
+            area.x.saturating_add(content_width),
+            area.y,
+            scrollbar_width,
+            area.height,
+        ),
+    }
 }

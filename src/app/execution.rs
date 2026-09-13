@@ -65,21 +65,12 @@ impl App {
                     for (variable, value) in extracted_variables {
                         self.workspace_state.variables.insert(variable, value);
                     }
-                    let complete = text.request_complete(status, elapsed_ms);
-                    let message = if extraction_failure_count == 0 {
-                        complete
-                    } else {
-                        format!(
-                            "{complete} · {}",
-                            text.response_extract_failures(extraction_failure_count)
-                        )
-                    };
                     let feedback = if status >= 400 {
-                        Feedback::Error(message)
+                        Feedback::Error(text.request_status_failed().to_string())
                     } else if extraction_failure_count > 0 {
-                        Feedback::Warning(message)
+                        Feedback::Warning(text.response_extract_failures(extraction_failure_count))
                     } else {
-                        Feedback::Success(message)
+                        Feedback::Success(text.request_status_success().to_string())
                     };
                     let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
@@ -90,7 +81,8 @@ impl App {
                 }
                 RequestOutcome::Failed(error) => {
                     let request_status = RequestStatus::from_error(&error);
-                    let feedback = Feedback::Error(text.request_error(&error).to_string());
+                    let feedback = Feedback::Error(request_status.label(text).to_string());
+                    let error_detail = text.request_error(&error);
                     let error_message = format!("{:#}", anyhow::Error::new(error));
                     tracing::error!(
                         request_id = %request_id,
@@ -99,7 +91,7 @@ impl App {
                         error = %error_message,
                         "后台请求失败"
                     );
-                    let error_details = format!("{}\n\n{error_message}", feedback.message());
+                    let error_details = format!("{error_detail}\n\n{error_message}");
                     let Some(session) = self.workspace_state.request_mut(&request_id) else {
                         continue;
                     };
@@ -206,9 +198,8 @@ impl App {
             skip_ssl_verification,
             "开始异步发送请求"
         );
-        let feedback = Feedback::Info(self.text().request_started(&resolved.method, &resolved.url));
         if let Some(session) = self.workspace_state.request_mut(&request_id) {
-            session.runtime.start(operation_id, feedback);
+            session.runtime.start(operation_id);
         } else {
             self.view.notice = Some(Feedback::Warning(
                 self.text().request_url_required().to_string(),

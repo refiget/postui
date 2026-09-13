@@ -77,7 +77,7 @@ require_command mktemp
 require_command install
 
 printf '%s\n' "构建 macOS release: $target"
-cargo build --manifest-path "$project_root/Cargo.toml" --release --target "$target"
+cargo build --locked --manifest-path "$project_root/Cargo.toml" --release --target "$target"
 
 binary_path=$project_root/target/$target/release/postui
 require_file "$binary_path" "macOS release 二进制"

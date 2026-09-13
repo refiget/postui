@@ -1,8 +1,9 @@
+use crate::shortcuts::{self, Command, Context};
 use crate::{
     config::{DataPart, RequestParam},
     editor::{EditAction, EditInput},
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 
 use super::PreviewTab;
 
@@ -16,6 +17,7 @@ pub(crate) enum KeyValueField {
 pub(crate) enum HeaderSource {
     Collection,
     Request,
+    Suppressed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,7 @@ pub(crate) struct HeadersDialog {
     pub(crate) request_id: String,
     pub(crate) rows: Vec<HeaderRow>,
     pub(crate) selected: usize,
+    pub(crate) scroll: super::ListScrollState,
     pub(crate) field: KeyValueField,
     pub(crate) editor: Option<EditInput>,
 }
@@ -78,6 +81,7 @@ pub(crate) struct ParamsDialog {
     pub(crate) request_id: String,
     pub(crate) rows: Vec<ParamsDialogRow>,
     pub(crate) selected: usize,
+    pub(crate) scroll: super::ListScrollState,
     pub(crate) field: KeyValueField,
     pub(crate) editor: Option<EditInput>,
 }
@@ -93,23 +97,24 @@ pub(crate) enum Dialog {
 pub(super) enum DialogAction {
     None,
     Changed,
+    RemoveRow { tab: PreviewTab, index: usize },
     Apply,
     Cancel,
 }
 
 impl ConfigurationsDialog {
     fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
-        match key.code {
-            KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Up | KeyCode::Char('k') => {
+        match shortcuts::resolve(Context::Menu, key, false) {
+            Some(Command::Back) => DialogAction::Cancel,
+            Some(Command::Up) => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            Some(Command::Down) => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => DialogAction::Apply,
+            Some(Command::Activate) => DialogAction::Apply,
             _ => DialogAction::None,
         }
     }
@@ -141,37 +146,37 @@ impl HeadersDialog {
             };
         }
 
-        match key.code {
-            KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Up | KeyCode::Char('k') => {
+        match shortcuts::resolve(Context::Headers, key, false) {
+            Some(Command::Back) => DialogAction::Cancel,
+            Some(Command::Up) => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            Some(Command::Down) => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Left => {
+            Some(Command::Left) => {
                 self.field = KeyValueField::Name;
                 DialogAction::None
             }
-            KeyCode::Right => {
+            Some(Command::Right) => {
                 self.field = KeyValueField::Value;
                 DialogAction::None
             }
-            KeyCode::Char('d') => {
-                self.remove_selected();
-                DialogAction::Changed
-            }
-            KeyCode::Enter => {
+            Some(Command::Delete) => DialogAction::RemoveRow {
+                tab: PreviewTab::Headers,
+                index: self.selected,
+            },
+            Some(Command::Activate) => {
                 self.start_edit();
                 DialogAction::None
             }
-            KeyCode::Char(' ') => {
+            Some(Command::Toggle) => {
                 self.toggle_selected();
                 DialogAction::Changed
             }
-            KeyCode::Char('a') => {
+            Some(Command::Add) => {
                 self.add_row();
                 DialogAction::None
             }
@@ -230,15 +235,14 @@ impl HeadersDialog {
         self.editor = Some(EditInput::new(String::new()));
     }
 
-    fn remove_selected(&mut self) {
-        if self
-            .rows
-            .get(self.selected)
-            .is_some_and(|row| row.source == HeaderSource::Request)
-        {
-            self.rows.remove(self.selected);
-            self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    pub(super) fn remove_row(&mut self, index: usize) -> Option<HeaderRow> {
+        if index >= self.rows.len() {
+            return None;
         }
+        self.editor = None;
+        let removed = self.rows.remove(index);
+        self.selected = index.min(self.rows.len().saturating_sub(1));
+        Some(removed)
     }
 
     pub(super) fn toggle_selected(&mut self) {
@@ -284,33 +288,33 @@ impl ParamsDialog {
             };
         }
 
-        match key.code {
-            KeyCode::Esc => DialogAction::Cancel,
-            KeyCode::Up | KeyCode::Char('k') => {
+        match shortcuts::resolve(Context::Params, key, false) {
+            Some(Command::Back) => DialogAction::Cancel,
+            Some(Command::Up) => {
                 self.move_selection(-1);
                 DialogAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            Some(Command::Down) => {
                 self.move_selection(1);
                 DialogAction::None
             }
-            KeyCode::Left => {
+            Some(Command::Left) => {
                 self.field = KeyValueField::Name;
                 DialogAction::None
             }
-            KeyCode::Right => {
+            Some(Command::Right) => {
                 self.field = KeyValueField::Value;
                 DialogAction::None
             }
-            KeyCode::Char('d') => {
-                self.remove_selected();
-                DialogAction::Changed
-            }
-            KeyCode::Enter => {
+            Some(Command::Delete) => DialogAction::RemoveRow {
+                tab: PreviewTab::Params,
+                index: self.selected,
+            },
+            Some(Command::Activate) => {
                 self.start_edit();
                 DialogAction::None
             }
-            KeyCode::Char('a') => {
+            Some(Command::Add) => {
                 self.add_row();
                 DialogAction::None
             }
@@ -388,12 +392,13 @@ impl ParamsDialog {
         self.editor = Some(EditInput::new(String::new()));
     }
 
-    fn remove_selected(&mut self) {
-        if self.rows.is_empty() {
+    pub(super) fn remove_row(&mut self, index: usize) {
+        if index >= self.rows.len() {
             return;
         }
-        self.rows.remove(self.selected);
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.editor = None;
+        self.rows.remove(index);
+        self.selected = index.min(self.rows.len().saturating_sub(1));
     }
 
     fn click_row(&mut self, index: usize, field: KeyValueField, edit: bool, cursor: Option<usize>) {

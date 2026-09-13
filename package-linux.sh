@@ -48,7 +48,7 @@ command -v mktemp >/dev/null 2>&1 || die "找不到 mktemp"
 
 target=x86_64-unknown-linux-musl
 printf '%s\n' "构建 Linux amd64 release: $target"
-cargo build --manifest-path "$project_root/Cargo.toml" --release --target "$target"
+cargo build --locked --manifest-path "$project_root/Cargo.toml" --release --target "$target"
 
 binary_path=$project_root/target/$target/release/postui
 require_file "$binary_path" "Linux release 二进制"

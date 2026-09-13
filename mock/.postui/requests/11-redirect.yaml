@@ -1,6 +1,0 @@
-name: 重定向
-description: reqwest 默认跟随重定向。
-url: http://{{host}}/v1/redirect
-extracts:
-  - variable: redirect_service
-    path: service

@@ -162,8 +162,7 @@ impl App {
             self.view.response.scroll.set_offset(line.saturating_add(1));
         } else {
             self.view.notice = Some(Feedback::Warning(
-                self.text()
-                    .response_search_no_match(&self.view.response.search_query),
+                self.text().response_search_no_match().to_string(),
             ));
         }
         true
@@ -183,9 +182,9 @@ impl App {
                     self.view.notice =
                         Some(Feedback::Error(self.text().response_copy_failed(&error)));
                 }
-                FinishedResponseAction::Downloaded(Ok(path)) => {
+                FinishedResponseAction::Downloaded(Ok(_)) => {
                     self.view.notice = Some(Feedback::Success(
-                        self.text().response_downloaded(&path.display().to_string()),
+                        self.text().response_downloaded().to_string(),
                     ));
                 }
                 FinishedResponseAction::Downloaded(Err(error)) => {

@@ -1,7 +1,8 @@
 use crate::editor::{EditAction, EditInput};
-use crossterm::event::{KeyCode, KeyEvent};
+use crate::shortcuts::{self, Command, Context};
+use crossterm::event::KeyEvent;
 
-use super::{App, Focus};
+use super::{App, Feedback, Focus};
 
 impl App {
     pub(crate) fn variable_default_value(&self, variable: &str) -> String {
@@ -87,6 +88,7 @@ impl App {
         self.view.variables = Some(VariablesPage {
             rows,
             selected,
+            scroll: Default::default(),
             focus: VariablePageFocus::Content,
             editor: None,
             return_focus,
@@ -133,6 +135,7 @@ impl VariablePageFocus {
 pub(crate) struct VariablesPage {
     pub(crate) rows: Vec<VariableRow>,
     pub(crate) selected: usize,
+    pub(crate) scroll: super::ListScrollState,
     pub(crate) focus: VariablePageFocus,
     pub(crate) editor: Option<EditInput>,
     pub(crate) return_focus: Focus,
@@ -160,33 +163,37 @@ impl VariablesPage {
             };
         }
 
-        match key.code {
-            KeyCode::Esc => Some(VariablesPageAction::Close),
-            KeyCode::Tab => {
+        match shortcuts::resolve(Context::Variables, key, false) {
+            Some(Command::Back) => Some(VariablesPageAction::Close),
+            Some(Command::FocusNext) => {
                 self.focus = self.focus.next();
                 None
             }
-            KeyCode::BackTab => {
+            Some(Command::FocusPrevious) => {
                 self.focus = self.focus.previous();
                 None
             }
-            KeyCode::Up | KeyCode::Char('k') if self.focus == VariablePageFocus::Content => {
+            Some(Command::Up) if self.focus == VariablePageFocus::Content => {
                 self.move_selection(-1);
                 None
             }
-            KeyCode::Down | KeyCode::Char('j') if self.focus == VariablePageFocus::Content => {
+            Some(Command::Down) if self.focus == VariablePageFocus::Content => {
                 self.move_selection(1);
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => match self.focus {
-                VariablePageFocus::Content => {
-                    self.start_edit();
-                    None
-                }
-                VariablePageFocus::Apply => Some(VariablesPageAction::Apply),
-                VariablePageFocus::Close => Some(VariablesPageAction::Close),
-            },
+            Some(Command::Activate) => self.activate(),
             _ => None,
+        }
+    }
+
+    pub(super) fn activate(&mut self) -> Option<VariablesPageAction> {
+        match self.focus {
+            VariablePageFocus::Content => {
+                self.start_edit();
+                None
+            }
+            VariablePageFocus::Apply => Some(VariablesPageAction::Apply),
+            VariablePageFocus::Close => Some(VariablesPageAction::Close),
         }
     }
 
@@ -240,5 +247,80 @@ impl VariablesPage {
 
     pub(super) fn cancel_editor(&mut self) {
         self.editor = None;
+    }
+}
+
+impl App {
+    pub(super) fn close_variables(&mut self) {
+        let Some(page) = self.view.variables.take() else {
+            return;
+        };
+        self.view.focus = page.return_focus;
+        tracing::debug!("关闭工作区变量页面");
+    }
+
+    fn apply_variables(&mut self) {
+        let Some(mut page) = self.view.variables.take() else {
+            return;
+        };
+        page.cancel_editor();
+        for row in page.rows {
+            self.workspace_state.variables.insert(row.name, row.value);
+        }
+        self.view.notice = Some(Feedback::Success(
+            self.text().variables_applied().to_string(),
+        ));
+        tracing::debug!(
+            variable_count = self.workspace_state.variables.len(),
+            "应用工作区变量修改"
+        );
+        self.view.focus = page.return_focus;
+    }
+
+    pub(super) fn handle_variables_key(&mut self, key: KeyEvent) {
+        let Some(page) = self.view.variables.as_mut() else {
+            return;
+        };
+        let action = page.handle_key(key);
+        self.handle_variables_action(action);
+    }
+
+    fn handle_variables_action(&mut self, action: Option<VariablesPageAction>) {
+        match action {
+            Some(VariablesPageAction::Apply) => self.apply_variables(),
+            Some(VariablesPageAction::Close) => self.close_variables(),
+            None => {}
+        }
+    }
+
+    pub(crate) fn click_variable_row(&mut self, index: usize, edit: bool, cursor: Option<usize>) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.click_row(index, edit, cursor);
+        }
+    }
+
+    pub(crate) fn focus_variables_page(&mut self, focus: VariablePageFocus) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.focus = focus;
+        }
+    }
+
+    pub(crate) fn click_variables_page_button(&mut self, focus: VariablePageFocus) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.cancel_editor();
+        }
+        self.focus_variables_page(focus);
+        let action = self
+            .view
+            .variables
+            .as_mut()
+            .and_then(VariablesPage::activate);
+        self.handle_variables_action(action);
+    }
+
+    pub(crate) fn cancel_variable_edit(&mut self) {
+        if let Some(page) = self.view.variables.as_mut() {
+            page.cancel_editor();
+        }
     }
 }

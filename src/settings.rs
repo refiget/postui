@@ -3,12 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ratatui::style::Color;
 use serde::Deserialize;
 
-const DEFAULT_THEME: &str = "gruvbox-dark";
-pub const BUILT_IN_THEME_NAMES: [&str; 10] = [
+use crate::diagnostics;
+
+const DEFAULT_THEME: &str = "postui";
+pub const BUILT_IN_THEME_NAMES: [&str; 11] = [
+    "postui",
     "gruvbox-dark",
     "dracula",
     "catppuccin-mocha",
@@ -20,7 +23,7 @@ pub const BUILT_IN_THEME_NAMES: [&str; 10] = [
     "rose-pine",
     "monokai",
 ];
-pub const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
+pub const DEFAULT_SYNTAX_THEME: &str = "base16-ocean.dark";
 pub const DEFAULT_MAX_RESPONSE_DISPLAY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -129,33 +132,18 @@ struct ThemeDefinition {
 
 impl Default for UiTheme {
     fn default() -> Self {
-        Self {
-            name: DEFAULT_THEME.to_string(),
-            primary: Color::Rgb(131, 165, 152),
-            secondary: Color::Rgb(250, 189, 47),
-            accent: Color::Rgb(142, 192, 124),
-            background: Color::Rgb(40, 40, 40),
-            surface: Color::Rgb(60, 56, 54),
-            text: Color::Rgb(235, 219, 178),
-            muted: Color::Rgb(168, 153, 132),
-            error: Color::Rgb(251, 73, 52),
-            success: Color::Rgb(184, 187, 38),
-            warning: Color::Rgb(254, 128, 25),
-            selection: Color::Rgb(80, 73, 69),
-            variable: Color::Rgb(211, 134, 155),
-            syntax_theme: DEFAULT_SYNTAX_THEME.to_string(),
-        }
+        theme(DEFAULT_THEME).expect("built-in default theme must be valid")
     }
 }
 
 pub fn load(path: &Path) -> Result<GlobalConfig> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("无法读取用户界面配置: {}", path.display()))?;
-    let raw = serde_saphyr::from_str::<Option<RawGlobalConfig>>(&text)
-        .with_context(|| format!("个人配置 YAML 格式无效: {}", path.display()))?
-        .unwrap_or_default();
-    let global =
-        normalize(path, raw).with_context(|| format!("用户界面配置无效: {}", path.display()))?;
+    let text = fs::read_to_string(path).map_err(|error| diagnostics::read(path, &error))?;
+    let raw: Option<RawGlobalConfig> = diagnostics::parse_yaml(path, "user configuration", &text)?;
+    let global = diagnostics::standardize(
+        normalize(path, raw.unwrap_or_default()),
+        path,
+        "user configuration",
+    )?;
     tracing::debug!(
         path = %path.display(),
         language = global.language.as_str(),
@@ -177,20 +165,35 @@ pub fn default_config() -> GlobalConfig {
     GlobalConfig::default()
 }
 
+pub fn is_not_found(error: &anyhow::Error) -> bool {
+    diagnostics::is_not_found(error)
+}
+
 fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
     if raw.max_response_bytes == 0 {
-        bail!("max_response_bytes 必须大于 0")
+        return Err(diagnostics::invalid(
+            path,
+            "max_response_bytes",
+            "must be greater than 0",
+        ));
     }
     if raw.max_response_display_bytes == 0 {
-        bail!("max_response_display_bytes 必须大于 0")
+        return Err(diagnostics::invalid(
+            path,
+            "max_response_display_bytes",
+            "must be greater than 0",
+        ));
     }
+
+    let theme = theme(&raw.theme)
+        .map_err(|error| diagnostics::invalid(path, "theme", format!("{error:#}")))?;
 
     Ok(GlobalConfig {
         path: Some(path.to_path_buf()),
         language: raw.language,
         max_response_display_bytes: raw.max_response_display_bytes,
         max_response_bytes: raw.max_response_bytes,
-        theme: theme(&raw.theme)?,
+        theme,
     })
 }
 
@@ -208,53 +211,19 @@ fn default_max_response_display_bytes() -> usize {
 }
 
 fn color(field: &str, value: &str) -> Result<Color> {
-    let value = value.trim();
-    let Some(hex) = value.strip_prefix('#') else {
-        return named_color(value).ok_or_else(|| {
-            anyhow::anyhow!("主题颜色无效: {field}={value}，请使用 #RRGGBB 或标准颜色名")
-        });
-    };
-    if hex.len() != 6 || !hex.is_ascii() {
-        bail!("主题颜色无效: {field}={value}，# 格式必须是六位十六进制")
-    }
-    let red = u8::from_str_radix(&hex[0..2], 16)
-        .with_context(|| format!("主题颜色无效: {field}={value}"))?;
-    let green = u8::from_str_radix(&hex[2..4], 16)
-        .with_context(|| format!("主题颜色无效: {field}={value}"))?;
-    let blue = u8::from_str_radix(&hex[4..6], 16)
-        .with_context(|| format!("主题颜色无效: {field}={value}"))?;
-    Ok(Color::Rgb(red, green, blue))
-}
-
-fn named_color(value: &str) -> Option<Color> {
-    match value.to_ascii_lowercase().as_str() {
-        "black" => Some(Color::Black),
-        "red" => Some(Color::Red),
-        "green" => Some(Color::Green),
-        "yellow" => Some(Color::Yellow),
-        "blue" => Some(Color::Blue),
-        "magenta" => Some(Color::Magenta),
-        "cyan" => Some(Color::Cyan),
-        "gray" | "grey" => Some(Color::Gray),
-        "darkgray" | "dark-grey" => Some(Color::DarkGray),
-        "light-red" => Some(Color::LightRed),
-        "light-green" => Some(Color::LightGreen),
-        "light-yellow" => Some(Color::LightYellow),
-        "light-blue" => Some(Color::LightBlue),
-        "light-magenta" => Some(Color::LightMagenta),
-        "light-cyan" => Some(Color::LightCyan),
-        "white" => Some(Color::White),
-        _ => None,
-    }
+    value
+        .trim()
+        .parse::<Color>()
+        .with_context(|| format!("Invalid theme color: {field}={value}"))
 }
 
 fn theme(name: &str) -> Result<UiTheme> {
     let normalized = name.trim().to_ascii_lowercase();
     let definition = theme_definition(&normalized).ok_or_else(|| {
         anyhow::anyhow!(
-            "未知内置主题: {}；可选 {}",
+            "Unknown built-in theme: {}; choose one of {}",
             name,
-            BUILT_IN_THEME_NAMES.join("、")
+            BUILT_IN_THEME_NAMES.join(", ")
         )
     })?;
     Ok(UiTheme {
@@ -277,18 +246,33 @@ fn theme(name: &str) -> Result<UiTheme> {
 
 fn theme_definition(name: &str) -> Option<ThemeDefinition> {
     let values = match name {
+        "postui" => [
+            "#69d6d0",
+            "#c2a9ff",
+            "#7da9ff",
+            "#091019",
+            "#131d29",
+            "#e8f0f7",
+            "#8291a5",
+            "#ff6f88",
+            "#70d6a0",
+            "#f2bd68",
+            "#223650",
+            "#f3a978",
+            "base16-ocean.dark",
+        ],
         "gruvbox-dark" => [
             "#83a598",
             "#fabd2f",
             "#8ec07c",
+            "#1d2021",
             "#282828",
-            "#3c3836",
             "#ebdbb2",
-            "#a89984",
+            "#928374",
             "#fb4934",
             "#b8bb26",
             "#fe8019",
-            "#504945",
+            "#3c3836",
             "#d3869b",
             "base16-mocha.dark",
         ],
@@ -296,59 +280,59 @@ fn theme_definition(name: &str) -> Option<ThemeDefinition> {
             "#8be9fd",
             "#bd93f9",
             "#ff79c6",
-            "#282a36",
-            "#343746",
+            "#242631",
+            "#2d303e",
             "#f8f8f2",
-            "#a9a9b3",
+            "#9698a8",
             "#ff5555",
             "#50fa7b",
             "#f1fa8c",
-            "#44475a",
-            "#ff79c6",
+            "#41445a",
+            "#ffb86c",
             "base16-ocean.dark",
         ],
         "catppuccin-mocha" => [
             "#89b4fa",
             "#cba6f7",
             "#f5c2e7",
-            "#1e1e2e",
-            "#313244",
+            "#181825",
+            "#242435",
             "#cdd6f4",
-            "#a6adc8",
+            "#9ba3bd",
             "#f38ba8",
             "#a6e3a1",
             "#f9e2af",
-            "#45475a",
-            "#cba6f7",
+            "#3b3d55",
+            "#fab387",
             "base16-ocean.dark",
         ],
         "tokyo-night" => [
             "#7aa2f7",
             "#bb9af7",
             "#2ac3de",
-            "#1a1b26",
-            "#24283b",
+            "#13141c",
+            "#1c2030",
             "#c0caf5",
-            "#9aa5ce",
+            "#828daf",
             "#f7768e",
             "#9ece6a",
             "#e0af68",
-            "#33467c",
+            "#293a68",
             "#ff9e64",
             "base16-ocean.dark",
         ],
         "nord" => [
             "#88c0d0",
-            "#81a1c1",
+            "#ebcb8b",
             "#5e81ac",
-            "#2e3440",
-            "#3b4252",
+            "#242933",
+            "#303744",
             "#eceff4",
-            "#aeb8c6",
+            "#9aa6b6",
             "#bf616a",
             "#a3be8c",
-            "#ebcb8b",
-            "#434c5e",
+            "#d08770",
+            "#3d4859",
             "#b48ead",
             "base16-ocean.dark",
         ],
@@ -356,14 +340,14 @@ fn theme_definition(name: &str) -> Option<ThemeDefinition> {
             "#61afef",
             "#c678dd",
             "#56b6c2",
-            "#282c34",
-            "#353b45",
+            "#1d2026",
+            "#282d36",
             "#abb2bf",
-            "#7f8795",
+            "#7d8594",
             "#e06c75",
             "#98c379",
             "#e5c07b",
-            "#3e4451",
+            "#383f4d",
             "#d19a66",
             "base16-ocean.dark",
         ],
@@ -372,43 +356,43 @@ fn theme_definition(name: &str) -> Option<ThemeDefinition> {
             "#6c71c4",
             "#2aa198",
             "#002b36",
-            "#073642",
+            "#063844",
             "#eee8d5",
             "#93a1a1",
             "#dc322f",
             "#859900",
             "#b58900",
-            "#0b4a5a",
+            "#164b59",
             "#d33682",
             "Solarized (dark)",
         ],
         "kanagawa" => [
             "#7e9cd8",
-            "#957fb8",
+            "#e6c384",
             "#7fb4ca",
-            "#1f1f28",
-            "#2a2a37",
+            "#181820",
+            "#252530",
             "#dcd7ba",
             "#938aa9",
             "#e82424",
             "#98bb6c",
-            "#e6c384",
-            "#363646",
             "#ffa066",
+            "#343444",
+            "#957fb8",
             "base16-ocean.dark",
         ],
         "rose-pine" => [
             "#9ccfd8",
-            "#c4a7e7",
+            "#f6c177",
             "#ebbcba",
-            "#191724",
-            "#26233a",
+            "#15131f",
+            "#232034",
             "#e0def4",
             "#908caa",
             "#eb6f92",
             "#9ccfd8",
-            "#f6c177",
-            "#403d52",
+            "#ea9a97",
+            "#39364a",
             "#c4a7e7",
             "base16-ocean.dark",
         ],
@@ -416,14 +400,14 @@ fn theme_definition(name: &str) -> Option<ThemeDefinition> {
             "#66d9ef",
             "#ae81ff",
             "#f92672",
-            "#272822",
-            "#3e3d32",
+            "#20211c",
+            "#303128",
             "#f8f8f2",
-            "#a6a69c",
+            "#a2a398",
             "#f92672",
             "#a6e22e",
             "#e6db74",
-            "#49483e",
+            "#414238",
             "#fd971f",
             "base16-eighties.dark",
         ],

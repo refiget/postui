@@ -1,1 +1,0 @@
-This is the second file used by the PostUI multipart smoke test.

@@ -1,6 +1,6 @@
 [package]
 name = "postui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Terminal client for sending configured HTTP requests"
@@ -15,6 +15,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "postui"
 path = "src/main.rs"
+
+[[example]]
+name = "button_showcase"
+path = "examples/ui-studies/button_showcase.rs"
+
+[[example]]
+name = "add_entry_gallery"
+path = "examples/ui-studies/add_entry_gallery.rs"
+
+[[example]]
+name = "delete_icon_gallery"
+path = "examples/ui-studies/delete_icon_gallery.rs"
 
 [dependencies]
 anyhow = "1.0"

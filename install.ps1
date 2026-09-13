@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir,
-    [string]$ArchiveUrl = "https://github.com/refiget/postui/releases/latest/download/postui-windows-amd64.zip",
+    [string]$ArchiveUrl,
+    [string]$Version,
     [switch]$SkipInit
 )
 
@@ -56,32 +57,53 @@ function Download-Package([string]$Url) {
     return $packageDirectory
 }
 
-function Require-PackageFiles([string]$PackageDirectory) {
-    $requiredFiles = @((Join-Path $PackageDirectory "postui.exe"))
-    foreach ($path in $requiredFiles) {
-        if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
-            Fail "发布目录缺少文件: $path"
-        }
-    }
-}
-
 try {
+    if ($env:OS -ne "Windows_NT") {
+        Fail "此脚本仅支持 Windows；Linux/macOS 请使用 install.sh"
+    }
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        $architecture = $env:PROCESSOR_ARCHITECTURE
+    }
+    if ($architecture -ne "AMD64") {
+        Fail "当前发布包仅支持 Windows amd64，当前架构: $architecture"
+    }
     if ([string]::IsNullOrWhiteSpace($InstallDir)) {
         $InstallDir = Get-DefaultInstallDir
     }
     $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 
-    $localPackageDirectory = Find-PackageDirectory (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    $localPackageDirectory = $null
+    if (![string]::IsNullOrWhiteSpace($PSScriptRoot) -and
+        [string]::IsNullOrWhiteSpace($ArchiveUrl) -and
+        [string]::IsNullOrWhiteSpace($Version)) {
+        $localBinary = Join-Path $PSScriptRoot "postui.exe"
+        if (Test-Path -LiteralPath $localBinary -PathType Leaf) {
+            $localPackageDirectory = $PSScriptRoot
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($localPackageDirectory)) {
+        if ([string]::IsNullOrWhiteSpace($ArchiveUrl)) {
+            $releasePath = "latest/download"
+            if (![string]::IsNullOrWhiteSpace($Version)) {
+                $Version = $Version -replace '^v', ''
+                if ($Version -notmatch '^[0-9A-Za-z.-]+$') {
+                    Fail "无效版本号: $Version"
+                }
+                $releasePath = "download/v$Version"
+            }
+            $ArchiveUrl = "https://github.com/refiget/postui/releases/$releasePath/postui-windows-amd64.zip"
+        }
         $packageDirectory = Download-Package $ArchiveUrl
     } else {
         $packageDirectory = $localPackageDirectory
     }
-    Require-PackageFiles $packageDirectory
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $packageDirectory "postui.exe") `
-        -Destination (Join-Path $InstallDir "postui.exe") -Force
+    if ([IO.Path]::GetFullPath($packageDirectory) -ne $InstallDir) {
+        Copy-Item -LiteralPath (Join-Path $packageDirectory "postui.exe") `
+            -Destination (Join-Path $InstallDir "postui.exe") -Force
+    }
     if (!$SkipInit) {
         & (Join-Path $InstallDir "postui.exe") init
         if ($LASTEXITCODE -ne 0) {
@@ -90,7 +112,9 @@ try {
     }
 
     Write-Host "PostUI 已安装到: $InstallDir"
-    Write-Host "当前 PowerShell 请重新打开后使用 postui。"
+    if (!$SkipInit) {
+        Write-Host "当前 PowerShell 请重新打开后使用 postui。"
+    }
 } finally {
     if ($null -ne $script:TempRoot -and (Test-Path -LiteralPath $script:TempRoot)) {
         Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue

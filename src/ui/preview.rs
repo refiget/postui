@@ -53,17 +53,35 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
     if area.is_empty() {
         return;
     }
+    let lines = request_summary_lines(app);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+pub(super) fn preview_summary_height(app: &App, width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    let available_width = usize::from(width);
+    request_summary_lines(app)
+        .iter()
+        .map(|line| {
+            u16::try_from(line.width().max(1).div_ceil(available_width)).unwrap_or(u16::MAX)
+        })
+        .fold(0, u16::saturating_add)
+}
+
+fn request_summary_lines(app: &App) -> Vec<Line<'static>> {
     let theme = &app.global_config.theme;
     let text = app.text();
     let Some(request) = app.current_request() else {
-        return;
+        return Vec::new();
     };
     let method = app
-        .current_effective_request()
-        .map(|request| request.method)
-        .unwrap_or_else(|| request.method.clone());
+        .request_draft(&request.id)
+        .map(|draft| draft.method.as_str())
+        .unwrap_or(&request.method);
     let mut url_line = vec![
-        Span::styled(format!("[ {} ]", method), method_style(&method, theme)),
+        Span::styled(format!("[ {} ]", method), method_style(method, theme)),
         Span::raw("  "),
     ];
     url_line.push(Span::styled(
@@ -83,31 +101,28 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
             theme,
         ));
     }
-    let mut lines = vec![Line::from(url_line)];
-    if area.height > 1 {
-        let description = if request.description.is_empty() {
-            text.empty_description()
-        } else {
-            request.description.as_str()
-        };
-        let mut description_line = vec![Span::styled(
-            format!("{}  ", text.description()),
-            label_style(theme),
-        )];
-        description_line.extend(highlight::template_spans(
-            description,
-            highlight::plain_style(theme),
-            theme,
-        ));
-        lines.push(Line::from(description_line));
-    }
-    if !supports_method(&method) && area.height > 0 {
+    let description = if request.description.is_empty() {
+        text.empty_description()
+    } else {
+        request.description.as_str()
+    };
+    let mut description_line = vec![Span::styled(
+        format!("{}  ", text.description()),
+        label_style(theme),
+    )];
+    description_line.extend(highlight::template_spans(
+        description,
+        highlight::plain_style(theme),
+        theme,
+    ));
+    let mut lines = vec![Line::from(url_line), Line::from(description_line)];
+    if !supports_method(method) {
         lines[0] = Line::from(Span::styled(
-            text.unsupported_method(&method),
+            text.unsupported_method(method),
             Style::default().fg(theme.warning),
         ));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    lines
 }
 
 pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -122,15 +137,28 @@ pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
             line.push(Span::raw(" "));
         }
         let active = app.view.preview.active_tab == tab;
-        let style = if active {
+        let color = match tab {
+            PreviewTab::Body => theme.primary,
+            PreviewTab::Params => theme.variable,
+            PreviewTab::Headers => theme.secondary,
+        };
+        let fill = if active { theme.text } else { color };
+        let edge = blend_rgb(color, theme.surface, 65);
+        let label = preview_tab_label(tab, app);
+        let body = if let Some(body) = label.strip_prefix(' ') {
+            body.to_string()
+        } else {
+            label
+        };
+        line.push(Span::styled("▌", Style::default().fg(edge).bg(fill)));
+        line.push(Span::styled(
+            body,
             Style::default()
                 .fg(theme.background)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text).bg(theme.selection)
-        };
-        line.push(Span::styled(preview_tab_label(tab, app), style));
+                .bg(fill)
+                .underline_color(edge)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
@@ -290,161 +318,6 @@ fn content_value_line(
         theme,
     ));
     line
-}
-
-pub(super) fn inline_dialog_layout(area: Rect, row_count: usize) -> DialogLayout {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(area.height.min(1)), Constraint::Min(0)])
-        .split(area);
-    let content = sections[1];
-    let add_height = content.height.min(3);
-    let add_y = content.y.saturating_add(
-        u16::try_from(row_count)
-            .unwrap_or(u16::MAX)
-            .min(content.height.saturating_sub(add_height)),
-    );
-    let add_button = if content.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(content.x, add_y, content.width, add_height)
-    };
-    let table_area = Rect::new(
-        content.x,
-        content.y,
-        content.width,
-        add_y.saturating_sub(content.y),
-    );
-    DialogLayout {
-        area,
-        table_header: sections[0],
-        rows: inner_scroll_areas(table_area),
-        add_button,
-        apply_button: Rect::default(),
-        close_button: Rect::default(),
-    }
-}
-
-pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, dialog: &Dialog) {
-    let row_count = match dialog {
-        Dialog::Configurations(_) => 0,
-        Dialog::Headers(dialog) => dialog.rows.len(),
-        Dialog::Params(dialog) => dialog.rows.len(),
-    };
-    let layout = inline_dialog_layout(area, row_count);
-    match dialog {
-        Dialog::Configurations(_) => {}
-        Dialog::Headers(dialog) => draw_headers_dialog(frame, app, dialog, layout),
-        Dialog::Params(dialog) => draw_params_dialog(frame, app, dialog, layout),
-    }
-    if !layout.add_button.is_empty() && !matches!(dialog, Dialog::Configurations(_)) {
-        let theme = &app.global_config.theme;
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().bg(theme.surface))
-                .border_style(Style::default().fg(theme.secondary).bg(theme.surface)),
-            layout.add_button,
-        );
-        frame.render_widget(
-            Paragraph::new("+").alignment(Alignment::Center).style(
-                Style::default()
-                    .fg(theme.accent)
-                    .bg(theme.surface)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            layout.add_button.inner(Margin::new(1, 1)),
-        );
-    }
-}
-
-pub(super) fn handle_inline_editor_click(
-    app: &mut App,
-    column: u16,
-    row: u16,
-    area: Rect,
-    is_double: bool,
-) {
-    let row_count = match app.view.dialog.as_ref() {
-        Some(Dialog::Headers(dialog)) => dialog.rows.len(),
-        Some(Dialog::Params(dialog)) => dialog.rows.len(),
-        _ => return,
-    };
-    let layout = inline_dialog_layout(area, row_count);
-    if contains(layout.add_button, column, row) {
-        app.add_preview_row(app.view.preview.active_tab);
-        return;
-    }
-    if !contains(layout.rows.content, column, row) {
-        return;
-    }
-    let (row_count, selected) = match app.view.dialog.as_ref() {
-        Some(Dialog::Headers(dialog)) => (dialog.rows.len(), dialog.selected),
-        Some(Dialog::Params(dialog)) => (dialog.rows.len(), dialog.selected),
-        _ => return,
-    };
-    let visible = usize::from(layout.rows.content.height);
-    let offset = request_list_offset(selected, row_count, visible);
-    let index = offset.saturating_add(usize::from(row - layout.rows.content.y));
-    if index >= row_count {
-        return;
-    }
-    match app.view.dialog.as_ref() {
-        Some(Dialog::Headers(_)) => {
-            let request_row = app
-                .view
-                .dialog
-                .as_ref()
-                .and_then(|dialog| match dialog {
-                    Dialog::Headers(dialog) => dialog.rows.get(index),
-                    _ => None,
-                })
-                .is_some_and(|row| row.source == HeaderSource::Request);
-            let widths = inline_header_table_widths(layout.rows.content.width);
-            let value_start = layout
-                .rows
-                .content
-                .x
-                .saturating_add(TABLE_HIGHLIGHT_WIDTH)
-                .saturating_add(constraint_length(widths[0]))
-                .saturating_add(TABLE_COLUMN_SPACING);
-            let name_start = layout.rows.content.x.saturating_add(TABLE_HIGHLIGHT_WIDTH);
-            if column < value_start {
-                if request_row {
-                    let cursor = is_double.then(|| usize::from(column.saturating_sub(name_start)));
-                    app.click_header_row(index, KeyValueField::Name, true, cursor);
-                } else {
-                    app.toggle_header_row(index);
-                }
-            } else {
-                let cursor = is_double.then(|| usize::from(column.saturating_sub(value_start)));
-                app.click_header_row(index, KeyValueField::Value, true, cursor);
-            }
-        }
-        Some(Dialog::Params(_)) => {
-            let widths = inline_param_table_widths(layout.rows.content.width);
-            let value_start = layout
-                .rows
-                .content
-                .x
-                .saturating_add(TABLE_HIGHLIGHT_WIDTH)
-                .saturating_add(constraint_length(widths[0]))
-                .saturating_add(TABLE_COLUMN_SPACING);
-            let field = if column < value_start {
-                KeyValueField::Name
-            } else {
-                KeyValueField::Value
-            };
-            let field_start = if field == KeyValueField::Name {
-                layout.rows.content.x.saturating_add(TABLE_HIGHLIGHT_WIDTH)
-            } else {
-                value_start
-            };
-            let cursor = is_double.then(|| usize::from(column.saturating_sub(field_start)));
-            app.click_param_row(index, field, true, cursor);
-        }
-        _ => {}
-    }
 }
 
 pub(super) fn preview_tab_label(tab: PreviewTab, app: &App) -> String {

@@ -1,8 +1,0 @@
-name: 非 2xx 响应
-description: 服务器返回 422 时保留状态码和响应体。
-method: POST
-url: http://{{host}}/v1/error
-body: '{"name":"{{item_name}}"}'
-extracts:
-  - variable: error_code
-    path: error.code

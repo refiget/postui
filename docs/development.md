@@ -4,7 +4,7 @@
 
 ## 环境
 
-项目使用 Rust 2024 edition。`Cargo.toml` 声明 `rust-version = "1.85"`，但当前源码包含 let-chain 语法，不能把该声明当成已验证的最低版本保证；发布前需单独核对工具链和锁定依赖。日常使用可构建当前代码的 Rust stable。Linux amd64 静态构建需要 musl 工具链；Windows 构建需要 MSVC、Visual C++ Build Tools 和 Windows SDK。
+项目使用 Rust 2024 edition。`Cargo.toml` 声明 `rust-version = "1.85"`，但当前源码包含 let-chain 语法，不能把该声明当成已验证的最低版本保证；发布前需单独核对工具链和锁定依赖。日常使用可构建当前代码的 Rust stable。Linux amd64 静态构建需要 musl 工具链；Windows 构建需要 MSVC、Visual C++ Build Tools 和 Windows SDK；macOS 构建使用 Apple 的系统 SDK。
 
 ## 从哪里修改
 
@@ -23,7 +23,7 @@ cargo check --bin postui
 二进制通过 `postui_core` 使用核心代码；不要在 `src/main.rs` 重新声明核心模块，否则同一份源码会被重复编译成两套类型。完整启动命令保持不变：
 
 ```bash
-cargo run -- mock --scenario dev
+cargo run -- examples/public-api --scenario dev
 ```
 
 | 修改内容 | 首先阅读 | 同步核对 |
@@ -68,36 +68,13 @@ cargo build
 
 ## 公共手工示例
 
-需要人工验证请求发送时，可以运行仓库中的 FastAPI 示例服务：
+仓库提供可直接使用的[公共 API 双场景示例](../examples/public-api/README.md)，不依赖本地服务：
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r mock/requirements.txt
-.venv/bin/python -m uvicorn main:app --app-dir mock --host 127.0.0.1 --port 18080
+cargo run -- examples/public-api --scenario dev
 ```
 
-在 `mock/` 目录启动 `postui`，手工检查编辑、发送和响应展示。示例配置中的 token、Cookie 和接口地址均为虚构值，不要替换成个人项目凭据后提交。
-
-配置变更后按 `R` 原地重新加载；请求“文件变量未设置”用于检查缺失变量汇总和变量页定位，请求“取消进行中的请求”用于检查发送过程中再次按 `r` 或点击取消。
-
-配置使用 `.postui/scenarios/dev.yaml` 和 `test.yaml`，项目默认场景为 `test`。在仓库根目录也可以显式选择场景：
-
-```bash
-cargo run -- mock --scenario dev
-```
-
-`dev` 保留创建任务请求的专属 Header 覆盖；`test` 使用公共请求定义。请求方法省略时为 GET，上传文件中未设置的可选属性不必写 `null`。
-
-超长响应可以直接使用示例请求“10 万条 JSON 响应”。它默认请求 10 万条分块 JSON，每条 `message` 包含 20–100 个随机 ASCII 字符：
-
-```text
-count=100000       # JSON 条目数，1–100000
-size_kb=1024       # plain 响应大小，1–65536 KiB
-format=json        # json 或 plain
-delay_ms=0         # 每个分块之间的延迟，0–1000 ms
-```
-
-接口地址为 `GET /v1/large-response`。响应采用流式传输，并通过 `X-PostUI-Response-Items` 标明 JSON 条目数，适合手工观察大响应、滚动、超限回退和慢速分块场景。常见格式及高亮示例见 [mock 使用说明](../mock/README.md)。
+需要验证配置编辑、文件上传、大响应或取消请求时，另建临时工作区和本地服务，使用虚构数据。`example-api/` 是 Git 忽略的本地目录，不随仓库分发，也不是构建或发布的前置条件。
 
 ## 性能边界
 
@@ -148,9 +125,34 @@ rustup target add x86_64-pc-windows-msvc
 
 脚本会优先使用 PATH 中的 `cargo`，并自动为 MSVC 构建启用静态 CRT。默认输出到 `打包区\postui-windows-amd64.zip`；`-OutputDir` 可以覆盖输出位置。
 
+## macOS 打包
+
+在对应架构的 macOS 上运行：
+
+```bash
+rustup target add x86_64-apple-darwin    # Intel
+rustup target add aarch64-apple-darwin   # Apple Silicon
+./package-macos.sh
+```
+
+也可以显式指定 target：
+
+```bash
+./package-macos.sh --target x86_64-apple-darwin
+./package-macos.sh --target aarch64-apple-darwin
+```
+
+脚本默认输出到 `打包区/postui-macos-amd64.tar.gz` 或 `打包区/postui-macos-arm64.tar.gz`；`--output-dir` 可以覆盖输出位置。
+
 ## 安装脚本
 
 Linux：
+
+```bash
+./install.sh --skip-init
+```
+
+macOS：
 
 ```bash
 ./install.sh --skip-init
@@ -180,7 +182,7 @@ cargo run -- --debug --log-file ./logs/postui-debug.log
 定位大响应卡顿时使用独立的性能模式（debug 构建），不要为了采集耗时开启包含业务内容的完整调试日志：
 
 ```bash
-cargo run -- mock --scenario test --perf --log-file /tmp/postui-perf.log
+cargo run -- /path/to/temporary-workspace --perf --log-file /tmp/postui-perf.log
 ```
 
 `--perf` 只允许 `postui::perf` 目标的指标，不记录 URL、Header、正文、变量、搜索词或具体按键字符。若同时传入 `--debug`，仍以性能过滤为准。请使用新的日志路径，模式切换不会清除该路径已有的普通 debug 日志。默认日志路径与 `--debug` 相同；日志达到 8 MiB 时保留上一份 `.1` 轮转文件。日志通过容量 256 的队列异步写入，队列溢出会输出 `log_queue_overflow dropped_chunks=...`；日志可能丢失尾部，不是审计记录。不开启日志时不进行磁盘写入。
@@ -203,7 +205,7 @@ cargo run -- mock --scenario test --perf --log-file /tmp/postui-perf.log
 
 先观察慢帧是否出现，再结合解析、预取和排队指标定位。不通过调低接收上限掩盖问题，也不在 UI 中等待解析。debug 日志和未优化构建会影响绝对耗时，最终性能结论还需要 release 构建的真实操作确认。
 
-Debug 模式中按 `F5` 会按内置主题顺序即时切换，界面顶栏显示当前主题。该操作只修改运行时状态，不写入个人配置，录制演示后重新启动即可恢复配置主题。
+Debug 模式中按 `F5` 会按内置主题顺序即时切换。该操作只修改运行时状态，不写入个人配置；切换不会产生额外提示，重新启动即可恢复配置主题。
 
 ## 发布前检查
 

@@ -9,6 +9,7 @@
 compile_error!("postui 仅支持 Linux amd64、Windows x86_64、macOS Intel 和 macOS Apple Silicon");
 
 mod cache;
+pub mod diagnostics;
 
 pub mod config;
 pub mod highlight;

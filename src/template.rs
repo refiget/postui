@@ -264,7 +264,7 @@ pub fn parse_query_params(query: &str) -> Vec<RequestParam> {
         .collect()
 }
 
-fn append_display_query(url: &str, parts: &[DataPart]) -> String {
+pub fn append_display_query(url: &str, parts: &[DataPart]) -> String {
     let query = parts
         .iter()
         .map(data_part_text)

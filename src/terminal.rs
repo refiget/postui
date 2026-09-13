@@ -18,12 +18,12 @@ use std::{
 
 pub(crate) fn run_app(app: &mut App) -> Result<()> {
     force_color_output(true);
-    let terminal_session = TerminalSession::enter()?;
+    let mut terminal_session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("创建终端失败")?;
     tracing::debug!("终端界面已初始化");
 
-    let result = run(&mut terminal, app);
+    let result = run(&mut terminal_session, &mut terminal, app);
     if let Err(error) = &result {
         tracing::error!(error = ?error, "TUI 事件循环异常退出");
     }
@@ -46,6 +46,27 @@ impl TerminalSession {
         }
         Ok(Self)
     }
+
+    fn suspend(&mut self) -> Result<()> {
+        disable_raw_mode().context("Disable terminal raw mode failed")?;
+        execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        )
+        .context("Leave TUI screen failed")?;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        enable_raw_mode().context("Enable terminal raw mode failed")?;
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
+            disable_raw_mode().ok();
+            return Err(error).context("Restore TUI screen failed");
+        }
+        Ok(())
+    }
 }
 
 impl Drop for TerminalSession {
@@ -61,7 +82,11 @@ impl Drop for TerminalSession {
     }
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+fn run(
+    terminal_session: &mut TerminalSession,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
     const MAX_EVENT_BATCH: usize = 32;
     const ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -122,7 +147,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         };
         if event::poll(poll_timeout)? {
             for _ in 0..MAX_EVENT_BATCH {
-                redraw |= handle_terminal_event(terminal, app, event::read()?)?;
+                redraw |= handle_terminal_event(terminal_session, terminal, app, event::read()?)?;
                 if app.should_quit || !event::poll(Duration::ZERO)? {
                     break;
                 }
@@ -134,6 +159,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
 }
 
 fn handle_terminal_event(
+    terminal_session: &mut TerminalSession,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     event: Event,
@@ -147,13 +173,23 @@ fn handle_terminal_event(
     };
     let redraw = match event {
         Event::Key(key) => {
-            app.view.response.scroll.drag_anchor = None;
+            app.view.cancel_scroll_drag();
             tracing::trace!(
                 key_kind = app::key_kind(key.code),
                 modifiers = ?key.modifiers,
                 "收到键盘事件"
             );
             app.handle_key(key);
+            if let Some(path) = app.take_editor_request() {
+                terminal_session.suspend()?;
+                let editor_result = crate::editor::open_file(&path);
+                let resume_result = terminal_session.resume();
+                if let Err(error) = editor_result {
+                    app.report_editor_error(format!("{error:#}"));
+                }
+                resume_result?;
+                terminal.clear()?;
+            }
             true
         }
         Event::Mouse(mouse) => {
@@ -178,7 +214,7 @@ fn handle_terminal_event(
             redraw
         }
         Event::Resize(width, height) => {
-            app.view.response.scroll.drag_anchor = None;
+            app.view.cancel_scroll_drag();
             tracing::debug!(width, height, "终端尺寸变化");
             true
         }

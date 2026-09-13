@@ -1,9 +1,10 @@
 use super::{App, Dialog, Feedback, Focus, PreviewAction, key_kind};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::shortcuts::{self, Command, Context};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 impl App {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
-        if key.kind == crossterm::event::KeyEventKind::Release {
+        if key.kind == KeyEventKind::Release {
             return;
         }
         tracing::trace!(
@@ -13,13 +14,53 @@ impl App {
             "处理键盘操作"
         );
 
-        if key.code == KeyCode::F(5) && self.debug_mode {
-            self.load_next_theme();
+        if self.error_page().is_some() {
+            match key.code {
+                KeyCode::Esc => self.dismiss_error_page(),
+                KeyCode::Char('e' | 'E') => self.request_error_editor(),
+                _ => {}
+            }
             return;
         }
 
-        if self.view.help_visible {
-            self.view.help_visible = false;
+        if let Some(scroll) = self.view.help_scroll.as_mut() {
+            match shortcuts::resolve(Context::Help, key, false) {
+                Some(Command::Up) => *scroll = scroll.saturating_sub(1),
+                Some(Command::Down) => *scroll = scroll.saturating_add(1),
+                Some(Command::Back | Command::Help) => self.view.help_scroll = None,
+                _ => {}
+            }
+            return;
+        }
+
+        let command = shortcuts::resolve(self.key_context(), key, self.debug_mode);
+        match command {
+            Some(Command::Help) => {
+                self.view.help_scroll = Some(0);
+                return;
+            }
+            Some(Command::Theme) => {
+                self.load_next_theme();
+                return;
+            }
+            Some(Command::Quit) => {
+                self.request_quit();
+                return;
+            }
+            Some(Command::PreviousTab | Command::NextTab) => {
+                let reverse = command == Some(Command::PreviousTab);
+                if self.view.focus.container() == Focus::Response {
+                    self.move_response_tab(reverse);
+                } else {
+                    self.move_preview_tab(if reverse { -1 } else { 1 });
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        if self.view.prompt.is_some() {
+            self.handle_prompt_key(key);
             return;
         }
 
@@ -33,14 +74,14 @@ impl App {
             return;
         }
 
-        if self.view.prompt.is_some() {
-            self.handle_prompt_key(key);
-            return;
-        }
-
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.request_quit();
-            tracing::debug!("通过 Ctrl+C 请求退出");
+        if self.view.response.menu_selection.is_some() {
+            match command {
+                Some(Command::Back) => self.close_response_menu(),
+                Some(Command::Up) => self.move_response_menu_selection(-1),
+                Some(Command::Down) => self.move_response_menu_selection(1),
+                Some(Command::Activate) => self.activate_selected_response_action(),
+                _ => {}
+            }
             return;
         }
 
@@ -59,12 +100,10 @@ impl App {
             let handle_as_global = inline_table
                 && !editing_inline_cell
                 && (self.view.focus != Focus::Preview
-                    || matches!(
-                        key.code,
-                        KeyCode::Tab
-                            | KeyCode::BackTab
-                            | KeyCode::Char('r' | 'R' | 'w' | 'v' | 'o' | 'q' | '/' | '?')
-                    ));
+                    || command.is_some_and(|command| {
+                        shortcuts::resolve(Context::Global, key, self.debug_mode) == Some(command)
+                            && !matches!(command, Command::Activate | Command::Back)
+                    }));
             if !handle_as_global {
                 self.handle_dialog_key(key);
                 return;
@@ -76,20 +115,8 @@ impl App {
             return;
         }
 
-        if self.view.response.menu_selection.is_some() {
-            match key.code {
-                KeyCode::Esc => self.close_response_menu(),
-                KeyCode::Char('q') if self.response_zoomed() => self.restore_standard_view(),
-                KeyCode::Up | KeyCode::Char('k') => self.move_response_menu_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_response_menu_selection(1),
-                KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_response_action(),
-                _ => {}
-            }
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+        match command {
+            Some(Command::Back) => {
                 if self.response_zoomed() {
                     self.restore_standard_view();
                 } else if !self.view.requests.filter.is_empty() {
@@ -99,43 +126,80 @@ impl App {
                     tracing::debug!("通过快捷键请求退出");
                 }
             }
-            KeyCode::Tab => {
+            Some(Command::FocusNext | Command::FocusPrevious) => {
                 self.view.focus = self
                     .view
-                    .next_focus(key.modifiers.contains(KeyModifiers::SHIFT));
+                    .next_focus(command == Some(Command::FocusPrevious));
                 tracing::debug!(focus = ?self.view.focus, "切换 TUI 区域焦点");
             }
-            KeyCode::BackTab => self.view.focus = self.view.next_focus(true),
-            KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
-            KeyCode::Char('R') => self.reload_workspace(),
-            KeyCode::Char('w') => self.open_configurations(),
-            KeyCode::Char('v') => self.open_variables(),
-            KeyCode::Char('o') => self.open_response_menu(),
-            KeyCode::Char('/') if self.view.focus == Focus::Response => self.open_response_search(),
-            KeyCode::Char('/') => self.open_request_search(),
-            KeyCode::Char('n') if self.view.focus == Focus::Response => {
-                self.find_response_match(false)
+            Some(Command::Send) => self.handle_preview_action(PreviewAction::Send),
+            Some(Command::Reload) => self.reload_workspace(),
+            Some(Command::Workspace) => self.open_configurations(),
+            Some(Command::Variables) => self.open_variables(),
+            Some(Command::ResponseMenu) => self.open_response_menu(),
+            Some(Command::Search) if self.view.focus.container() == Focus::Response => {
+                self.open_response_search()
             }
-            KeyCode::Char('N') if self.view.focus == Focus::Response => {
-                self.find_response_match(true)
+            Some(Command::Search) => self.open_request_search(),
+            Some(Command::NextMatch) => self.find_response_match(false),
+            Some(Command::PreviousMatch) => self.find_response_match(true),
+            Some(Command::ResetRequest) => self.restore_current_request(),
+            Some(Command::ResetScenario) => self.restore_configuration_requests(),
+            Some(Command::Delete) => self.request_delete(),
+            Some(Command::Left) if self.view.focus.container() == Focus::Preview => {
+                self.move_preview_tab(-1)
             }
-            KeyCode::Char('?') => self.view.help_visible = true,
-            KeyCode::Char('u') if self.view.focus == Focus::Requests => {
-                self.restore_current_request()
+            Some(Command::Right) if self.view.focus.container() == Focus::Preview => {
+                self.move_preview_tab(1)
             }
-            KeyCode::Char('X') if self.view.focus == Focus::Requests => {
-                self.restore_configuration_requests()
+            Some(Command::Left | Command::Right)
+                if self.view.focus.container() == Focus::Response =>
+            {
+                self.move_response_tab(command == Some(Command::Left))
             }
-            KeyCode::Delete if self.view.focus == Focus::Requests => self.request_delete(),
-            KeyCode::Left if self.view.focus == Focus::Preview => self.move_preview_tab(-1),
-            KeyCode::Right if self.view.focus == Focus::Preview => self.move_preview_tab(1),
-            KeyCode::Left | KeyCode::Right if self.view.focus == Focus::Response => {
-                self.move_response_tab(key.code == KeyCode::Left)
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_focused(1),
-            KeyCode::Enter | KeyCode::Char(' ') => self.handle_enter(),
+            Some(Command::Up) => self.move_focused(-1),
+            Some(Command::Down) => self.move_focused(1),
+            Some(Command::Activate) => self.handle_enter(),
             _ => {}
+        }
+    }
+
+    pub(crate) fn key_context(&self) -> Context {
+        if self.view.prompt.is_some() {
+            return Context::Confirm;
+        }
+        if self.view.response.search.is_some() || self.view.requests.search.is_some() {
+            return Context::Editor;
+        }
+        if self.view.response.menu_selection.is_some() {
+            return Context::Menu;
+        }
+        if let Some(page) = &self.view.variables {
+            return if page.editor.is_some() {
+                Context::Editor
+            } else {
+                Context::Variables
+            };
+        }
+        if let Some(dialog) = &self.view.dialog {
+            if dialog.is_editing() {
+                return Context::Editor;
+            }
+            match dialog {
+                Dialog::Configurations(_) => return Context::Menu,
+                Dialog::Headers(_) if self.view.focus == Focus::Preview => return Context::Headers,
+                Dialog::Params(_) if self.view.focus == Focus::Preview => return Context::Params,
+                _ => {}
+            }
+        }
+        if self.view.is_editing() {
+            return Context::Editor;
+        }
+        match self.view.focus.container() {
+            Focus::Requests => Context::Requests,
+            Focus::Preview => Context::Preview,
+            Focus::Response => Context::Response,
+            _ => Context::Global,
         }
     }
 
@@ -145,7 +209,6 @@ impl App {
             Ok(theme) => {
                 let name = theme.name.clone();
                 self.global_config.theme = theme;
-                self.view.notice = Some(Feedback::Info(self.text().theme_loaded(&name)));
                 tracing::debug!(previous_theme = %current, theme = %name, "热加载内置主题");
             }
             Err(error) => {
@@ -176,7 +239,9 @@ impl App {
     }
 
     fn move_focused(&mut self, direction: isize) {
-        match self.view.focus {
+        let container = self.view.focus.container();
+        self.view.focus = container;
+        match container {
             Focus::Header => {}
             Focus::Requests => self.move_request(direction),
             Focus::Preview => {
