@@ -116,6 +116,6 @@ pub(crate) fn print_help() {
 默认 debug 日志: .postui/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\
 --perf 仅记录性能指标，不记录请求/响应内容；同样需要 debug 构建。\n\
-postui init 会在 Linux 更新 ~/.zshrc 或 ~/.bashrc；Windows 更新当前用户 PATH。两者都不会写入系统级配置。\n"
+postui init 会在 Linux 或 macOS 更新 ~/.zshrc 或 ~/.bashrc；Windows 更新当前用户 PATH。这些操作都不会写入系统级配置。\n"
     );
 }

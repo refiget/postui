@@ -29,6 +29,12 @@ const CLIPBOARD_COMMANDS: &[ClipboardCommand] = &[ClipboardCommand {
     arguments: &[],
 }];
 
+#[cfg(target_os = "macos")]
+const CLIPBOARD_COMMANDS: &[ClipboardCommand] = &[ClipboardCommand {
+    program: "pbcopy",
+    arguments: &[],
+}];
+
 pub(crate) struct ClipboardService {
     clipboard: Option<arboard::Clipboard>,
 }

@@ -2,7 +2,8 @@
 
 set -eu
 
-DEFAULT_ARCHIVE_URL="https://github.com/refiget/postui/releases/latest/download/postui-linux-amd64.tar.gz"
+DEFAULT_RELEASE_URL="https://github.com/refiget/postui/releases/latest/download"
+release_archive_name=
 
 usage() {
     cat <<'EOF'
@@ -68,10 +69,19 @@ download_package() {
 }
 
 check_platform() {
-    [ "$(uname -s)" = "Linux" ] || die "只支持 Linux"
-    case "$(uname -m)" in
-        x86_64|amd64) ;;
-        *) die "只支持 Linux amd64 (x86_64)，当前架构是 $(uname -m)" ;;
+    case "$(uname -s):$(uname -m)" in
+        Linux:x86_64|Linux:amd64)
+            release_archive_name=postui-linux-amd64.tar.gz
+            ;;
+        Darwin:x86_64|Darwin:amd64)
+            release_archive_name=postui-macos-amd64.tar.gz
+            ;;
+        Darwin:arm64|Darwin:aarch64)
+            release_archive_name=postui-macos-arm64.tar.gz
+            ;;
+        *)
+            die "只支持 Linux amd64、macOS Intel 和 macOS Apple Silicon，当前平台是 $(uname -s) $(uname -m)"
+            ;;
     esac
 }
 
@@ -81,7 +91,7 @@ if [ -z "${HOME:-}" ]; then
     die "无法确定 HOME"
 fi
 
-archive_url=${POSTUI_ARCHIVE_URL:-$DEFAULT_ARCHIVE_URL}
+archive_url=${POSTUI_ARCHIVE_URL:-$DEFAULT_RELEASE_URL/$release_archive_name}
 skip_init=${POSTUI_SKIP_INIT:-0}
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 install_dir=${POSTUI_INSTALL_DIR:-$data_home/postui}

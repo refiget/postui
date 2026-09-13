@@ -1,8 +1,12 @@
 #[cfg(not(any(
     all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "windows", target_arch = "x86_64")
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
 )))]
-compile_error!("postui 仅支持 Linux amd64 (x86_64) 和 Windows x86_64");
+compile_error!("postui 仅支持 Linux amd64、Windows x86_64、macOS Intel 和 macOS Apple Silicon");
 
 mod app;
 mod cli;
