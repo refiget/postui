@@ -53,33 +53,65 @@ impl RequestStatus {
 
 #[derive(Debug, Default)]
 pub(super) struct RequestRuntimeState {
-    status: RequestStatus,
-    response: Option<ResponseData>,
-    document: Option<ResponseDocument>,
-    error: Option<String>,
+    phase: RequestPhase,
     feedback: Option<Feedback>,
-    operation_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+enum RequestPhase {
+    #[default]
+    Idle,
+    Sending {
+        operation_id: String,
+    },
+    Received {
+        response: ResponseData,
+        document: ResponseDocument,
+    },
+    Failed {
+        status: RequestStatus,
+        error: String,
+    },
 }
 
 impl RequestRuntimeState {
     pub(super) fn status(&self) -> RequestStatus {
-        self.status
+        match &self.phase {
+            RequestPhase::Idle => RequestStatus::NotSent,
+            RequestPhase::Sending { .. } => RequestStatus::Sending,
+            RequestPhase::Received { response, .. } => {
+                RequestStatus::from_http_status(response.status)
+            }
+            RequestPhase::Failed { status, .. } => *status,
+        }
     }
 
     pub(super) fn response(&self) -> Option<&ResponseData> {
-        self.response.as_ref()
+        match &self.phase {
+            RequestPhase::Received { response, .. } => Some(response),
+            _ => None,
+        }
     }
 
     pub(super) fn document(&self) -> Option<&ResponseDocument> {
-        self.document.as_ref()
+        match &self.phase {
+            RequestPhase::Received { document, .. } => Some(document),
+            _ => None,
+        }
     }
 
     pub(super) fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        match &self.phase {
+            RequestPhase::Failed { error, .. } => Some(error),
+            _ => None,
+        }
     }
 
     pub(super) fn active_operation_id(&self) -> Option<&str> {
-        self.operation_id.as_deref()
+        match &self.phase {
+            RequestPhase::Sending { operation_id } => Some(operation_id),
+            _ => None,
+        }
     }
 
     pub(super) fn feedback(&self) -> Option<&Feedback> {
@@ -87,26 +119,17 @@ impl RequestRuntimeState {
     }
 
     pub(super) fn start(&mut self, operation_id: String, feedback: Feedback) {
-        self.status = RequestStatus::Sending;
-        self.response = None;
-        self.document = None;
-        self.error = None;
-        self.operation_id = Some(operation_id);
+        self.phase = RequestPhase::Sending { operation_id };
         self.feedback = Some(feedback);
     }
 
     pub(super) fn receive_response(
         &mut self,
-        status: RequestStatus,
         response: ResponseData,
         document: ResponseDocument,
         feedback: Feedback,
     ) {
-        self.operation_id = None;
-        self.status = status;
-        self.response = Some(response);
-        self.document = Some(document);
-        self.error = None;
+        self.phase = RequestPhase::Received { response, document };
         self.feedback = Some(feedback);
     }
 
@@ -116,11 +139,12 @@ impl RequestRuntimeState {
         error: String,
         feedback: Feedback,
     ) {
-        self.operation_id = None;
-        self.status = status;
-        self.response = None;
-        self.document = None;
-        self.error = Some(error);
+        self.phase = RequestPhase::Failed { status, error };
+        self.feedback = Some(feedback);
+    }
+
+    pub(super) fn cancel(&mut self, feedback: Feedback) {
+        self.phase = RequestPhase::Idle;
         self.feedback = Some(feedback);
     }
 
@@ -134,17 +158,19 @@ pub(crate) struct RequestSession {
     pub(crate) source: ApiRequest,
     pub(crate) draft: RequestDraft,
     pub(super) runtime: RequestRuntimeState,
-    pub(crate) dirty: bool,
 }
 
 impl RequestSession {
+    pub(crate) fn status(&self) -> RequestStatus {
+        self.runtime.status()
+    }
+
     pub(super) fn new(source: ApiRequest, configuration: &WorkspaceConfiguration) -> Self {
         let draft = RequestDraft::from(&source.for_configuration(configuration));
         Self {
             source,
             draft,
             runtime: RequestRuntimeState::default(),
-            dirty: false,
         }
     }
 
@@ -169,16 +195,7 @@ impl RequestSession {
                     .any(|row| row.name.eq_ignore_ascii_case(&header.name))
             })
             .cloned()
-            .chain(
-                self.draft
-                    .headers
-                    .iter()
-                    .filter(|row| row.enabled && !row.name.trim().is_empty())
-                    .map(|row| NameValue {
-                        name: row.name.trim().to_string(),
-                        value: row.value.clone(),
-                    }),
-            )
+            .chain(self.draft.enabled_headers())
             .collect();
         effective.headers = headers;
         effective.query_parts = self.draft.query_parts.clone();
@@ -193,7 +210,7 @@ impl RequestSession {
         self.runtime.reset();
     }
 
-    pub(super) fn commit_draft(&mut self, configuration: &mut WorkspaceConfiguration) -> bool {
+    fn commit_draft(&mut self, configuration: &mut WorkspaceConfiguration) {
         if configuration.path.is_none() {
             return self.commit_default_draft();
         }
@@ -202,6 +219,9 @@ impl RequestSession {
         if let Some(timeout_seconds) = configuration.timeout_seconds {
             base.timeout_seconds = timeout_seconds;
         }
+        if let Some(skip_ssl_verification) = configuration.skip_ssl_verification {
+            base.skip_ssl_verification = skip_ssl_verification;
+        }
         let previous = configuration
             .request_overrides
             .get(&self.source.id)
@@ -209,7 +229,10 @@ impl RequestSession {
         let existing_extracts = previous
             .as_ref()
             .and_then(|request_override| request_override.extracts.clone());
-        let headers = draft_headers(&self.draft);
+        let existing_skip_ssl_verification = previous
+            .as_ref()
+            .and_then(|request_override| request_override.skip_ssl_verification);
+        let headers: Vec<_> = self.draft.enabled_headers().collect();
         let next = RequestOverride {
             method: (self.draft.method != base.method).then(|| self.draft.method.clone()),
             url: self
@@ -220,6 +243,7 @@ impl RequestSession {
                 .map(str::to_string),
             timeout_seconds: (self.draft.timeout_seconds != base.timeout_seconds)
                 .then_some(self.draft.timeout_seconds),
+            skip_ssl_verification: existing_skip_ssl_verification,
             headers: (headers != base.headers).then_some(headers),
             query_parts: (self.draft.query_parts != base.query_parts)
                 .then(|| self.draft.query_parts.clone()),
@@ -231,7 +255,7 @@ impl RequestSession {
         };
         let next = (!next.is_empty()).then_some(next);
         if previous == next {
-            return false;
+            return;
         }
         if let Some(request_override) = next {
             configuration
@@ -240,12 +264,9 @@ impl RequestSession {
         } else {
             configuration.request_overrides.remove(&self.source.id);
         }
-        self.dirty = true;
-        true
     }
 
-    fn commit_default_draft(&mut self) -> bool {
-        let before = self.source.clone();
+    fn commit_default_draft(&mut self) {
         self.source.method = self.draft.method.clone();
         self.source.url = self
             .draft
@@ -253,16 +274,11 @@ impl RequestSession {
             .clone()
             .unwrap_or_else(|| self.source.url.clone());
         self.source.timeout_seconds = self.draft.timeout_seconds;
-        self.source.headers = draft_headers(&self.draft);
+        self.source.headers = self.draft.enabled_headers().collect();
         self.source.query_parts = self.draft.query_parts.clone();
         self.source.body_parts = self.draft.body_parts.clone();
         self.source.form = self.draft.form.clone();
         self.source.files = self.draft.files.clone();
-        if before == self.source {
-            return false;
-        }
-        self.dirty = true;
-        true
     }
 }
 
@@ -337,17 +353,15 @@ impl WorkspaceSession {
         true
     }
 
-    pub(super) fn commit_configuration(&mut self, config: &mut WorkspaceConfig) -> bool {
-        let mut changed = false;
+    pub(super) fn commit_configuration(&mut self, config: &mut WorkspaceConfig) {
         let Some(configuration) = config.configurations.get_mut(&self.active_configuration) else {
-            return false;
+            return;
         };
         for session in &mut self.requests {
-            changed |= session.commit_draft(configuration);
+            session.commit_draft(configuration);
         }
         self.configuration_variables
             .insert(self.active_configuration.clone(), self.variables.clone());
-        changed
     }
 
     pub(super) fn current_effective_request(&self, config: &WorkspaceConfig) -> Option<ApiRequest> {
@@ -423,19 +437,7 @@ fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<
         .collect()
 }
 
-fn draft_headers(draft: &RequestDraft) -> Vec<NameValue> {
-    draft
-        .headers
-        .iter()
-        .filter(|row| row.enabled && !row.name.trim().is_empty())
-        .map(|row| NameValue {
-            name: row.name.trim().to_string(),
-            value: row.value.clone(),
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestDraft {
     pub(crate) method: String,
     pub(crate) timeout_seconds: u64,
@@ -445,6 +447,18 @@ pub(crate) struct RequestDraft {
     pub(crate) form: Vec<RequestParam>,
     pub(crate) files: Vec<FileUpload>,
     pub(crate) body_parts: Vec<DataPart>,
+}
+
+impl RequestDraft {
+    fn enabled_headers(&self) -> impl Iterator<Item = NameValue> + '_ {
+        self.headers
+            .iter()
+            .filter(|row| row.enabled && !row.name.trim().is_empty())
+            .map(|row| NameValue {
+                name: row.name.trim().to_string(),
+                value: row.value.clone(),
+            })
+    }
 }
 
 impl From<&ApiRequest> for RequestDraft {

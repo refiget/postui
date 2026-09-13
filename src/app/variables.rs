@@ -1,12 +1,107 @@
 use crate::editor::{EditAction, EditInput};
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::Focus;
+use super::{App, Focus};
+
+impl App {
+    pub(crate) fn variable_default_value(&self, variable: &str) -> String {
+        let definition = self
+            .config
+            .configurations
+            .get(self.active_configuration())
+            .and_then(|configuration| configuration.variables.get(variable))
+            .or_else(|| self.config.variables.get(variable));
+        if self.variable_is_secret(variable) {
+            return "••••••".to_string();
+        }
+        definition
+            .and_then(|definition| definition.default.as_ref())
+            .map(crate::config::value_to_string)
+            .unwrap_or_else(|| "—".to_string())
+    }
+
+    pub(super) fn variable_is_secret(&self, variable: &str) -> bool {
+        let scenario_secret = self
+            .config
+            .configurations
+            .get(self.active_configuration())
+            .and_then(|configuration| configuration.variables.get(variable))
+            .is_some_and(|definition| definition.secret);
+        scenario_secret
+            || self
+                .config
+                .variables
+                .get(variable)
+                .is_some_and(|definition| definition.secret)
+    }
+
+    pub(crate) fn secret_variable_values(&self) -> Vec<String> {
+        self.workspace_state
+            .variables
+            .iter()
+            .filter(|(name, value)| self.variable_is_secret(name) && !value.is_empty())
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    pub(crate) fn open_variables(&mut self) {
+        self.open_variables_at(None, None);
+    }
+
+    pub(super) fn open_variables_at(
+        &mut self,
+        missing_variables: Option<&[String]>,
+        selected_name: Option<String>,
+    ) {
+        let missing = missing_variables
+            .map(|variables| {
+                variables
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut rows = self
+            .config
+            .editable_variables
+            .iter()
+            .map(|name| VariableRow {
+                name: name.clone(),
+                value: self
+                    .workspace_state
+                    .variables
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default(),
+                missing: missing.contains(name.as_str()),
+                secret: self.variable_is_secret(name),
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| !row.missing);
+        let selected = selected_name
+            .as_deref()
+            .and_then(|name| rows.iter().position(|row| row.name == name))
+            .or_else(|| rows.iter().position(|row| row.missing))
+            .unwrap_or_default();
+        let return_focus = self.view.focus;
+        self.view.variables = Some(VariablesPage {
+            rows,
+            selected,
+            focus: VariablePageFocus::Content,
+            editor: None,
+            return_focus,
+        });
+        self.view.focus = Focus::Variables;
+        tracing::debug!(variable_count = self.variable_count(), "打开工作区变量页面");
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariableRow {
     pub(crate) name: String,
     pub(crate) value: String,
+    pub(crate) missing: bool,
+    pub(crate) secret: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

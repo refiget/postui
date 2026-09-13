@@ -68,9 +68,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
     tracing::debug!("进入 TUI 事件循环");
     let mut redraw = true;
     let mut next_animation = Instant::now();
+    let mut frame_metrics = (Instant::now(), 0_u64, 0_u64, 0_u64);
     while !app.should_quit {
         redraw |= app.poll_request_results();
         redraw |= app.poll_response_actions();
+        redraw |= app.poll_response_search();
+        redraw |= app.poll_workspace_reload();
+        redraw |= crate::highlight::take_response_highlight_change();
 
         let now = Instant::now();
         let animating = app.is_animating();
@@ -83,7 +87,24 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         }
 
         if redraw {
+            let started = Instant::now();
             terminal.draw(|frame| ui::draw(frame, app))?;
+            if tracing::enabled!(target: "postui::perf", tracing::Level::DEBUG) {
+                let elapsed_us = started.elapsed().as_micros() as u64;
+                frame_metrics.1 += 1;
+                frame_metrics.2 += elapsed_us;
+                frame_metrics.3 = frame_metrics.3.max(elapsed_us);
+                if elapsed_us >= 16_000 {
+                    tracing::debug!(target: "postui::perf", elapsed_us, "ui_slow_frame");
+                }
+                if frame_metrics.0.elapsed() >= Duration::from_secs(1) {
+                    tracing::debug!(target: "postui::perf", frames = frame_metrics.1,
+                        window_ms = frame_metrics.0.elapsed().as_millis() as u64,
+                        mean_us = frame_metrics.2 / frame_metrics.1,
+                        max_us = frame_metrics.3, "ui_frames");
+                    frame_metrics = (Instant::now(), 0, 0, 0);
+                }
+            }
             redraw = false;
         }
 
@@ -93,6 +114,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
                 .min(ANIMATION_INTERVAL)
         } else {
             ANIMATION_INTERVAL
+        };
+        let poll_timeout = if app.has_pending_background_work() {
+            poll_timeout.min(Duration::from_millis(16))
+        } else {
+            poll_timeout
         };
         if event::poll(poll_timeout)? {
             for _ in 0..MAX_EVENT_BATCH {
@@ -112,6 +138,13 @@ fn handle_terminal_event(
     app: &mut App,
     event: Event,
 ) -> Result<bool> {
+    let started = Instant::now();
+    let event_kind = match &event {
+        Event::Key(_) => "key",
+        Event::Mouse(_) => "mouse",
+        Event::Resize(_, _) => "resize",
+        _ => "other",
+    };
     let redraw = match event {
         Event::Key(key) => {
             app.view.response.scroll.drag_anchor = None;
@@ -151,5 +184,9 @@ fn handle_terminal_event(
         }
         _ => false,
     };
+    let elapsed_us = started.elapsed().as_micros() as u64;
+    if elapsed_us >= 4_000 {
+        tracing::debug!(target: "postui::perf", event_kind, elapsed_us, "ui_slow_event");
+    }
     Ok(redraw)
 }

@@ -1,7 +1,4 @@
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
-    text::Line,
-};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 
 const SIDEBAR_WIDE: u16 = 30;
 const SIDEBAR_MEDIUM: u16 = 22;
@@ -28,6 +25,7 @@ pub(super) struct UiLayout {
     pub(super) preview_content: Rect,
     pub(super) send_button: Rect,
     pub(super) response: Rect,
+    pub(super) response_format_button: Rect,
     pub(super) response_menu_button: Rect,
     pub(super) response_zoom_button: Rect,
 }
@@ -52,8 +50,10 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
             Constraint::Length(2),
         ])
         .split(area);
-    let (header_content, send_button) = header_parts(sections[0]);
+    let header_content = header_content(sections[0]);
     let response = sections[1];
+    let (response_format_button, response_zoom_button, response_menu_button) =
+        response_action_buttons(response);
     UiLayout {
         header: sections[0],
         footer: sections[2],
@@ -68,16 +68,18 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
         preview_summary: Rect::default(),
         preview_tabs: Rect::default(),
         preview_content: Rect::default(),
-        send_button,
+        send_button: Rect::default(),
         response,
-        response_menu_button: response_action_buttons(response).0,
-        response_zoom_button: response_action_buttons(response).1,
+        response_format_button,
+        response_menu_button,
+        response_zoom_button,
     }
 }
 
 pub(super) fn variables_page(area: Rect) -> UiLayout {
     let mut layout = response_zoom(area);
     layout.send_button = Rect::default();
+    layout.response_format_button = Rect::default();
     layout.response_menu_button = Rect::default();
     layout.response_zoom_button = Rect::default();
     layout
@@ -108,10 +110,17 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(columns[1]);
     let sidebar = sidebar_parts(columns[0]);
-    let (header_content, send_button) = header_parts(sections[0]);
+    let header_content = header_content(sections[0]);
     let preview_details = main[0].inner(Margin::new(1, 1));
-    let preview = preview_sections(preview_details, summary_height);
-    let (response_menu_button, response_zoom_button) = response_action_buttons(main[1]);
+    let preview_content_area = Rect::new(
+        preview_details.x,
+        preview_details.y,
+        preview_details.width,
+        preview_details.height.saturating_sub(SEND_BUTTON_HEIGHT),
+    );
+    let preview = preview_sections(preview_content_area, summary_height);
+    let (response_format_button, response_zoom_button, response_menu_button) =
+        response_action_buttons(main[1]);
 
     UiLayout {
         header: sections[0],
@@ -127,26 +136,16 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         preview_summary: preview.summary,
         preview_tabs: preview.tabs,
         preview_content: preview.content,
-        send_button,
+        send_button: request_send_button(main[0]),
         response: main[1],
+        response_format_button,
         response_menu_button,
         response_zoom_button,
     }
 }
 
-pub(super) fn preview_summary_height(width: u16, method: &str, address: &str, url: &str) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    let prefix_width = Line::from(format!("{method}  {address}  ")).width();
-    let url_width = Line::from(url).width();
-    let total_width = prefix_width.saturating_add(url_width);
-    let url_lines = total_width
-        .saturating_add(usize::from(width).saturating_sub(1))
-        .checked_div(usize::from(width))
-        .unwrap_or(1)
-        .max(1);
-    u16::try_from(url_lines.saturating_add(1)).unwrap_or(u16::MAX)
+pub(super) fn preview_summary_height(width: u16) -> u16 {
+    u16::from(width > 0) * 2
 }
 
 pub(super) fn preview_sections(area: Rect, requested_summary_height: u16) -> PreviewSections {
@@ -242,39 +241,54 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
     }
 }
 
-fn header_parts(area: Rect) -> (Rect, Rect) {
+fn header_content(area: Rect) -> Rect {
     let inner = area.inner(Margin::new(1, 1));
-    if inner.width == 0 || inner.height < 3 {
-        return (Rect::default(), Rect::default());
+    if inner.is_empty() {
+        return Rect::default();
     }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(PREVIEW_ACTION_WIDTH)])
-        .split(inner);
-    let button = Rect::new(
-        columns[1].x,
-        columns[1].y,
-        columns[1].width,
-        columns[1].height.min(SEND_BUTTON_HEIGHT),
-    );
-    (columns[0], button)
+    inner
 }
 
-fn response_action_buttons(area: Rect) -> (Rect, Rect) {
+fn request_send_button(area: Rect) -> Rect {
     if area.width <= 2 || area.height <= 1 {
-        return (Rect::default(), Rect::default());
+        return Rect::default();
+    }
+    let inner = area.inner(Margin::new(1, 1));
+    let width = PREVIEW_ACTION_WIDTH.min(inner.width);
+    Rect::new(
+        inner.right().saturating_sub(width),
+        inner.bottom().saturating_sub(SEND_BUTTON_HEIGHT),
+        width,
+        SEND_BUTTON_HEIGHT,
+    )
+}
+
+fn response_action_buttons(area: Rect) -> (Rect, Rect, Rect) {
+    if area.width <= 2 || area.height <= 1 {
+        return (Rect::default(), Rect::default(), Rect::default());
     }
     let inner = area.inner(Margin::new(1, 1));
     if inner.is_empty() {
-        return (Rect::default(), Rect::default());
+        return (Rect::default(), Rect::default(), Rect::default());
     }
-    let width = 10.min(area.width.saturating_sub(2));
+    let button_count = 3u16;
+    let width = 14.min(inner.width.saturating_sub(button_count) / button_count);
     if width == 0 {
-        return (Rect::default(), Rect::default());
+        return (Rect::default(), Rect::default(), Rect::default());
     }
-    let x = inner.right().saturating_sub(width);
+    let gap = 1u16;
+    let total_width = width
+        .saturating_mul(button_count)
+        .saturating_add(gap.saturating_mul(button_count.saturating_sub(1)));
+    if inner.width < total_width {
+        return (Rect::default(), Rect::default(), Rect::default());
+    }
+    let format_x = inner.right().saturating_sub(total_width);
+    let zoom_x = format_x.saturating_add(width.saturating_add(gap));
+    let menu_x = zoom_x.saturating_add(width.saturating_add(gap));
     (
-        Rect::new(x, inner.y, width, 1),
-        Rect::new(x, inner.y.saturating_add(2), width, 1),
+        Rect::new(format_x, inner.y, width, 1),
+        Rect::new(zoom_x, inner.y, width, 1),
+        Rect::new(menu_x, inner.y, width, 1),
     )
 }

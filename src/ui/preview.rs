@@ -27,7 +27,7 @@ pub(super) fn draw_preview(
     let Some(request) = app.current_request() else {
         return;
     };
-    let mut title = Line::from(vec![
+    let title = Line::from(vec![
         Span::styled(
             format!("{}  ", text.request_editor()),
             Style::default()
@@ -40,17 +40,6 @@ pub(super) fn draw_preview(
         ),
         Span::raw("  "),
     ]);
-    if app
-        .workspace_state
-        .requests
-        .iter()
-        .any(|session| session.source.id == request.id && session.dirty)
-    {
-        title.spans.push(Span::styled(
-            format!("* {}", text.unsaved_changes()),
-            request_dirty_style(theme),
-        ));
-    }
     frame.render_widget(
         panel_block(title, area, theme).border_style(focus.preview_border()),
         area,
@@ -94,8 +83,8 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
             theme,
         ));
     }
-    let mut lines = wrap_spans(url_line, area.width);
-    if area.height > lines.len() as u16 {
+    let mut lines = vec![Line::from(url_line)];
+    if area.height > 1 {
         let description = if request.description.is_empty() {
             text.empty_description()
         } else {
@@ -119,30 +108,6 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn wrap_spans(spans: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {
-    let width = usize::from(width.max(1));
-    let mut lines = Vec::new();
-    let mut current = Vec::new();
-    let mut current_width: usize = 0;
-
-    for span in spans {
-        for character in span.content.chars() {
-            let character_text = character.to_string();
-            let character_width = Line::from(character_text.clone()).width();
-            if !current.is_empty() && current_width.saturating_add(character_width) > width {
-                lines.push(Line::from(std::mem::take(&mut current)));
-                current_width = 0;
-            }
-            current.push(Span::styled(character_text, span.style));
-            current_width = current_width.saturating_add(character_width);
-        }
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(Line::from(current));
-    }
-    lines
 }
 
 pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -377,15 +342,15 @@ pub(super) fn draw_inline_editor(frame: &mut Frame<'_>, area: Rect, app: &App, d
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().bg(theme.selection))
-                .border_style(Style::default().fg(theme.text).bg(theme.selection)),
+                .style(Style::default().bg(theme.surface))
+                .border_style(Style::default().fg(theme.secondary).bg(theme.surface)),
             layout.add_button,
         );
         frame.render_widget(
             Paragraph::new("+").alignment(Alignment::Center).style(
                 Style::default()
-                    .fg(theme.text)
-                    .bg(theme.selection)
+                    .fg(theme.accent)
+                    .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
             layout.add_button.inner(Margin::new(1, 1)),

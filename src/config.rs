@@ -5,41 +5,46 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use crate::template;
 use anyhow::{Context, Result, bail};
+use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod headers;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RequestConfig {
-    pub(crate) name: String,
-    pub(crate) file_directory: PathBuf,
-    pub(crate) download_directory: PathBuf,
-    pub(crate) headers: Vec<NameValue>,
-    pub(crate) variables: BTreeMap<String, VariableDefinition>,
-    pub(crate) configurations: BTreeMap<String, WorkspaceConfiguration>,
-    pub(crate) default_configuration: String,
+pub struct RequestConfig {
+    pub name: String,
+    pub file_directory: PathBuf,
+    pub download_directory: PathBuf,
+    pub headers: Vec<NameValue>,
+    pub variables: BTreeMap<String, VariableDefinition>,
+    pub configurations: BTreeMap<String, WorkspaceConfiguration>,
+    pub default_configuration: String,
     #[serde(default)]
-    pub(crate) editable_variables: BTreeSet<String>,
-    pub(crate) requests: Vec<ApiRequest>,
-    pub(crate) timeout_seconds: u64,
+    pub editable_variables: BTreeSet<String>,
+    pub requests: Vec<ApiRequest>,
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub skip_ssl_verification: bool,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WorkspaceConfig {
-    pub(crate) name: String,
-    pub(crate) file_directory: PathBuf,
-    pub(crate) download_directory: PathBuf,
-    pub(crate) headers: Vec<NameValue>,
-    pub(crate) variables: BTreeMap<String, VariableDefinition>,
-    pub(crate) configurations: BTreeMap<String, WorkspaceConfiguration>,
-    pub(crate) default_configuration: String,
-    pub(crate) editable_variables: BTreeSet<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceConfig {
+    pub name: String,
+    pub file_directory: PathBuf,
+    pub download_directory: PathBuf,
+    pub headers: Vec<NameValue>,
+    pub variables: BTreeMap<String, VariableDefinition>,
+    pub configurations: BTreeMap<String, WorkspaceConfiguration>,
+    pub default_configuration: String,
+    pub editable_variables: BTreeSet<String>,
+    pub skip_ssl_verification: bool,
 }
 
 impl RequestConfig {
-    pub(crate) fn into_workspace(self) -> (WorkspaceConfig, Vec<ApiRequest>) {
+    pub fn into_workspace(self) -> (WorkspaceConfig, Vec<ApiRequest>) {
         let Self {
             name,
             file_directory,
@@ -51,6 +56,7 @@ impl RequestConfig {
             editable_variables,
             requests,
             timeout_seconds: _,
+            skip_ssl_verification,
         } = self;
         (
             WorkspaceConfig {
@@ -62,6 +68,7 @@ impl RequestConfig {
                 configurations,
                 default_configuration,
                 editable_variables,
+                skip_ssl_verification,
             },
             requests,
         )
@@ -69,29 +76,56 @@ impl RequestConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct VariableDefinition {
-    pub(crate) default: Option<Value>,
+pub struct VariableDefinition {
+    pub default: Option<Value>,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RawVariableDefinition {
+    Definition(VariableDefinitionDocument),
+    Value(Value),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariableDefinitionDocument {
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+impl From<VariableDefinition> for RawVariableDefinition {
+    fn from(definition: VariableDefinition) -> Self {
+        Self::Definition(VariableDefinitionDocument {
+            value: definition.default,
+            secret: definition.secret,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct NameValue {
-    pub(crate) name: String,
-    pub(crate) value: String,
+pub struct NameValue {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 一个有序的请求参数。`has_equals` 用于区分 `flag` 和 `flag=`。
 #[serde(deny_unknown_fields)]
-pub(crate) struct RequestParam {
-    pub(crate) name: String,
-    pub(crate) value: String,
+pub struct RequestParam {
+    pub name: String,
+    pub value: String,
     #[serde(default = "default_has_equals", skip_serializing_if = "has_equals")]
-    pub(crate) has_equals: bool,
+    pub has_equals: bool,
 }
 
 impl RequestParam {
-    pub(crate) fn new(name: String, value: String, has_equals: bool) -> Self {
+    pub fn new(name: String, value: String, has_equals: bool) -> Self {
         Self {
             name,
             value,
@@ -99,7 +133,7 @@ impl RequestParam {
         }
     }
 
-    pub(crate) fn from_text(value: &str) -> Self {
+    pub fn from_text(value: &str) -> Self {
         if let Some((name, value)) = value.split_once('=') {
             Self::new(name.to_string(), value.to_string(), true)
         } else {
@@ -107,7 +141,7 @@ impl RequestParam {
         }
     }
 
-    pub(crate) fn to_text(&self) -> String {
+    pub fn to_text(&self) -> String {
         if self.has_equals || !self.value.is_empty() {
             format!("{}={}", self.name, self.value)
         } else {
@@ -125,116 +159,129 @@ fn has_equals(value: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ApiRequest {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) method: String,
-    pub(crate) url: String,
-    pub(crate) timeout_seconds: u64,
-    pub(crate) description: String,
-    pub(crate) headers: Vec<NameValue>,
-    pub(crate) body_parts: Vec<DataPart>,
-    pub(crate) query_parts: Vec<DataPart>,
-    pub(crate) form: Vec<RequestParam>,
-    pub(crate) files: Vec<FileUpload>,
-    pub(crate) extracts: Vec<ResponseExtract>,
+pub struct ApiRequest {
+    pub id: String,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub timeout_seconds: u64,
+    pub skip_ssl_verification: bool,
+    pub description: String,
+    pub headers: Vec<NameValue>,
+    pub body_parts: Vec<DataPart>,
+    pub query_parts: Vec<DataPart>,
+    pub form: Vec<RequestParam>,
+    pub files: Vec<FileUpload>,
+    pub extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WorkspaceConfiguration {
+pub struct WorkspaceConfiguration {
     #[serde(default)]
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) variables: BTreeMap<String, VariableDefinition>,
-    pub(crate) headers: Vec<NameValue>,
-    pub(crate) timeout_seconds: Option<u64>,
-    pub(crate) request_overrides: BTreeMap<String, RequestOverride>,
+    pub path: Option<PathBuf>,
+    pub variables: BTreeMap<String, VariableDefinition>,
+    pub headers: Vec<NameValue>,
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub skip_ssl_verification: Option<bool>,
+    pub request_overrides: BTreeMap<String, RequestOverride>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct RequestOverride {
-    pub(crate) method: Option<String>,
-    pub(crate) url: Option<String>,
-    pub(crate) timeout_seconds: Option<u64>,
-    pub(crate) headers: Option<Vec<NameValue>>,
-    pub(crate) query_parts: Option<Vec<DataPart>>,
-    pub(crate) body_parts: Option<Vec<DataPart>>,
-    pub(crate) form: Option<Vec<RequestParam>>,
-    pub(crate) files: Option<Vec<FileUpload>>,
-    pub(crate) extracts: Option<Vec<ResponseExtract>>,
+pub struct RequestOverride {
+    pub method: Option<String>,
+    pub url: Option<String>,
+    pub timeout_seconds: Option<u64>,
+    pub skip_ssl_verification: Option<bool>,
+    pub headers: Option<Vec<NameValue>>,
+    pub query_parts: Option<Vec<DataPart>>,
+    pub body_parts: Option<Vec<DataPart>>,
+    pub form: Option<Vec<RequestParam>>,
+    pub files: Option<Vec<FileUpload>>,
+    pub extracts: Option<Vec<ResponseExtract>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RequestDocument {
+pub struct RequestDocument {
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) name: String,
+    pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) description: String,
+    pub description: String,
     #[serde(default = "default_method", skip_serializing_if = "is_default_method")]
-    pub(crate) method: String,
+    pub method: String,
     #[serde(default)]
-    pub(crate) url: String,
+    pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) timeout: Option<u64>,
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_ssl_verification: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "headers")]
-    pub(crate) headers: Vec<NameValue>,
+    pub headers: Vec<NameValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) params: Vec<RequestParam>,
+    pub params: Vec<RequestParam>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) body: Option<String>,
+    pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) form: Vec<RequestParam>,
+    pub form: Vec<RequestParam>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) files: Vec<FileUpload>,
+    pub files: Vec<FileUpload>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) extracts: Vec<ResponseExtract>,
+    pub extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConfigurationDocument {
+pub struct ConfigurationDocument {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) variables: BTreeMap<String, Option<Value>>,
+    pub variables: BTreeMap<String, Option<RawVariableDefinition>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "headers")]
-    pub(crate) headers: Vec<NameValue>,
+    pub headers: Vec<NameValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) timeout: Option<u64>,
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_ssl_verification: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) overrides: BTreeMap<String, RequestOverrideDocument>,
+    pub overrides: BTreeMap<String, RequestOverrideDocument>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RequestOverrideDocument {
+pub struct RequestOverrideDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) method: Option<String>,
+    pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) url: Option<String>,
+    pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) timeout: Option<u64>,
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_ssl_verification: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "headers::optional"
     )]
-    pub(crate) headers: Option<Vec<NameValue>>,
+    pub headers: Option<Vec<NameValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) params: Option<Vec<RequestParam>>,
+    pub params: Option<Vec<RequestParam>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) body: Option<String>,
+    pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) form: Option<Vec<RequestParam>>,
+    pub form: Option<Vec<RequestParam>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) files: Option<Vec<FileUpload>>,
+    pub files: Option<Vec<FileUpload>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) extracts: Option<Vec<ResponseExtract>>,
+    pub extracts: Option<Vec<ResponseExtract>>,
 }
 
 impl ApiRequest {
-    pub(crate) fn for_configuration(&self, configuration: &WorkspaceConfiguration) -> Self {
+    pub fn for_configuration(&self, configuration: &WorkspaceConfiguration) -> Self {
         let mut request = self.clone();
         if let Some(timeout_seconds) = configuration.timeout_seconds {
             request.timeout_seconds = timeout_seconds;
+        }
+        if let Some(skip_ssl_verification) = configuration.skip_ssl_verification {
+            request.skip_ssl_verification = skip_ssl_verification;
         }
         if let Some(request_override) = configuration.request_overrides.get(&self.id) {
             request_override.apply_to(&mut request);
@@ -244,10 +291,11 @@ impl ApiRequest {
 }
 
 impl RequestOverride {
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.method.is_none()
             && self.url.is_none()
             && self.timeout_seconds.is_none()
+            && self.skip_ssl_verification.is_none()
             && self.headers.is_none()
             && self.query_parts.is_none()
             && self.body_parts.is_none()
@@ -256,7 +304,7 @@ impl RequestOverride {
             && self.extracts.is_none()
     }
 
-    pub(crate) fn apply_to(&self, request: &mut ApiRequest) {
+    pub fn apply_to(&self, request: &mut ApiRequest) {
         if let Some(method) = &self.method {
             request.method = method.clone();
         }
@@ -265,6 +313,9 @@ impl RequestOverride {
         }
         if let Some(timeout_seconds) = self.timeout_seconds {
             request.timeout_seconds = timeout_seconds;
+        }
+        if let Some(skip_ssl_verification) = self.skip_ssl_verification {
+            request.skip_ssl_verification = skip_ssl_verification;
         }
         if let Some(headers) = &self.headers {
             request.headers = headers.clone();
@@ -295,6 +346,7 @@ impl From<&ApiRequest> for RequestDocument {
             method: request.method.clone(),
             url: request.url.clone(),
             timeout: Some(request.timeout_seconds),
+            skip_ssl_verification: Some(request.skip_ssl_verification),
             headers: request.headers.clone(),
             params: request
                 .query_parts
@@ -315,10 +367,11 @@ impl From<&WorkspaceConfiguration> for ConfigurationDocument {
             variables: configuration
                 .variables
                 .iter()
-                .map(|(name, definition)| (name.clone(), definition.default.clone()))
+                .map(|(name, definition)| (name.clone(), Some(definition.clone().into())))
                 .collect(),
             headers: configuration.headers.clone(),
             timeout: configuration.timeout_seconds,
+            skip_ssl_verification: configuration.skip_ssl_verification,
             overrides: configuration
                 .request_overrides
                 .iter()
@@ -342,6 +395,7 @@ impl From<&RequestOverride> for RequestOverrideDocument {
             method: request_override.method.clone(),
             url: request_override.url.clone(),
             timeout: request_override.timeout_seconds,
+            skip_ssl_verification: request_override.skip_ssl_verification,
             headers: request_override.headers.clone(),
             params: request_override
                 .query_parts
@@ -380,27 +434,27 @@ fn body_text(parts: &[DataPart]) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 请求体或 URL 编码参数的一个片段；URL 编码片段保存逻辑参数，发送时再编码。
-pub(crate) enum DataPart {
+pub enum DataPart {
     Raw(String),
     UrlEncoded(RequestParam),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct FileUpload {
-    pub(crate) field: String,
-    pub(crate) path: String,
+pub struct FileUpload {
+    pub field: String,
+    pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) filename: Option<String>,
+    pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) content_type: Option<String>,
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ResponseExtract {
-    pub(crate) variable: String,
-    pub(crate) path: String,
+pub struct ResponseExtract {
+    pub variable: String,
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -411,13 +465,15 @@ struct RawWorkspaceConfig {
     #[serde(default)]
     directories: RawDirectories,
     #[serde(default)]
-    variables: BTreeMap<String, Option<Value>>,
+    variables: BTreeMap<String, Option<RawVariableDefinition>>,
     #[serde(default)]
     default_scenario: Option<String>,
     #[serde(default, deserialize_with = "headers::deserialize")]
     headers: Vec<NameValue>,
     #[serde(default = "default_timeout_seconds")]
     timeout: u64,
+    #[serde(default)]
+    skip_ssl_verification: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -447,6 +503,7 @@ impl Default for RawWorkspaceConfig {
             default_scenario: None,
             headers: Vec::new(),
             timeout: default_timeout_seconds(),
+            skip_ssl_verification: false,
         }
     }
 }
@@ -467,6 +524,7 @@ struct ConfigurationFile {
 #[derive(Debug)]
 struct ParsedRequest {
     id: String,
+    path: String,
     document: RequestDocument,
 }
 
@@ -490,7 +548,15 @@ fn default_download_directory() -> PathBuf {
     PathBuf::from("temp")
 }
 
-pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
+pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
+    load_internal(workspace_path, true)
+}
+
+pub fn reload(workspace_path: &Path) -> Result<RequestConfig> {
+    load_internal(workspace_path, false)
+}
+
+fn load_internal(workspace_path: &Path, use_cache: bool) -> Result<RequestConfig> {
     if !workspace_path.is_dir() {
         bail!("PostUI 工作区必须是目录: {}", workspace_path.display())
     }
@@ -514,18 +580,19 @@ pub(crate) fn load(workspace_path: &Path) -> Result<RequestConfig> {
         "读取工作区"
     );
 
-    let (config, cache_hit) = match crate::cache::load(workspace_path, &fingerprint) {
-        Some(config) => (config, true),
-        None => {
-            let config = parse_workspace_config(
-                &workspace_config_path,
-                workspace_config.as_deref(),
-                workspace_path,
-                &configuration_files,
-                &request_files,
-            )?;
-            (config, false)
-        }
+    let cached = use_cache
+        .then(|| crate::cache::load(workspace_path, &fingerprint))
+        .flatten();
+    let cache_hit = cached.is_some();
+    let config = match cached {
+        Some(config) => config,
+        None => parse_workspace_config(
+            &workspace_config_path,
+            workspace_config.as_deref(),
+            workspace_path,
+            &configuration_files,
+            &request_files,
+        )?,
     };
 
     if !cache_hit && let Err(error) = crate::cache::store(workspace_path, &fingerprint, &config) {
@@ -559,16 +626,88 @@ fn parse_workspace_config(
     request_files: &[RequestFile],
 ) -> Result<RequestConfig> {
     let raw = match text {
-        Some(text) => serde_saphyr::from_str::<Option<RawWorkspaceConfig>>(text)
-            .with_context(|| format!("YAML 配置格式无效: {}", path.display()))?
-            .unwrap_or_default(),
+        Some(text) => parse_yaml(path, "postui.yaml", text)?,
         None => RawWorkspaceConfig::default(),
     };
-    normalize_config(raw, workspace_path, configuration_files, request_files)
-        .with_context(|| format!("工作区配置无效: {}", path.display()))
+    normalize_config(
+        path,
+        raw,
+        workspace_path,
+        configuration_files,
+        request_files,
+    )
+    .with_context(|| format!("工作区配置无效: {}", path.display()))
+}
+
+fn parse_yaml<'a, T>(path: &Path, field: &str, text: &'a str) -> Result<T>
+where
+    T: serde::Deserialize<'a>,
+{
+    serde_saphyr::from_str(text).map_err(|error| yaml_parse_error(path, field, error))
+}
+
+fn yaml_parse_error(path: &Path, field: &str, error: serde_saphyr::Error) -> anyhow::Error {
+    let message = error.to_string();
+    let location = parse_yaml_position(&message);
+    config_error_with_position(path, field, &message, location)
+}
+
+fn config_error_with_position(
+    path: &Path,
+    field: &str,
+    problem: &str,
+    location: Option<(usize, usize)>,
+) -> anyhow::Error {
+    match location {
+        Some((line, column)) => {
+            anyhow::anyhow!(
+                "文件: {}\n行: {}\n列: {}\n字段: {}\n问题: {}",
+                path.display(),
+                line,
+                column,
+                field,
+                problem,
+            )
+        }
+        None => {
+            anyhow::anyhow!(
+                "文件: {}\n字段: {}\n问题: {}",
+                path.display(),
+                field,
+                problem,
+            )
+        }
+    }
+}
+
+fn config_error(path: &Path, field: &str, problem: impl AsRef<str>) -> anyhow::Error {
+    anyhow::anyhow!(
+        "文件: {}\n字段: {}\n问题: {}",
+        path.display(),
+        field,
+        problem.as_ref(),
+    )
+}
+
+fn parse_yaml_position(text: &str) -> Option<(usize, usize)> {
+    let marker = "line ";
+    let start = text.find(marker)?;
+    let rest = &text[start + marker.len()..];
+    let mut parts = rest.split_whitespace();
+    let line = parts.next()?.parse::<usize>().ok()?;
+    if parts.next()? != "column" {
+        return None;
+    }
+    let column = parts
+        .next()?
+        .trim_end_matches([',', ':', ';', '\n'])
+        .parse::<usize>()
+        .ok()?;
+    Some((line, column))
 }
 
 fn normalize_config(
+    path: &Path,
     raw: RawWorkspaceConfig,
     workspace_path: &Path,
     configuration_files: &[ConfigurationFile],
@@ -581,9 +720,10 @@ fn normalize_config(
         default_scenario: raw_default_configuration,
         headers: raw_headers,
         timeout,
+        skip_ssl_verification,
     } = raw;
     let variables = normalize_variables(raw_variables)?;
-    let headers = normalize_headers(raw_headers)?;
+    let headers = normalize_headers(&path.display().to_string(), raw_headers)?;
     let timeout_seconds = validate_timeout(timeout)?;
 
     let file_directory =
@@ -598,7 +738,12 @@ fn normalize_config(
     let mut requests = Vec::with_capacity(request_files.len());
     for file in request_files {
         let raw_request = parse_request_file(file, workspace_path)?;
-        let request = normalize_request(raw_request, timeout_seconds)?;
+        let request = normalize_request(
+            raw_request,
+            timeout_seconds,
+            skip_ssl_verification,
+            &file_directory,
+        )?;
         if !request_ids.insert(request.id.clone()) {
             bail!("接口 id 重复: {}", request.id)
         }
@@ -618,7 +763,8 @@ fn normalize_config(
         requests.push(request);
     }
 
-    let configurations = normalize_configurations(configuration_files, &request_ids)?;
+    let configurations =
+        normalize_configurations(configuration_files, &request_ids, &file_directory)?;
     let default_configuration =
         normalize_default_configuration(raw_default_configuration, &configurations)?;
 
@@ -671,6 +817,7 @@ fn normalize_config(
         editable_variables,
         requests,
         timeout_seconds,
+        skip_ssl_verification,
     };
     Ok(config)
 }
@@ -678,6 +825,7 @@ fn normalize_config(
 fn normalize_configurations(
     configuration_files: &[ConfigurationFile],
     request_ids: &BTreeSet<String>,
+    file_directory: &Path,
 ) -> Result<BTreeMap<String, WorkspaceConfiguration>> {
     if configuration_files.is_empty() {
         return Ok(BTreeMap::from([(
@@ -687,6 +835,7 @@ fn normalize_configurations(
                 variables: BTreeMap::new(),
                 headers: Vec::new(),
                 timeout_seconds: None,
+                skip_ssl_verification: None,
                 request_overrides: BTreeMap::new(),
             },
         )]));
@@ -694,30 +843,44 @@ fn normalize_configurations(
 
     let mut configurations = BTreeMap::new();
     for file in configuration_files {
-        let raw = serde_saphyr::from_str::<Option<ConfigurationDocument>>(&file.text)
-            .with_context(|| format!("场景配置 YAML 格式无效: {}", file.path.display()))?
+        let raw = parse_yaml::<Option<ConfigurationDocument>>(&file.path, &file.name, &file.text)?
             .unwrap_or_default();
         let variables = normalize_variables(raw.variables)
             .with_context(|| format!("配置 {} 的变量配置无效", file.name))?;
-        let headers = normalize_headers(raw.headers)
+        let headers = normalize_headers(&file.path.to_string_lossy(), raw.headers)
             .with_context(|| format!("配置 {} 的 headers 配置无效", file.name))?;
         let timeout_seconds = raw
             .timeout
             .map(validate_timeout)
             .transpose()
-            .with_context(|| format!("场景配置无效: {}", file.path.display()))?;
+            .with_context(|| {
+                config_error_with_position(&file.path, "timeouts", "场景配置超时配置无效", None)
+            })?;
         let mut request_overrides = BTreeMap::new();
         for (raw_request_id, raw_override) in raw.overrides {
             let request_id = normalize_request_id(&raw_request_id)?;
             if !request_ids.contains(&request_id) {
-                bail!("配置 {} 使用了不存在的接口: {}", file.name, raw_request_id)
+                return Err(config_error(
+                    &file.path,
+                    "overrides",
+                    format!("未找到配置引用的接口: {raw_request_id}"),
+                ));
             }
-            let request_override = normalize_override(raw_override, &request_id, &file.name)?;
+            let request_override = normalize_override(
+                raw_override,
+                &request_id,
+                &file.path.to_string_lossy(),
+                file_directory,
+            )?;
             if request_overrides
                 .insert(request_id.clone(), request_override)
                 .is_some()
             {
-                bail!("配置 {} 重复声明接口覆盖: {request_id}", file.name)
+                return Err(config_error(
+                    &file.path,
+                    "overrides",
+                    format!("重复声明接口覆盖: {request_id}"),
+                ));
             }
         }
         if configurations
@@ -728,12 +891,17 @@ fn normalize_configurations(
                     variables,
                     headers,
                     timeout_seconds,
+                    skip_ssl_verification: raw.skip_ssl_verification,
                     request_overrides,
                 },
             )
             .is_some()
         {
-            bail!("配置名称重复: {}", file.name)
+            return Err(config_error(
+                &file.path,
+                "name",
+                format!("配置名称重复: {}", file.name),
+            ));
         }
     }
     Ok(configurations)
@@ -903,15 +1071,15 @@ fn append_fingerprint_part(fingerprint: &mut blake3::Hasher, part: &[u8]) {
 }
 
 fn parse_request_file(file: &RequestFile, workspace_path: &Path) -> Result<ParsedRequest> {
+    let path = file.path.to_string_lossy().to_string();
     let id = file
         .path
         .strip_prefix(workspace_path)
         .unwrap_or(&file.path)
         .to_string_lossy()
         .replace('\\', "/");
-    let document: RequestDocument = serde_saphyr::from_str(&file.text)
-        .with_context(|| format!("请求 {} 的 YAML 配置无效", id))?;
-    Ok(ParsedRequest { id, document })
+    let document: RequestDocument = parse_yaml(&file.path, &id, &file.text)?;
+    Ok(ParsedRequest { id, path, document })
 }
 
 fn request_display_name(path: &Path) -> String {
@@ -1002,38 +1170,81 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn normalize_variables(
-    raw_variables: BTreeMap<String, Option<Value>>,
+    raw_variables: BTreeMap<String, Option<RawVariableDefinition>>,
 ) -> Result<BTreeMap<String, VariableDefinition>> {
     let mut variables = BTreeMap::new();
-    for (raw_name, default) in raw_variables {
+    for (raw_name, raw_definition) in raw_variables {
         let Some(name) = normalize_variable_name(&raw_name) else {
             bail!("变量名称无效: {raw_name}")
         };
-        if variables
-            .insert(name.clone(), VariableDefinition { default })
-            .is_some()
-        {
+        let definition = match raw_definition {
+            None => VariableDefinition {
+                default: None,
+                secret: false,
+            },
+            Some(RawVariableDefinition::Value(default)) => VariableDefinition {
+                default: Some(default),
+                secret: false,
+            },
+            Some(RawVariableDefinition::Definition(definition)) => VariableDefinition {
+                default: definition.value,
+                secret: definition.secret,
+            },
+        };
+        if variables.insert(name.clone(), definition).is_some() {
             bail!("变量名称重复: {name}")
         }
     }
     Ok(variables)
 }
 
-fn normalize_headers(raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
+fn normalize_headers(context: &str, raw_headers: Vec<NameValue>) -> Result<Vec<NameValue>> {
     let mut headers = Vec::with_capacity(raw_headers.len());
     for mut header in raw_headers {
         let name = header.name.trim().to_string();
         if name.is_empty() {
-            bail!("Header 名称不能为空")
+            return Err(config_error(
+                Path::new(context),
+                "headers",
+                "Header 名称不能为空",
+            ));
+        }
+        HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+            config_error(
+                Path::new(context),
+                "headers",
+                format!("Header 名称无效 ({name}): {error}"),
+            )
+        })?;
+        HeaderValue::from_str(&header.value).map_err(|error| {
+            config_error(
+                Path::new(context),
+                "headers",
+                format!("Header 值无效 ({name}): {error}"),
+            )
+        })?;
+        if header.value.contains('\n') || header.value.contains('\r') {
+            return Err(config_error(
+                Path::new(context),
+                "headers",
+                format!("Header 值不应包含换行符 ({name})"),
+            ));
         }
         header.name = name;
+        header.value = header.value.trim().to_string();
         headers.push(header);
     }
     Ok(headers)
 }
 
-fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result<ApiRequest> {
+fn normalize_request(
+    raw: ParsedRequest,
+    default_timeout_seconds: u64,
+    default_skip_ssl_verification: bool,
+    file_directory: &Path,
+) -> Result<ApiRequest> {
     let id = raw.id;
+    let path = raw.path;
     let document = raw.document;
     let name = if document.name.trim().is_empty() {
         request_display_name(Path::new(&id))
@@ -1045,7 +1256,7 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
     if url.is_empty() {
         bail!("接口 {} 缺少 url", id)
     }
-    let headers = normalize_headers(document.headers)
+    let headers = normalize_headers(&id, document.headers)
         .with_context(|| format!("接口 {id} 的 headers 配置无效"))?;
     let query_parts = normalize_params(document.params, &id, "params")?
         .into_iter()
@@ -1058,7 +1269,7 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
         .into_iter()
         .collect();
     let form = normalize_params(document.form, &id, "form")?;
-    let files = normalize_files(document.files, &id)?;
+    let files = normalize_files(document.files, &id, &path, file_directory)?;
     let extracts = normalize_extracts(document.extracts, &id)?;
     let timeout_seconds = document
         .timeout
@@ -1066,6 +1277,9 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
         .transpose()
         .with_context(|| format!("请求 {id} 的 timeout 配置无效"))?
         .unwrap_or(default_timeout_seconds);
+    let skip_ssl_verification = document
+        .skip_ssl_verification
+        .unwrap_or(default_skip_ssl_verification);
 
     Ok(ApiRequest {
         id,
@@ -1073,6 +1287,7 @@ fn normalize_request(raw: ParsedRequest, default_timeout_seconds: u64) -> Result
         method,
         url,
         timeout_seconds,
+        skip_ssl_verification,
         description: document.description.trim().to_string(),
         headers,
         body_parts,
@@ -1087,6 +1302,7 @@ fn normalize_override(
     raw: RequestOverrideDocument,
     request_id: &str,
     configuration: &str,
+    file_directory: &Path,
 ) -> Result<RequestOverride> {
     let method = raw
         .method
@@ -1098,7 +1314,7 @@ fn normalize_override(
     }
     let headers = raw
         .headers
-        .map(normalize_headers)
+        .map(|headers| normalize_headers(configuration, headers))
         .transpose()
         .with_context(|| format!("配置 {configuration} 的接口 {request_id} headers 配置无效"))?;
     let query_parts = raw
@@ -1119,7 +1335,7 @@ fn normalize_override(
         .transpose()?;
     let files = raw
         .files
-        .map(|files| normalize_files(files, request_id))
+        .map(|files| normalize_files(files, request_id, configuration, file_directory))
         .transpose()?;
     let extracts = raw
         .extracts
@@ -1133,6 +1349,7 @@ fn normalize_override(
     if method.is_none()
         && url.is_none()
         && timeout_seconds.is_none()
+        && raw.skip_ssl_verification.is_none()
         && headers.is_none()
         && query_parts.is_none()
         && body_parts.is_none()
@@ -1146,6 +1363,7 @@ fn normalize_override(
         method,
         url,
         timeout_seconds,
+        skip_ssl_verification: raw.skip_ssl_verification,
         headers,
         query_parts,
         body_parts,
@@ -1191,9 +1409,14 @@ fn normalize_params(
     Ok(normalized)
 }
 
-fn normalize_files(files: Vec<FileUpload>, request_id: &str) -> Result<Vec<FileUpload>> {
+fn normalize_files(
+    files: Vec<FileUpload>,
+    request_id: &str,
+    request_path: &str,
+    file_directory: &Path,
+) -> Result<Vec<FileUpload>> {
     for file in &files {
-        validate_file(request_id, file)?;
+        validate_file(request_id, request_path, file, file_directory)?;
     }
     Ok(files)
 }
@@ -1218,14 +1441,57 @@ fn normalize_extracts(
     Ok(normalized)
 }
 
-fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
+fn validate_file(
+    request_id: &str,
+    request_path: &str,
+    file: &FileUpload,
+    file_directory: &Path,
+) -> Result<()> {
     if file.field.trim().is_empty() {
-        bail!("接口 {} 的上传文件缺少 field", request_id)
+        return Err(config_error(
+            Path::new(request_path),
+            "files.field",
+            format!("请求 {} 的上传文件缺少 field", request_id),
+        ));
     }
     if file.path.trim().is_empty() {
-        bail!("接口 {} 的上传文件缺少 path", request_id)
+        return Err(config_error(
+            Path::new(request_path),
+            "files.path",
+            format!("请求 {} 的上传文件缺少 path", request_id),
+        ));
+    }
+    let trimmed = file.path.trim();
+    let normalized = Path::new(trimmed);
+    if normalized.is_relative()
+        && normalized
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(config_error(
+            Path::new(request_path),
+            "files.path",
+            "上传文件相对路径中不能包含 ..",
+        ));
+    }
+    if normalized.is_relative()
+        && !contains_template(trimmed)
+        && !file_directory.join(normalized).is_file()
+    {
+        return Err(config_error(
+            Path::new(request_path),
+            "files.path",
+            format!(
+                "上传文件不存在: {}",
+                file_directory.join(normalized).display()
+            ),
+        ));
     }
     Ok(())
+}
+
+fn contains_template(value: &str) -> bool {
+    template::find_placeholder(value).is_some()
 }
 
 fn normalize_extract(request_id: &str, extract: &mut ResponseExtract) -> Result<()> {
@@ -1286,7 +1552,7 @@ fn normalize_configuration_name(value: &str) -> Option<String> {
     .then(|| value.to_string())
 }
 
-pub(crate) fn value_to_string(value: &Value) -> String {
+pub fn value_to_string(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
         Value::String(value) => value.clone(),

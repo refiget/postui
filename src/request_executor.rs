@@ -1,35 +1,47 @@
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
+        Arc,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
     },
-    thread,
 };
 
+static NEXT_RESPONSE_ID: AtomicU64 = AtomicU64::new(1);
+
 use crate::{
-    http::{self, HttpClient, HttpError, ResponseData},
+    http::{self, HttpClient, HttpError, RequestOptions, ResponseData},
     response_document::ResponseDocument,
     template::ResolvedRequest,
 };
 
 #[derive(Debug)]
-pub(crate) struct RequestOperation {
-    pub(crate) request_id: String,
-    pub(crate) operation_id: String,
+pub struct RequestOperation {
+    pub request_id: String,
+    pub operation_id: String,
+}
+
+pub struct RequestExecutionOptions {
+    pub timeout_seconds: u64,
+    pub file_directory: PathBuf,
+    pub skip_ssl_verification: bool,
+    pub secret_values: Vec<String>,
+    pub max_display_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 #[derive(Debug)]
-pub(crate) struct FinishedRequest {
-    pub(crate) request_id: String,
-    pub(crate) operation_id: String,
-    pub(crate) outcome: RequestOutcome,
+pub struct FinishedRequest {
+    pub request_id: String,
+    pub operation_id: String,
+    pub outcome: RequestOutcome,
 }
 
 #[derive(Debug)]
-pub(crate) enum RequestOutcome {
+pub enum RequestOutcome {
     Response {
-        response: ResponseData,
+        response: Box<ResponseData>,
         document: ResponseDocument,
         extracted_variables: Vec<(String, String)>,
         extraction_failure_count: usize,
@@ -38,87 +50,170 @@ pub(crate) enum RequestOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestExecutor {
+pub struct RequestExecutor {
     http_client: HttpClient,
     sender: Sender<FinishedRequest>,
     receiver: Receiver<FinishedRequest>,
-    next_operation_sequence: AtomicU64,
+    next_operation_sequence: u64,
+    active_operations: BTreeMap<String, tokio::task::AbortHandle>,
+    runtime: Option<tokio::runtime::Runtime>,
+    capacity: Arc<tokio::sync::Semaphore>,
 }
 
 impl RequestExecutor {
-    pub(crate) fn new(http_client: HttpClient) -> Self {
+    pub fn new(http_client: HttpClient) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
-        Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(4)
+            .enable_all()
+            .build()?;
+        Ok(Self {
             http_client,
             sender,
             receiver,
-            next_operation_sequence: AtomicU64::new(1),
-        }
+            next_operation_sequence: 1,
+            active_operations: BTreeMap::new(),
+            runtime: Some(runtime),
+            capacity: Arc::new(tokio::sync::Semaphore::new(8)),
+        })
     }
 
-    pub(crate) fn prepare(&self, request_id: &str) -> RequestOperation {
-        let sequence = self.next_operation_sequence.fetch_add(1, Ordering::Relaxed);
+    pub fn prepare(&mut self, request_id: &str) -> RequestOperation {
+        let sequence = self.next_operation_sequence;
+        self.next_operation_sequence = sequence.wrapping_add(1);
         RequestOperation {
             request_id: request_id.to_string(),
             operation_id: format!("{request_id}-{sequence}"),
         }
     }
 
-    pub(crate) fn start(
-        &self,
+    pub fn start(
+        &mut self,
         operation: RequestOperation,
         request: ResolvedRequest,
-        timeout_seconds: u64,
-        file_directory: PathBuf,
-        max_display_bytes: usize,
+        options: RequestExecutionOptions,
     ) {
+        let RequestOperation {
+            request_id,
+            operation_id,
+        } = operation;
         let http_client = self.http_client.clone();
         let sender = self.sender.clone();
-        thread::spawn(move || {
-            let RequestOperation {
-                request_id,
-                operation_id,
-            } = operation;
-            tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
-            let outcome = match http::send(
-                &http_client,
-                &request,
-                timeout_seconds,
-                &file_directory,
-                &operation_id,
-            ) {
-                Ok(response) => {
-                    let (extracted_variables, extraction_failure_count) =
-                        extract_response_variables(&request, &response);
-                    let document = ResponseDocument::new(
-                        response.body_bytes.clone(),
-                        &response.headers,
-                        max_display_bytes,
-                    );
-                    RequestOutcome::Response {
-                        response,
-                        document,
-                        extracted_variables,
-                        extraction_failure_count,
-                    }
-                }
-                Err(error) => RequestOutcome::Failed(error),
-            };
-            if sender
-                .send(FinishedRequest {
+        let permit = match self.capacity.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                let _ = sender.send(FinishedRequest {
                     request_id,
                     operation_id,
-                    outcome,
-                })
-                .is_err()
-            {
-                tracing::debug!("TUI 已退出，丢弃后台请求结果");
+                    outcome: RequestOutcome::Failed(HttpError::InvalidRequest(
+                        "最多同时处理 8 个请求，请稍后重试".to_string(),
+                    )),
+                });
+                return;
             }
-        });
+        };
+        let task_id = operation_id.clone();
+        let task = self
+            .runtime
+            .as_ref()
+            .expect("request runtime")
+            .spawn(async move {
+                tracing::debug!(operation_id = %operation_id, "HTTP 工作线程开始");
+                let outcome = match http::send(
+                    &http_client,
+                    &request,
+                    RequestOptions {
+                        timeout_seconds: options.timeout_seconds,
+                        file_directory: &options.file_directory,
+                        skip_ssl_verification: options.skip_ssl_verification,
+                        secret_values: &options.secret_values,
+                        max_response_bytes: options.max_response_bytes,
+                    },
+                    &operation_id,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        let response_id = NEXT_RESPONSE_ID.fetch_add(1, Ordering::Relaxed);
+                        let queued = std::time::Instant::now();
+                        let prepared = tokio::task::spawn_blocking(move || {
+                            let span = tracing::debug_span!(target: "postui::perf", "response_prepare", response_id);
+                            let _entered = span.enter();
+                            let started = std::time::Instant::now();
+                            let queue_us = queued.elapsed().as_micros() as u64;
+                            let _permit = permit;
+                            let (extracted_variables, extraction_failure_count) =
+                                extract_response_variables(&request, &response);
+                            let extraction_us = started.elapsed().as_micros() as u64;
+                            let document_started = std::time::Instant::now();
+                            let document = ResponseDocument::new(
+                                response.body_bytes.clone(),
+                                &response.headers,
+                                options.max_display_bytes,
+                            );
+                            tracing::debug!(target: "postui::perf", queue_us, extraction_us,
+                                document_us = document_started.elapsed().as_micros() as u64,
+                                network_ms = response.elapsed_ms as u64,
+                                response_bytes = response.body_bytes.len(),
+                                displayed_bytes = document.displayed_bytes(),
+                                lines = document.line_count(), status = response.status,
+                                "response_prepared");
+                            RequestOutcome::Response {
+                                response: Box::new(response),
+                                document,
+                                extracted_variables,
+                                extraction_failure_count,
+                            }
+                        })
+                        .await;
+                        match prepared {
+                            Ok(outcome) => outcome,
+                            Err(_) => RequestOutcome::Failed(HttpError::InvalidRequest(
+                                "响应处理任务异常结束".to_string(),
+                            )),
+                        }
+                    }
+                    Err(error) => RequestOutcome::Failed(error),
+                };
+
+                if sender
+                    .send(FinishedRequest {
+                        request_id,
+                        operation_id,
+                        outcome,
+                    })
+                    .is_err()
+                {
+                    tracing::debug!("TUI 已退出，丢弃后台请求结果");
+                }
+            });
+        self.active_operations.insert(task_id, task.abort_handle());
     }
 
-    pub(crate) fn try_recv(&self) -> Result<FinishedRequest, TryRecvError> {
-        self.receiver.try_recv()
+    pub fn try_recv(&mut self) -> Result<FinishedRequest, TryRecvError> {
+        let result = self.receiver.try_recv()?;
+        self.active_operations.remove(&result.operation_id);
+        Ok(result)
+    }
+
+    pub fn cancel(&mut self, operation_id: &str) -> bool {
+        let Some(token) = self.active_operations.remove(operation_id) else {
+            return false;
+        };
+        token.abort();
+        true
+    }
+}
+
+impl Drop for RequestExecutor {
+    fn drop(&mut self) {
+        for task in self.active_operations.values() {
+            task.abort();
+        }
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
     }
 }
 

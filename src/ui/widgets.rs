@@ -67,6 +67,92 @@ pub(super) fn draw_scrollbar(
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScrollbarTrackState {
+    pub(super) area: Rect,
+    pub(super) track_top: u16,
+    pub(super) track_length: usize,
+    pub(super) thumb_start: usize,
+    pub(super) thumb_length: usize,
+    pub(super) travel: usize,
+    pub(super) max_offset: usize,
+    pub(super) offset: usize,
+}
+
+pub(super) fn scrollbar_track_state(
+    area: Rect,
+    content_length: usize,
+    viewport_length: usize,
+    offset: usize,
+) -> Option<ScrollbarTrackState> {
+    if area.is_empty() || viewport_length == 0 || content_length <= viewport_length {
+        return None;
+    }
+
+    let arrows = u16::from(area.height >= 4);
+    let track_length = usize::from(area.height.saturating_sub(arrows * 2));
+    if track_length == 0 {
+        return None;
+    }
+
+    let max_offset = content_length.saturating_sub(viewport_length);
+    let offset = offset.min(max_offset);
+    let position = scrollbar_position(offset, content_length, viewport_length);
+    let scale = track_length as f64 / (content_length + viewport_length - 1) as f64;
+    let thumb_start = ((position as f64 * scale).round() as usize).min(track_length - 1);
+    let thumb_end =
+        (((position + viewport_length) as f64 * scale).round() as usize).min(track_length);
+    let travel = (((content_length - 1) as f64 * scale).round() as usize)
+        .min(track_length.saturating_sub(1))
+        .max(1);
+    Some(ScrollbarTrackState {
+        area,
+        track_top: area.y + arrows,
+        track_length,
+        thumb_start,
+        thumb_length: thumb_end.saturating_sub(thumb_start).max(1),
+        travel,
+        max_offset,
+        offset,
+    })
+}
+
+pub(super) fn scrollbar_offset_from_track(track: &ScrollbarTrackState, row: u16) -> usize {
+    if row < track.track_top {
+        return track.offset.saturating_sub(1);
+    }
+    let track_row = usize::from(row.saturating_sub(track.track_top));
+    if track_row >= track.track_length {
+        return (track.offset + 1).min(track.max_offset);
+    }
+    if (track.thumb_start..track.thumb_start.saturating_add(track.thumb_length))
+        .contains(&track_row)
+    {
+        return track.offset;
+    }
+    track_row
+        .saturating_sub(track.thumb_length / 2)
+        .min(track.travel)
+        .saturating_mul(track.max_offset)
+        .saturating_div(track.travel.max(1))
+        .min(track.max_offset)
+}
+
+pub(super) fn scrollbar_offset_from_drag(
+    track: &ScrollbarTrackState,
+    anchor_row: u16,
+    anchor_offset: usize,
+    row: u16,
+) -> usize {
+    if track.max_offset == 0 {
+        return 0;
+    }
+    let delta = i128::from(row) - i128::from(anchor_row);
+    let max_offset = track.max_offset as i128;
+    let travel = track.travel.max(1) as i128;
+    (anchor_offset as i128 + delta * max_offset / travel).clamp(0, max_offset) as usize
+}
+
 pub(super) fn scrollbar_position(
     offset: usize,
     content_length: usize,
@@ -107,12 +193,6 @@ pub(super) fn request_status_style(
         RequestStatus::Failed => theme.error,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
-pub(super) fn request_dirty_style(theme: &crate::settings::UiTheme) -> Style {
-    Style::default()
-        .fg(theme.warning)
-        .add_modifier(Modifier::BOLD)
 }
 
 pub(super) fn request_status_symbol(status: RequestStatus, animation_frame: usize) -> &'static str {
@@ -156,6 +236,26 @@ pub(super) fn draw_send_button(
     focused: bool,
     theme: &crate::settings::UiTheme,
 ) {
+    draw_send_button_aligned(
+        frame,
+        area,
+        label,
+        enabled,
+        focused,
+        theme,
+        Alignment::Center,
+    );
+}
+
+pub(super) fn draw_send_button_aligned(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    enabled: bool,
+    focused: bool,
+    theme: &crate::settings::UiTheme,
+    alignment: Alignment,
+) {
     let line = if enabled {
         let edge = if focused {
             theme.secondary
@@ -180,7 +280,7 @@ pub(super) fn draw_send_button(
             Span::styled("│", Style::default().fg(theme.muted)),
         ])
     };
-    frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
+    frame.render_widget(Paragraph::new(line).alignment(alignment), area);
 }
 
 pub(super) fn draw_primary_button(

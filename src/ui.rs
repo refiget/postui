@@ -1,7 +1,7 @@
 use crate::{
     app::{
         App, AppPrompt, Dialog, Focus, HeaderSource, KeyValueField, PreviewAction, PreviewTab,
-        RequestStatus, ResponseMenuAction, VariablePageFocus, supports_method,
+        RequestStatus, ResponseMenuAction, ResponseTab, VariablePageFocus, supports_method,
     },
     config::ApiRequest,
     highlight,
@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     symbols::{border, scrollbar::VERTICAL},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
         Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
@@ -41,8 +41,11 @@ use layout::{
 
 const TABLE_HIGHLIGHT_WIDTH: u16 = 2;
 const TABLE_COLUMN_SPACING: u16 = 1;
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let areas = screen_layout_for_app(frame.area(), app);
+    if app.view.variables.is_none() {
+        sync_response_scroll(app, areas);
+    }
     let theme = &app.global_config.theme;
 
     frame.render_widget(
@@ -50,57 +53,47 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
         frame.area(),
     );
 
-    if let Some(variables) = &app.view.variables {
-        draw_header(
-            frame,
-            areas.header,
-            areas.header_content,
-            Rect::default(),
-            app,
-        );
-        draw_footer(frame, areas.footer, app);
-        draw_variables_page(frame, app, variables, areas.response);
-        return;
-    }
-
-    draw_header(
-        frame,
-        areas.header,
-        areas.header_content,
-        areas.send_button,
-        app,
-    );
+    draw_header(frame, areas.header, areas.header_content, app);
     draw_footer(frame, areas.footer, app);
-    if !app.response_zoomed() {
-        draw_request_list(frame, areas, app);
-        draw_preview(
+    if let Some(variables) = &app.view.variables {
+        draw_variables_page(frame, app, variables, areas.response);
+    } else {
+        if !app.response_zoomed() {
+            draw_request_list(frame, areas, app);
+            draw_preview(
+                frame,
+                areas.preview,
+                areas.preview_summary,
+                areas.preview_tabs,
+                areas.preview_content,
+                app,
+            );
+            draw_request_send_button(frame, areas.send_button, app);
+        }
+        draw_response(
             frame,
-            areas.preview,
-            areas.preview_summary,
-            areas.preview_tabs,
-            areas.preview_content,
+            areas.response,
+            areas.response_format_button,
+            areas.response_menu_button,
+            areas.response_zoom_button,
             app,
         );
-    }
-    draw_response(
-        frame,
-        areas.response,
-        areas.response_menu_button,
-        areas.response_zoom_button,
-        app,
-    );
-    if app.view.response.menu_selection.is_some() {
-        draw_response_menu(
-            frame,
-            response_menu_area(areas.response, areas.response_menu_button),
-            app,
-        );
-    }
-    if let Some(Dialog::Configurations(dialog)) = &app.view.dialog {
-        draw_configuration_dropdown(frame, app, dialog, areas.workspace_selector)
+        if app.view.response.menu_selection.is_some() {
+            draw_response_menu(
+                frame,
+                response_menu_area(areas.response, areas.response_menu_button),
+                app,
+            );
+        }
+        if let Some(Dialog::Configurations(dialog)) = &app.view.dialog {
+            draw_configuration_dropdown(frame, app, dialog, areas.workspace_selector)
+        }
     }
     if app.view.prompt.is_some() {
         draw_app_prompt(frame, app);
+    }
+    if app.view.help_visible {
+        draw_help(frame, app);
     }
 }
 
@@ -108,7 +101,11 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     if matches!(event.kind, MouseEventKind::Up(MouseButton::Left)) {
         app.view.response.scroll.drag_anchor = None;
     }
-    if app.view.prompt.is_some() {
+    if app.view.prompt.is_some()
+        || app.view.help_visible
+        || app.view.requests.search.is_some()
+        || app.view.response.search.is_some()
+    {
         app.view.response.scroll.drag_anchor = None;
         return;
     }
@@ -138,7 +135,12 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
             handle_click(app, event.column, event.row, areas, is_double);
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            drag_response_scrollbar(app, event.row, areas);
+            if contains(areas.request_scrollbar, event.column, event.row) {
+                app.view.response.scroll.drag_anchor = None;
+                drag_request_list_scrollbar(app, event.row, areas);
+            } else {
+                drag_response_scrollbar(app, event.row, areas);
+            }
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             app.view.clicks.reset();
@@ -234,7 +236,7 @@ fn handle_configuration_mouse(app: &mut App, event: MouseEvent, area: Rect) {
 
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double: bool) {
     if !is_double {
-        app.cancel_active_editors();
+        app.view.cancel_active_editors();
     }
     focus_panel_at(app, column, row, areas);
 
@@ -259,8 +261,16 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
     } else if contains(areas.variables_button, column, row) {
         app.view.focus = Focus::Variables;
         app.open_variables();
+    } else if contains(areas.request_scrollbar, column, row) {
+        app.view.focus = Focus::Requests;
+        click_request_list_scrollbar(app, row, areas);
     } else if contains(areas.request_list, column, row) {
         click_request_list(app, column, row, areas.request_list);
+    } else if contains(areas.send_button, column, row)
+        && app.can_execute_preview_action(PreviewAction::Send)
+    {
+        app.view.focus = Focus::SendButton;
+        app.handle_preview_action(PreviewAction::Send);
     } else if (contains(areas.preview_summary, column, row)
         || contains(areas.preview_content, column, row))
         && app.has_current_request()
@@ -297,17 +307,21 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
     } else if contains(areas.response_menu_button, column, row) {
         app.view.focus = Focus::ResponseActions;
         app.open_response_menu();
+    } else if contains(areas.response_format_button, column, row) {
+        if app.current_response().is_some() {
+            app.toggle_response_format_tab();
+        }
+        app.view.focus = Focus::Response;
     } else if contains(areas.response_zoom_button, column, row) {
         app.view.focus = Focus::ResponseZoom;
         app.toggle_response_zoom();
-    } else if contains(areas.send_button, column, row)
-        && app.can_execute_preview_action(PreviewAction::Send)
-    {
-        app.view.focus = Focus::SendButton;
-        app.handle_preview_action(PreviewAction::Send);
     } else if contains(areas.response, column, row) {
         app.view.focus = Focus::Response;
-        click_response_scrollbar(app, column, row, areas);
+        if let Some(tab) = response_tab_at(app, column, row, areas) {
+            app.select_response_tab(tab);
+        } else {
+            click_response_scrollbar(app, column, row, areas);
+        }
     }
 }
 
@@ -322,20 +336,7 @@ fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
     if !app.has_current_request() {
         return base;
     }
-    let Some(request) = app.current_request() else {
-        return base;
-    };
-    let method = app
-        .current_effective_request()
-        .map(|request| request.method)
-        .unwrap_or_else(|| request.method.clone());
-    let url = app.display_url(request);
-    let summary_height = preview_summary_height(
-        base.preview_details.width,
-        &format!("[ {} ]", method),
-        app.text().address(),
-        &url,
-    );
+    let summary_height = preview_summary_height(base.preview_details.width);
     screen_with_summary(area, summary_height)
 }
 
@@ -344,18 +345,41 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
         return;
     }
     let visible = usize::from(area.height);
-    let offset = request_list_offset(
-        app.workspace_state.selected_request.unwrap_or_default(),
-        app.workspace_state.requests.len(),
-        visible,
-    );
-    let index = offset.saturating_add(usize::from(row - area.y));
-    if index >= app.workspace_state.requests.len() {
+    let visible_indices = app.visible_request_indices();
+    let selected = app
+        .workspace_state
+        .selected_request
+        .and_then(|selected| visible_indices.iter().position(|index| *index == selected))
+        .unwrap_or_default();
+    let offset = request_list_offset(selected, visible_indices.len(), visible);
+    let visible_index = offset.saturating_add(usize::from(row - area.y));
+    let Some(index) = visible_indices.get(visible_index).copied() else {
         return;
-    }
+    };
     app.select_request(index);
     app.view.focus = Focus::Requests;
     tracing::debug!(index, "通过左侧接口列表选择接口");
+}
+
+fn draw_help(frame: &mut Frame<'_>, app: &App) {
+    let theme = &app.global_config.theme;
+    let width = frame.area().width.saturating_sub(4).min(72);
+    let height = frame.area().height.saturating_sub(2).min(16);
+    let area = Rect::new(
+        frame.area().x + frame.area().width.saturating_sub(width) / 2,
+        frame.area().y + frame.area().height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.surface).fg(theme.text))
+        .title(app.text().help_title());
+    let inner = block.inner(area).inner(Margin::new(2, 1));
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(app.text().help_content()), inner);
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
@@ -363,6 +387,10 @@ fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, directio
     let response_menu = response_menu_area(areas.response, areas.response_menu_button);
     if app.view.response.menu_selection.is_some() && contains(response_menu, column, row) {
         app.move_response_menu_selection(direction);
+    } else if contains(areas.request_scrollbar, column, row) {
+        app.view.focus = Focus::Requests;
+        tracing::trace!(column, row, direction, "滚动左侧接口列表");
+        app.move_request(direction);
     } else if contains(areas.request_list, column, row) {
         app.view.focus = Focus::Requests;
         tracing::trace!(column, row, direction, "滚动左侧接口列表");
@@ -411,12 +439,23 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
 fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {
     let theme = &app.global_config.theme;
     let text = app.text();
-    let width = frame.area().width.saturating_sub(4).min(56);
-    let height = match app.view.prompt {
-        Some(AppPrompt::ConfirmExit | AppPrompt::ConfirmDelete { .. }) => 5,
+    let (title, message, hint, height) = match app.view.prompt {
+        Some(AppPrompt::ConfirmDelete { .. }) => (
+            text.delete_request(),
+            text.delete_request_message(),
+            text.delete_request_hint(),
+            5,
+        ),
+        Some(AppPrompt::ConfirmQuit) => (
+            text.quit_title(),
+            text.quit_modified_message(),
+            text.confirmation_hint(),
+            6,
+        ),
         None => return,
-    }
-    .min(frame.area().height);
+    };
+    let width = frame.area().width.saturating_sub(4).min(56);
+    let height = height.min(frame.area().height);
     let area = Rect::new(
         frame.area().x + frame.area().width.saturating_sub(width) / 2,
         frame.area().y + frame.area().height.saturating_sub(height) / 2,
@@ -429,39 +468,14 @@ fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.surface).fg(theme.text))
-            .title(match app.view.prompt {
-                Some(AppPrompt::ConfirmExit) => text.unsaved_requests(),
-                Some(AppPrompt::ConfirmDelete { .. }) => text.delete_request(),
-                None => "",
-            }),
+            .title(title),
         area,
     );
-    let inner = area.inner(Margin::new(2, 1));
-    match &app.view.prompt {
-        Some(AppPrompt::ConfirmExit) => {
-            frame.render_widget(
-                Paragraph::new(Text::from(vec![
-                    Line::from(text.unsaved_exit_message()),
-                    Line::from(Span::styled(
-                        text.unsaved_exit_hint(),
-                        Style::default().fg(theme.accent),
-                    )),
-                ])),
-                inner,
-            );
-        }
-        Some(AppPrompt::ConfirmDelete { .. }) => {
-            frame.render_widget(
-                Paragraph::new(Text::from(vec![
-                    Line::from(text.delete_request_message()),
-                    Line::from(Span::styled(
-                        text.delete_request_hint(),
-                        Style::default().fg(theme.accent),
-                    )),
-                ])),
-                inner,
-            );
-        }
-        None => {}
-    }
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(message),
+            Line::from(Span::styled(hint, Style::default().fg(theme.accent))),
+        ]),
+        area.inner(Margin::new(2, 1)),
+    );
 }

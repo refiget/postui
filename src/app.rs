@@ -1,8 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     config::{ApiRequest, DataPart, RequestConfig, RequestParam, WorkspaceConfig},
-    editor::{BodyValueEditor, EditInput},
     i18n::UiText,
     request_executor::RequestExecutor,
     request_file::RequestFileStore,
@@ -16,11 +18,16 @@ mod dialog;
 mod editing;
 mod execution;
 mod feedback;
+mod input;
 mod response;
+mod search;
 mod session;
 mod variables;
 mod view;
+mod workspace;
 use view::ViewState;
+pub(crate) use view::{AppPrompt, FileValueEditor, Focus};
+use view::{PreviewContentState, ResponseContentState, ViewMode};
 
 use dialog::DialogAction;
 pub(crate) use dialog::{
@@ -31,59 +38,7 @@ pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
 use variables::VariablesPageAction;
-pub(crate) use variables::{VariablePageFocus, VariableRow, VariablesPage};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Focus {
-    Header,
-    Requests,
-    WorkspaceButton,
-    Variables,
-    Preview,
-    SendButton,
-    ResponseActions,
-    ResponseZoom,
-    Response,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ViewMode {
-    #[default]
-    Standard,
-    ResponseZoom {
-        return_focus: Focus,
-    },
-}
-
-impl Focus {
-    fn next(self) -> Self {
-        match self {
-            Self::Header => Self::Requests,
-            Self::Requests => Self::WorkspaceButton,
-            Self::WorkspaceButton => Self::Variables,
-            Self::Variables => Self::Preview,
-            Self::Preview => Self::SendButton,
-            Self::SendButton => Self::ResponseActions,
-            Self::ResponseActions => Self::ResponseZoom,
-            Self::ResponseZoom => Self::Response,
-            Self::Response => Self::Header,
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::Header => Self::Response,
-            Self::Requests => Self::Header,
-            Self::WorkspaceButton => Self::Requests,
-            Self::Variables => Self::WorkspaceButton,
-            Self::Preview => Self::Variables,
-            Self::SendButton => Self::Preview,
-            Self::ResponseActions => Self::SendButton,
-            Self::ResponseZoom => Self::ResponseActions,
-            Self::Response => Self::ResponseZoom,
-        }
-    }
-}
+pub(crate) use variables::{VariablePageFocus, VariablesPage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PreviewTab {
@@ -102,16 +57,51 @@ pub(crate) enum PreviewAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResponseMenuAction {
     Download,
-    Copy,
+    CopyBody,
+    CopyHeaders,
 }
 
 impl ResponseMenuAction {
-    pub(crate) const fn all() -> [Self; 2] {
-        [Self::Download, Self::Copy]
+    pub(crate) const fn all() -> [Self; 3] {
+        [Self::Download, Self::CopyBody, Self::CopyHeaders]
     }
 
     pub(crate) fn from_index(index: usize) -> Option<Self> {
         Self::all().get(index).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ResponseTab {
+    Raw,
+    #[default]
+    Formatted,
+    Headers,
+}
+
+impl ResponseTab {
+    fn next(self) -> Self {
+        match self {
+            Self::Raw => Self::Formatted,
+            Self::Formatted => Self::Headers,
+            Self::Headers => Self::Raw,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Raw => Self::Headers,
+            Self::Formatted => Self::Raw,
+            Self::Headers => Self::Formatted,
+        }
+    }
+
+    fn toggle_format(self) -> Self {
+        match self {
+            Self::Raw => Self::Formatted,
+            Self::Formatted => Self::Raw,
+            Self::Headers => Self::Formatted,
+        }
     }
 }
 
@@ -145,95 +135,6 @@ impl PreviewTab {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct ScrollState {
-    offset: u16,
-}
-
-impl ScrollState {
-    const STEP: u16 = 3;
-
-    pub(crate) fn offset(&self) -> u16 {
-        self.offset
-    }
-
-    fn reset(&mut self) {
-        self.offset = 0;
-    }
-
-    pub(crate) fn move_by(&mut self, direction: isize) -> bool {
-        let previous = self.offset;
-        self.offset = match direction {
-            -1 => self.offset.saturating_sub(Self::STEP),
-            1 => self.offset.saturating_add(Self::STEP),
-            _ => self.offset,
-        };
-        self.offset != previous
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ResponseScrollState {
-    offset: usize,
-    pub(crate) drag_anchor: Option<(u16, usize)>,
-}
-
-impl ResponseScrollState {
-    const STEP: usize = 3;
-
-    pub(crate) fn offset(&self) -> usize {
-        self.offset
-    }
-
-    fn reset(&mut self) {
-        self.offset = 0;
-        self.drag_anchor = None;
-    }
-
-    pub(crate) fn set_offset(&mut self, offset: usize) {
-        self.offset = offset;
-    }
-
-    pub(crate) fn move_by(&mut self, direction: isize, max_offset: usize) -> bool {
-        let previous = self.offset;
-        self.offset = match direction {
-            -1 => self.offset.saturating_sub(Self::STEP),
-            1 => self.offset.saturating_add(Self::STEP),
-            _ => self.offset,
-        }
-        .min(max_offset);
-        self.offset != previous
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct PreviewContentState {
-    pub(crate) active_tab: PreviewTab,
-    pub(crate) scroll: ScrollState,
-    pub(crate) editor: Option<BodyValueEditor>,
-    pub(crate) file_editor: Option<FileValueEditor>,
-}
-
-#[derive(Debug)]
-pub(crate) enum AppPrompt {
-    ConfirmExit,
-    ConfirmDelete { request_id: String },
-}
-
-#[derive(Debug)]
-pub(crate) struct FileValueEditor {
-    pub(crate) file_index: usize,
-    pub(crate) line: usize,
-    pub(crate) column: usize,
-    pub(crate) input: EditInput,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ResponseContentState {
-    pub(crate) scroll: ResponseScrollState,
-    pub(crate) menu_selection: Option<usize>,
-}
-
 pub(crate) struct App {
     pub(crate) view: ViewState,
     pub(crate) config: WorkspaceConfig,
@@ -244,7 +145,11 @@ pub(crate) struct App {
     request_files: RequestFileStore,
     request_executor: RequestExecutor,
     response_actions: ResponseActionExecutor,
-    response_action_running: bool,
+    response_search_task: Option<response::ResponseSearchTask>,
+    workspace_reload:
+        Option<std::sync::mpsc::Receiver<Result<workspace::ReloadedWorkspace, String>>>,
+    baseline_config: WorkspaceConfig,
+    baseline_requests: BTreeMap<String, ApiRequest>,
 }
 
 impl App {
@@ -271,6 +176,11 @@ impl App {
             configured_variable_count,
             "创建应用状态"
         );
+        let baseline_config = config.clone();
+        let baseline_requests = requests
+            .iter()
+            .map(|request| (request.id.clone(), request.clone()))
+            .collect();
         let workspace_state = WorkspaceSession::from_config(&config, requests);
 
         Self {
@@ -283,7 +193,10 @@ impl App {
             request_files,
             request_executor,
             response_actions: ResponseActionExecutor::new(),
-            response_action_running: false,
+            response_search_task: None,
+            workspace_reload: None,
+            baseline_config,
+            baseline_requests,
         }
     }
 
@@ -312,17 +225,6 @@ impl App {
             .or_else(|| self.workspace_state.current()?.runtime.feedback())
     }
 
-    pub(crate) fn is_editing(&self) -> bool {
-        self.view.preview.editor.is_some()
-            || self.view.preview.file_editor.is_some()
-            || self
-                .view
-                .variables
-                .as_ref()
-                .is_some_and(|page| page.editor.is_some())
-            || self.view.dialog.as_ref().is_some_and(Dialog::is_editing)
-    }
-
     pub(crate) fn advance_animation(&mut self) {
         self.view.animation_frame = self.view.animation_frame.wrapping_add(1);
     }
@@ -334,75 +236,29 @@ impl App {
             .any(|session| session.runtime.status() == RequestStatus::Sending)
     }
 
-    fn mark_current_dirty(&mut self) {
-        self.view.notice = None;
-        if let Some(session) = self.workspace_state.current_mut() {
-            session.dirty = true;
-        }
+    pub(crate) fn has_pending_background_work(&self) -> bool {
+        self.is_animating()
+            || self.workspace_reload.is_some()
+            || self.response_search_task.is_some()
+            || self.response_actions.is_running()
     }
 
-    pub(crate) fn save_current_request(&mut self) {
-        self.cancel_active_editors();
-        if self
-            .current_effective_request()
-            .is_none_or(|request| request.url.trim().is_empty())
-        {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().request_url_required().to_string(),
-            ));
-            return;
-        }
-        self.workspace_state.commit_configuration(&mut self.config);
-        let Some(request) = self.current_request().cloned() else {
-            return;
-        };
-        let request_id = request.id.clone();
-        match self.request_files.save(&request) {
-            Ok(path) => {
-                let configuration_save = self
-                    .config
-                    .configurations
-                    .values()
-                    .filter(|configuration| configuration.path.is_some())
-                    .try_for_each(|configuration| {
-                        self.request_files
-                            .save_configuration(configuration)
-                            .map(|_| ())
-                    });
-                if let Err(error) = configuration_save {
-                    tracing::error!(request_id = %request_id, error = %format!("{error:#}"), "配置保存失败");
-                    self.view.notice = Some(Feedback::Error(
-                        self.text().configuration_save_failed(&format!("{error:#}")),
-                    ));
-                    return;
-                }
-                if let Some(session) = self.workspace_state.request_mut(&request_id) {
-                    session.dirty = false;
-                }
-                self.view.notice = Some(Feedback::Success(
-                    self.text().request_saved(&path.display().to_string()),
-                ));
-            }
-            Err(error) => {
-                tracing::error!(request_id = %request_id, error = %format!("{error:#}"), "保存请求失败");
-                self.view.notice = Some(Feedback::Error(
-                    self.text().request_save_failed(&format!("{error:#}")),
-                ));
-            }
-        }
+    fn register_request_change(&mut self) {
+        self.view.notice = None;
     }
 
     fn request_quit(&mut self) {
-        self.cancel_active_editors();
-        if !self
+        self.view.cancel_active_editors();
+        if self
             .workspace_state
             .requests
             .iter()
-            .any(|session| session.dirty)
+            .any(|session| self.request_modified(&session.source.id))
+            || self.config != self.baseline_config
         {
-            self.should_quit = true;
+            self.view.prompt = Some(AppPrompt::ConfirmQuit);
         } else {
-            self.view.prompt = Some(AppPrompt::ConfirmExit);
+            self.should_quit = true;
         }
     }
 
@@ -452,15 +308,18 @@ impl App {
 
     fn handle_prompt_key(&mut self, key: KeyEvent) {
         match self.view.prompt.as_mut() {
-            Some(AppPrompt::ConfirmExit) => match key.code {
-                KeyCode::Char('y' | 'Y') => self.should_quit = true,
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.view.prompt = None,
-                _ => {}
-            },
             Some(AppPrompt::ConfirmDelete { request_id }) => match key.code {
                 KeyCode::Char('y' | 'Y') => {
                     let request_id = request_id.clone();
                     self.delete_request(&request_id);
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => self.view.prompt = None,
+                _ => {}
+            },
+            Some(AppPrompt::ConfirmQuit) => match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    self.view.prompt = None;
+                    self.should_quit = true;
                 }
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => self.view.prompt = None,
                 _ => {}
@@ -478,7 +337,7 @@ impl App {
         let previous = self.workspace_state.selected_request;
         let changed = previous != Some(index);
         if changed {
-            self.cancel_active_editors();
+            self.view.cancel_active_editors();
             self.workspace_state.commit_configuration(&mut self.config);
             self.close_response_menu();
             if self.editing_preview_tab().is_some() {
@@ -488,6 +347,7 @@ impl App {
             self.view.preview.active_tab = PreviewTab::Body;
             self.view.preview.scroll.reset();
             self.view.response.scroll.reset();
+            self.view.response.search_match_line = None;
             let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
                 return;
             };
@@ -544,65 +404,20 @@ impl App {
         self.config.configurations.keys().map(String::as_str)
     }
 
-    pub(crate) fn variable_default_value(&self, variable: &str) -> String {
-        self.config
-            .configurations
-            .get(self.active_configuration())
-            .and_then(|configuration| configuration.variables.get(variable))
-            .or_else(|| self.config.variables.get(variable))
-            .and_then(|definition| definition.default.as_ref())
-            .map(crate::config::value_to_string)
-            .unwrap_or_else(|| "—".to_string())
-    }
-
-    pub(crate) fn open_configurations(&mut self) {
-        let rows: Vec<String> = self.configuration_names().map(str::to_string).collect();
-        let selected = rows
-            .iter()
-            .position(|configuration| configuration == self.active_configuration())
-            .unwrap_or_default();
-        self.view.dialog = Some(Dialog::Configurations(ConfigurationsDialog {
-            rows,
-            selected,
-        }));
-        self.view.focus = Focus::WorkspaceButton;
-        tracing::debug!(
-            configuration = %self.active_configuration(),
-            configuration_count = self.config.configurations.len(),
-            "打开 workspace 配置下拉菜单"
-        );
-    }
-
-    pub(crate) fn switch_configuration(&mut self, configuration: &str) {
-        if configuration == self.active_configuration() {
-            self.close_dialog();
-            return;
-        }
-        if self
-            .workspace_state
-            .requests
-            .iter()
-            .any(|session| session.runtime.status() == RequestStatus::Sending)
-        {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().request_in_progress().to_string(),
-            ));
-            return;
-        }
-        self.cancel_active_editors();
-        if !self
-            .workspace_state
-            .switch_configuration(&mut self.config, configuration)
-        {
-            return;
-        }
-        self.view.dialog = None;
-        self.view.preview = PreviewContentState::default();
-        self.view.response = ResponseContentState::default();
-        self.view.notice = Some(Feedback::Success(
-            self.text().configuration_switched(configuration),
-        ));
-        tracing::debug!(configuration, "切换 workspace 配置");
+    pub(crate) fn current_request_is_insecure(&self) -> bool {
+        let Some(request) = self.current_request() else {
+            return false;
+        };
+        let configuration = self.config.configurations.get(self.active_configuration());
+        configuration
+            .and_then(|configuration| {
+                configuration
+                    .request_overrides
+                    .get(&request.id)
+                    .and_then(|request| request.skip_ssl_verification)
+                    .or(configuration.skip_ssl_verification)
+            })
+            .unwrap_or(request.skip_ssl_verification)
     }
 
     pub(crate) fn current_header_count(&self) -> usize {
@@ -630,33 +445,6 @@ impl App {
             })
             .unwrap_or_default();
         url_count + request.query_parts.len() + request.form.len() + body_count
-    }
-
-    pub(crate) fn open_variables(&mut self) {
-        let rows = self
-            .config
-            .editable_variables
-            .iter()
-            .map(|name| VariableRow {
-                name: name.clone(),
-                value: self
-                    .workspace_state
-                    .variables
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_default(),
-            })
-            .collect::<Vec<_>>();
-        let return_focus = self.view.focus;
-        self.view.variables = Some(VariablesPage {
-            rows,
-            selected: 0,
-            focus: VariablePageFocus::Content,
-            editor: None,
-            return_focus,
-        });
-        self.view.focus = Focus::Variables;
-        tracing::debug!(variable_count = self.variable_count(), "打开工作区变量页面");
     }
 
     pub(crate) fn open_headers(&mut self) {
@@ -810,9 +598,8 @@ impl App {
                 self.apply_dialog();
             }
             PreviewAction::Edit(PreviewTab::Body) => {
-                if self.view.preview.editor.is_some() || self.view.preview.file_editor.is_some() {
-                    self.view.preview.editor = None;
-                    self.view.preview.file_editor = None;
+                if self.view.preview.is_editing() {
+                    self.view.preview.cancel_editor();
                 } else {
                     self.start_body_edit(0, 0);
                 }
@@ -831,13 +618,9 @@ impl App {
             PreviewAction::Send => self.current_effective_request().is_some_and(|request| {
                 !request.url.trim().is_empty()
                     && supports_method(&request.method)
-                    && self.current_request().is_some_and(|current| {
-                        self.request_status(&current.id) != RequestStatus::Sending
-                    })
                     && !matches!(self.view.dialog, Some(Dialog::Configurations(_)))
                     && self.view.variables.is_none()
-                    && self.view.preview.editor.is_none()
-                    && self.view.preview.file_editor.is_none()
+                    && !self.view.preview.is_editing()
             }),
             PreviewAction::Edit(tab) => self.current_request().is_some_and(|request| {
                 self.editing_preview_tab()
@@ -914,7 +697,7 @@ impl App {
             }
             Dialog::Headers(dialog) => {
                 if changed {
-                    self.mark_current_dirty();
+                    self.register_request_change();
                 }
                 let header_count = self
                     .request_draft(&dialog.request_id)
@@ -923,21 +706,17 @@ impl App {
                     .flatten()
                     .filter(|row| row.enabled)
                     .count();
-                self.view.notice =
-                    Some(Feedback::Success(self.text().headers_applied().to_string()));
                 tracing::debug!(header_count, "应用请求 Header 修改");
             }
             Dialog::Params(dialog) => {
                 if changed {
-                    self.mark_current_dirty();
+                    self.register_request_change();
                 }
                 let (query_part_count, form_field_count) = {
                     self.request_draft(&dialog.request_id)
                         .map(|draft| (draft.query_parts.len(), draft.form.len()))
                         .unwrap_or_default()
                 };
-                self.view.notice =
-                    Some(Feedback::Success(self.text().params_applied().to_string()));
                 tracing::debug!(query_part_count, form_field_count, "应用请求参数修改");
             }
         }
@@ -952,13 +731,13 @@ impl App {
             DialogAction::None => {}
             DialogAction::Changed => {
                 if self.sync_dialog_draft() {
-                    self.mark_current_dirty();
+                    self.register_request_change();
                 }
             }
             DialogAction::Apply => self.apply_dialog(),
             DialogAction::Cancel => {
                 if self.sync_dialog_draft() {
-                    self.mark_current_dirty();
+                    self.register_request_change();
                 }
                 self.close_dialog();
             }
@@ -1077,7 +856,7 @@ impl App {
             tracing::debug!(direction, "移动配置窗口列表选择");
         }
         if self.sync_dialog_draft() {
-            self.mark_current_dirty();
+            self.register_request_change();
         }
     }
 
@@ -1119,14 +898,14 @@ impl App {
 
     pub(crate) fn toggle_header_row(&mut self, index: usize) {
         if self.sync_dialog_draft() {
-            self.mark_current_dirty();
+            self.register_request_change();
         }
         if let Some(Dialog::Headers(dialog)) = self.view.dialog.as_mut() {
             dialog.selected = index;
             dialog.toggle_selected();
         }
         if self.sync_dialog_draft() {
-            self.mark_current_dirty();
+            self.register_request_change();
         }
     }
 
@@ -1163,167 +942,19 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub(crate) fn handle_key(&mut self, key: KeyEvent) {
-        tracing::trace!(
-            key_kind = key_kind(key.code),
-            modifiers = ?key.modifiers,
-            focus = ?self.view.focus,
-            "处理键盘操作"
-        );
-
-        if key.code == KeyCode::F(5) && self.debug_mode {
-            self.load_next_theme();
-            return;
-        }
-
-        if self.view.prompt.is_some() {
-            self.handle_prompt_key(key);
-            return;
-        }
-
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.request_quit();
-            tracing::debug!("通过 Ctrl+C 请求退出");
-            return;
-        }
-
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-            self.save_current_request();
-            return;
-        }
-
-        if self.view.variables.is_some() {
-            self.handle_variables_key(key);
-            return;
-        }
-
-        if self.view.dialog.is_some() {
-            let inline_table = self
-                .view
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.preview_tab().is_some());
-            let editing_inline_cell = self.view.dialog.as_ref().is_some_and(Dialog::is_editing);
-            let handle_as_global = inline_table
-                && !editing_inline_cell
-                && (self.view.focus != Focus::Preview
-                    || matches!(
-                        key.code,
-                        KeyCode::Tab
-                            | KeyCode::BackTab
-                            | KeyCode::Char('r' | 'v' | 'c' | 'o' | 'q')
-                    ));
-            if !handle_as_global {
-                self.handle_dialog_key(key);
-                return;
-            }
-        }
-
-        if self.view.preview.editor.is_some() || self.view.preview.file_editor.is_some() {
-            self.handle_body_editor_key(key);
-            return;
-        }
-
-        if self.view.response.menu_selection.is_some() {
-            match key.code {
-                KeyCode::Esc => self.close_response_menu(),
-                KeyCode::Char('q') if self.response_zoomed() => self.restore_standard_view(),
-                KeyCode::Up | KeyCode::Char('k') => self.move_response_menu_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_response_menu_selection(1),
-                KeyCode::Enter | KeyCode::Char(' ') => self.activate_selected_response_action(),
-                _ => {}
-            }
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if self.response_zoomed() {
-                    self.restore_standard_view();
-                } else {
-                    self.request_quit();
-                    tracing::debug!("通过快捷键请求退出");
-                }
-            }
-            KeyCode::Tab => {
-                self.view.focus = self.next_focus(key.modifiers.contains(KeyModifiers::SHIFT));
-                tracing::debug!(focus = ?self.view.focus, "切换 TUI 区域焦点");
-            }
-            KeyCode::BackTab => self.view.focus = self.next_focus(true),
-            KeyCode::Char('r') => self.handle_preview_action(PreviewAction::Send),
-            KeyCode::Char('w') => self.open_configurations(),
-            KeyCode::Char('v') => self.open_variables(),
-            KeyCode::Char('o') => self.open_response_menu(),
-            KeyCode::Delete if self.view.focus == Focus::Requests => self.request_delete(),
-            KeyCode::Left if self.view.focus == Focus::Preview => self.move_preview_tab(-1),
-            KeyCode::Right if self.view.focus == Focus::Preview => self.move_preview_tab(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_focused(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_focused(1),
-            KeyCode::Enter | KeyCode::Char(' ') => self.handle_enter(),
-            _ => {}
-        }
-    }
-
-    fn load_next_theme(&mut self) {
-        let current = self.global_config.theme.name.clone();
-        match crate::settings::next_theme(&current) {
-            Ok(theme) => {
-                let name = theme.name.clone();
-                self.global_config.theme = theme;
-                self.view.notice = Some(Feedback::Info(self.text().theme_loaded(&name)));
-                tracing::debug!(previous_theme = %current, theme = %name, "热加载内置主题");
-            }
-            Err(error) => {
-                self.view.notice = Some(Feedback::Error(
-                    self.text().theme_load_failed(&error.to_string()),
-                ));
-                tracing::error!(error = ?error, "热加载内置主题失败");
-            }
-        }
-    }
-
-    fn handle_enter(&mut self) {
-        tracing::debug!(focus = ?self.view.focus, "处理 Enter 操作");
-        match self.view.focus {
-            Focus::Header => {}
-            Focus::Requests => {}
-            Focus::Variables => self.open_variables(),
-            Focus::Preview => {
-                let action = PreviewAction::Edit(self.view.preview.active_tab);
-                self.handle_preview_action(action);
-            }
-            Focus::WorkspaceButton => self.open_configurations(),
-            Focus::SendButton => self.handle_preview_action(PreviewAction::Send),
-            Focus::ResponseActions => self.open_response_menu(),
-            Focus::ResponseZoom => self.toggle_response_zoom(),
-            Focus::Response => {}
-        }
-    }
-
-    fn move_focused(&mut self, direction: isize) {
-        match self.view.focus {
-            Focus::Header => {}
-            Focus::Requests => self.move_request(direction),
-            Focus::Preview => {
-                self.view.preview.scroll.move_by(direction);
-            }
-            Focus::Response => self.scroll_response(direction),
-            Focus::WorkspaceButton
-            | Focus::Variables
-            | Focus::SendButton
-            | Focus::ResponseActions
-            | Focus::ResponseZoom => {}
-        }
-    }
-
     pub(crate) fn move_request(&mut self, delta: isize) {
-        let count = self.workspace_state.requests.len();
+        let visible = self.visible_request_indices();
+        let count = visible.len();
         if count == 0 {
             return;
         }
-        let current = self.workspace_state.selected_request.unwrap_or_default() % count;
+        let current = self
+            .workspace_state
+            .selected_request
+            .and_then(|selected| visible.iter().position(|index| *index == selected))
+            .unwrap_or_default();
         let next = (current as isize + delta).rem_euclid(count as isize) as usize;
-        self.select_request(next);
+        self.select_request(visible[next]);
     }
 
     pub(crate) fn move_preview_tab(&mut self, direction: isize) {
@@ -1356,7 +987,7 @@ impl App {
                 dialog.cancel_editor();
             }
             if self.sync_dialog_draft() {
-                self.mark_current_dirty();
+                self.register_request_change();
             }
             self.view.dialog = None;
         }
@@ -1374,38 +1005,15 @@ impl App {
             dialog.cancel_editor();
         }
         if self.sync_dialog_draft() {
-            self.mark_current_dirty();
+            self.register_request_change();
         }
         match self.view.dialog.as_mut() {
             Some(Dialog::Headers(dialog)) if tab == PreviewTab::Headers => dialog.add_row(),
             Some(Dialog::Params(dialog)) if tab == PreviewTab::Params => dialog.add_row(),
             _ => return,
         }
-        self.mark_current_dirty();
+        self.register_request_change();
         tracing::debug!(tab = ?tab, "通过请求标签新增字段");
-    }
-
-    fn next_focus(&self, reverse: bool) -> Focus {
-        if !self.response_zoomed() {
-            return if reverse {
-                self.view.focus.previous()
-            } else {
-                self.view.focus.next()
-            };
-        }
-        match (self.view.focus, reverse) {
-            (Focus::Header, true) => Focus::Response,
-            (Focus::Header, false) => Focus::SendButton,
-            (Focus::SendButton, true) => Focus::Header,
-            (Focus::SendButton, false) => Focus::ResponseActions,
-            (Focus::ResponseActions, true) => Focus::SendButton,
-            (Focus::ResponseActions, false) => Focus::ResponseZoom,
-            (Focus::ResponseZoom, true) => Focus::ResponseActions,
-            (Focus::ResponseZoom, false) => Focus::Response,
-            (Focus::Response, true) => Focus::ResponseZoom,
-            (Focus::Response, false) => Focus::Header,
-            (_, _) => Focus::Response,
-        }
     }
 }
 

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) fn save_response(
+pub fn save_response(
     body: &[u8],
     headers: &[(String, String)],
     request_id: &str,

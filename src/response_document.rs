@@ -1,24 +1,41 @@
-use std::time::Instant;
+use std::{
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use bytes::Bytes;
 use memchr::memchr;
 use ratatui::{
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
 };
 
-use crate::settings::UiTheme;
+use crate::{
+    highlight::ResponseHighlightCache,
+    response_format::{BodyFormat, FormatNote},
+    settings::UiTheme,
+};
 
 const CHECKPOINT_LINE_INTERVAL: usize = 256;
-const CHECKPOINT_BYTE_INTERVAL: usize = 64 * 1024;
 const MAX_LINE_BYTES: usize = 512;
-const MAX_INDENT_BYTES: usize = 64;
 
-pub(crate) struct ResponseDocument {
+mod json;
+use json::JsonIndex;
+mod markup;
+use markup::MarkupIndex;
+
+#[derive(Clone)]
+pub struct ResponseDocument {
     body: Bytes,
     displayed_bytes: usize,
-    limited: bool,
-    index: DocumentIndex,
+    total_bytes: usize,
+    index: Arc<DocumentIndex>,
+    highlight: Option<Arc<ResponseHighlightCache>>,
+    raw: Option<Arc<ResponseDocument>>,
+    pub format_note: Option<FormatNote>,
 }
 
 impl std::fmt::Debug for ResponseDocument {
@@ -27,619 +44,313 @@ impl std::fmt::Debug for ResponseDocument {
             .debug_struct("ResponseDocument")
             .field("body_bytes", &self.body.len())
             .field("displayed_bytes", &self.displayed_bytes)
-            .field("limited", &self.limited)
             .field("line_count", &self.line_count())
             .finish()
     }
 }
 
 impl ResponseDocument {
-    pub(crate) fn new(body: Bytes, headers: &[(String, String)], max_display_bytes: usize) -> Self {
-        let started = Instant::now();
-        let displayed_bytes = body.len().min(max_display_bytes.max(1));
-        let limited = displayed_bytes < body.len();
-        let visible = &body[..displayed_bytes];
-        let index = if is_json_response(headers, visible) {
-            DocumentIndex::Json(build_json_index(visible))
-        } else {
-            DocumentIndex::Plain(build_plain_index(visible))
-        };
-
-        tracing::debug!(
-            body_bytes = body.len(),
-            displayed_bytes,
-            limited,
-            line_count = index.line_count(),
-            format = index.format_name(),
-            index_elapsed_ms = started.elapsed().as_millis(),
-            "响应文档索引完成"
-        );
-
-        Self {
+    pub fn new(body: Bytes, headers: &[(String, String)], max_display_bytes: usize) -> Self {
+        let display_limit = max_display_bytes.max(1);
+        let displayed_bytes = body.len().min(display_limit);
+        let format = BodyFormat::detect(headers, &body);
+        let syntax = format.syntax(headers);
+        let displayed = &body[..displayed_bytes];
+        let markup = matches!(syntax, Some("xml" | "html"));
+        let mut raw = Self {
+            index: Arc::new(DocumentIndex::new(displayed, markup)),
+            highlight: if format == BodyFormat::Json || markup {
+                None
+            } else {
+                ResponseHighlightCache::new(body.slice(..displayed_bytes), syntax)
+            },
+            total_bytes: body.len(),
             body,
             displayed_bytes,
-            limited,
-            index,
+            raw: None,
+            format_note: None,
+        };
+        if format == BodyFormat::Json {
+            return Self {
+                body: raw.body.clone(),
+                displayed_bytes,
+                total_bytes: raw.total_bytes,
+                index: Arc::new(DocumentIndex::Json(JsonIndex::new(
+                    &raw.body[..displayed_bytes],
+                ))),
+                highlight: None,
+                raw: Some(Arc::new(raw)),
+                format_note: None,
+            };
+        }
+        let (body, total_bytes) = match format.format(&raw.body, display_limit) {
+            Ok(body) => body,
+            Err(note) => {
+                raw.format_note = Some(note);
+                return raw;
+            }
+        };
+        let displayed_bytes = body.len().min(display_limit);
+        let displayed = &body[..displayed_bytes];
+        Self {
+            total_bytes,
+            displayed_bytes,
+            index: Arc::new(DocumentIndex::new(displayed, markup)),
+            highlight: if markup {
+                None
+            } else {
+                ResponseHighlightCache::new(body.clone(), syntax)
+            },
+            body,
+            raw: Some(Arc::new(raw)),
+            format_note: None,
         }
     }
 
-    pub(crate) fn displayed_bytes(&self) -> usize {
+    pub fn raw(&self) -> &Self {
+        self.raw.as_deref().unwrap_or(self)
+    }
+
+    pub fn displayed_bytes(&self) -> usize {
         self.displayed_bytes
     }
 
-    pub(crate) fn limited(&self) -> bool {
-        self.limited
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
     }
 
-    pub(crate) fn line_count(&self) -> usize {
+    pub fn limited(&self) -> bool {
+        self.displayed_bytes < self.total_bytes
+    }
+
+    pub fn line_count(&self) -> usize {
         self.index.line_count()
     }
 
-    pub(crate) fn visible_lines(
+    pub fn visible_lines(
         &self,
         offset: usize,
         count: usize,
         theme: &UiTheme,
-    ) -> Vec<Line<'static>> {
+    ) -> Option<Vec<Line<'static>>> {
+        if self.highlight.is_none() {
+            crate::highlight::clear_response_highlight_focus();
+        }
+        if count == 0 || offset >= self.line_count() {
+            return Some(Vec::new());
+        }
+        if let DocumentIndex::Json(index) = self.index.as_ref() {
+            return Some(index.visible_lines(
+                &self.body[..self.displayed_bytes],
+                offset,
+                count,
+                theme,
+            ));
+        }
+        if let DocumentIndex::Markup(index) = self.index.as_ref() {
+            return Some(index.visible_lines(
+                &self.body[..self.displayed_bytes],
+                offset,
+                count,
+                theme,
+            ));
+        }
+        let ranges = self.line_ranges(offset, count);
+        let highlight = ranges
+            .first()
+            .zip(ranges.last())
+            .and_then(|(first, last)| self.highlight.as_ref()?.page(first.start..last.end));
+        if self.highlight.is_some() && highlight.is_none() {
+            return None;
+        }
+        Some(
+            ranges
+                .into_iter()
+                .map(|range| {
+                    if let Some(highlight) = &highlight {
+                        highlight.line(&self.body, range, theme)
+                    } else {
+                        Line::from(Span::styled(
+                            String::from_utf8_lossy(&self.body[range]).into_owned(),
+                            Style::default().fg(theme.text),
+                        ))
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn line_ranges(&self, offset: usize, count: usize) -> Vec<Range<usize>> {
         if count == 0 || offset >= self.line_count() {
             return Vec::new();
         }
         let body = &self.body[..self.displayed_bytes];
-        match &self.index {
-            DocumentIndex::Json(index) => json_lines(body, index, offset, count, theme),
-            DocumentIndex::Plain(index) => plain_lines(body, index, offset, count, theme),
+        self.index.ranges(body, offset, count)
+    }
+
+    pub fn find_line(
+        &self,
+        query: &str,
+        start: usize,
+        reverse: bool,
+        cancelled: &AtomicBool,
+    ) -> Option<usize> {
+        let query = query.to_lowercase();
+        let search_range = |range: Range<usize>| {
+            let mut batches = (range.start..range.end).step_by(CHECKPOINT_LINE_INTERVAL);
+            loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    return None;
+                }
+                let offset = if reverse {
+                    batches.next_back()
+                } else {
+                    batches.next()
+                }?;
+                if let DocumentIndex::Json(index) = self.index.as_ref() {
+                    if let Some(found) = index.find_in_batch(
+                        &self.body[..self.displayed_bytes],
+                        offset,
+                        CHECKPOINT_LINE_INTERVAL.min(range.end - offset),
+                        &query,
+                        reverse,
+                    ) {
+                        return Some(offset + found);
+                    }
+                    continue;
+                }
+                let lines =
+                    self.line_ranges(offset, CHECKPOINT_LINE_INTERVAL.min(range.end - offset));
+                let matches = |range: &Range<usize>| {
+                    String::from_utf8_lossy(&self.body[range.clone()])
+                        .to_lowercase()
+                        .contains(&query)
+                };
+                let found = if reverse {
+                    lines.iter().rposition(matches)
+                } else {
+                    lines.iter().position(matches)
+                };
+                if let Some(index) = found {
+                    return Some(offset + index);
+                }
+            }
+        };
+        if reverse {
+            let end = self.line_count().min(start.saturating_add(1));
+            search_range(0..end).or_else(|| search_range(end..self.line_count()))
+        } else {
+            let start = start.min(self.line_count());
+            search_range(start..self.line_count()).or_else(|| search_range(0..start))
         }
+    }
+
+    pub fn same_document(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.index, &other.index)
     }
 }
 
-#[derive(Debug)]
 enum DocumentIndex {
-    Json(SparseIndex<JsonCursor>),
-    Plain(SparseIndex<PlainCursor>),
+    Plain(PlainIndex),
+    Json(JsonIndex),
+    Markup(MarkupIndex),
 }
 
 impl DocumentIndex {
-    fn line_count(&self) -> usize {
-        match self {
-            Self::Json(index) => index.line_count,
-            Self::Plain(index) => index.line_count,
+    fn new(body: &[u8], markup: bool) -> Self {
+        if markup {
+            Self::Markup(MarkupIndex::new(body))
+        } else {
+            Self::Plain(PlainIndex::new(body))
         }
     }
 
-    fn format_name(&self) -> &'static str {
+    fn line_count(&self) -> usize {
         match self {
-            Self::Json(_) => "json",
-            Self::Plain(_) => "plain",
+            Self::Plain(index) => index.line_count,
+            Self::Json(index) => index.line_count(),
+            Self::Markup(index) => index.line_count(),
+        }
+    }
+
+    fn ranges(&self, body: &[u8], offset: usize, count: usize) -> Vec<Range<usize>> {
+        match self {
+            Self::Plain(index) => index.ranges(body, offset, count),
+            Self::Markup(index) => index.ranges(body, offset, count),
+            Self::Json(_) => Vec::new(),
         }
     }
 }
 
-#[derive(Debug)]
-struct SparseIndex<C> {
-    checkpoints: Vec<Checkpoint<C>>,
+struct PlainIndex {
+    checkpoints: Vec<LineCursor>,
     line_count: usize,
 }
 
-#[derive(Debug)]
-struct Checkpoint<C> {
-    line: usize,
-    cursor: C,
+impl PlainIndex {
+    fn new(body: &[u8]) -> Self {
+        let mut cursor = LineCursor::default();
+        let mut checkpoints = vec![cursor.clone()];
+        let mut line_count = 0;
+        while cursor.next(body).is_some() {
+            line_count += 1;
+            if line_count % CHECKPOINT_LINE_INTERVAL == 0 {
+                checkpoints.push(cursor.clone());
+            }
+        }
+        Self {
+            checkpoints,
+            line_count,
+        }
+    }
+
+    fn ranges(&self, body: &[u8], offset: usize, count: usize) -> Vec<Range<usize>> {
+        let checkpoint = &self.checkpoints[offset / CHECKPOINT_LINE_INTERVAL];
+        let mut cursor = checkpoint.clone();
+        for _ in 0..offset % CHECKPOINT_LINE_INTERVAL {
+            cursor.next(body);
+        }
+        (0..count).map_while(|_| cursor.next(body)).collect()
+    }
 }
 
-#[derive(Debug, Clone, Default)]
-struct PlainCursor {
+#[derive(Clone, Default)]
+struct LineCursor {
     offset: usize,
     logical_end: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct JsonCursor {
-    offset: usize,
-    depth: usize,
-    mode: JsonMode,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-enum JsonMode {
-    #[default]
-    Normal,
-    String {
-        kind: TokenKind,
-        opening: bool,
-        escaped: bool,
-    },
-    Atom(TokenKind),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenKind {
-    Plain,
-    Punctuation,
-    Key,
-    String,
-    Number,
-    Boolean,
-    Null,
-}
-
-struct LineBuilder {
-    parts: Option<Vec<LinePart>>,
-    len: usize,
-}
-
-struct LinePart {
-    kind: TokenKind,
-    bytes: Vec<u8>,
-}
-
-impl LineBuilder {
-    fn new(render: bool) -> Self {
-        Self {
-            parts: render.then(Vec::new),
-            len: 0,
+impl LineCursor {
+    fn next(&mut self, body: &[u8]) -> Option<Range<usize>> {
+        if self.offset >= body.len() {
+            return None;
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn remaining(&self) -> usize {
-        MAX_LINE_BYTES.saturating_sub(self.len)
-    }
-
-    fn push_byte(&mut self, byte: u8, kind: TokenKind) {
-        self.push_slice(&[byte], kind);
-    }
-
-    fn push_slice(&mut self, value: &[u8], kind: TokenKind) {
-        self.len = self.len.saturating_add(value.len());
-        let Some(parts) = self.parts.as_mut() else {
-            return;
-        };
-        if let Some(previous) = parts.last_mut() {
-            if previous.kind == kind {
-                previous.bytes.extend_from_slice(value);
-                return;
-            }
-        }
-        parts.push(LinePart {
-            kind,
-            bytes: value.to_vec(),
+        let start = self.offset;
+        let logical_end = *self.logical_end.get_or_insert_with(|| {
+            memchr(b'\n', &body[start..]).map_or(body.len(), |offset| start + offset)
         });
-    }
-
-    fn push_spaces(&mut self, count: usize) {
-        self.len = self.len.saturating_add(count);
-        let Some(parts) = self.parts.as_mut() else {
-            return;
-        };
-        if let Some(previous) = parts.last_mut() {
-            if previous.kind == TokenKind::Plain {
-                previous.bytes.resize(previous.bytes.len() + count, b' ');
-                return;
-            }
+        let mut end = start.saturating_add(MAX_LINE_BYTES).min(logical_end);
+        while end < body.len() && end > start && body[end] & 0b1100_0000 == 0b1000_0000 {
+            end -= 1;
         }
-        parts.push(LinePart {
-            kind: TokenKind::Plain,
-            bytes: vec![b' '; count],
-        });
-    }
-
-    fn into_line(self, theme: &UiTheme) -> Line<'static> {
-        let spans = self
-            .parts
-            .unwrap_or_default()
-            .into_iter()
-            .map(|part| {
-                Span::styled(
-                    String::from_utf8_lossy(&part.bytes).into_owned(),
-                    token_style(part.kind, theme),
-                )
-            })
-            .collect::<Vec<_>>();
-        Line::from(spans)
-    }
-}
-
-fn build_json_index(body: &[u8]) -> SparseIndex<JsonCursor> {
-    let mut cursor = JsonCursor::default();
-    let mut checkpoints = vec![Checkpoint {
-        line: 0,
-        cursor: cursor.clone(),
-    }];
-    let mut line_count = 0usize;
-    let mut checkpoint_offset = 0usize;
-
-    while scan_json_line(body, &mut cursor, false).is_some() {
-        line_count = line_count.saturating_add(1);
-        if line_count % CHECKPOINT_LINE_INTERVAL == 0
-            || cursor.offset.saturating_sub(checkpoint_offset) >= CHECKPOINT_BYTE_INTERVAL
-        {
-            checkpoint_offset = cursor.offset;
-            checkpoints.push(Checkpoint {
-                line: line_count,
-                cursor: cursor.clone(),
-            });
+        if end == start && logical_end > start {
+            end = start + 1;
         }
-    }
-
-    SparseIndex {
-        checkpoints,
-        line_count,
-    }
-}
-
-fn build_plain_index(body: &[u8]) -> SparseIndex<PlainCursor> {
-    let mut cursor = PlainCursor::default();
-    let mut checkpoints = vec![Checkpoint {
-        line: 0,
-        cursor: cursor.clone(),
-    }];
-    let mut line_count = 0usize;
-    let mut checkpoint_offset = 0usize;
-
-    while scan_plain_line(body, &mut cursor, false).is_some() {
-        line_count = line_count.saturating_add(1);
-        if line_count % CHECKPOINT_LINE_INTERVAL == 0
-            || cursor.offset.saturating_sub(checkpoint_offset) >= CHECKPOINT_BYTE_INTERVAL
-        {
-            checkpoint_offset = cursor.offset;
-            checkpoints.push(Checkpoint {
-                line: line_count,
-                cursor: cursor.clone(),
-            });
-        }
-    }
-
-    SparseIndex {
-        checkpoints,
-        line_count,
-    }
-}
-
-fn json_lines(
-    body: &[u8],
-    index: &SparseIndex<JsonCursor>,
-    offset: usize,
-    count: usize,
-    theme: &UiTheme,
-) -> Vec<Line<'static>> {
-    let checkpoint = checkpoint_for(&index.checkpoints, offset);
-    let mut cursor = checkpoint.cursor.clone();
-    for _ in checkpoint.line..offset {
-        if scan_json_line(body, &mut cursor, false).is_none() {
-            return Vec::new();
-        }
-    }
-
-    (0..count)
-        .map_while(|_| scan_json_line(body, &mut cursor, true))
-        .map(|line| line.into_line(theme))
-        .collect()
-}
-
-fn plain_lines(
-    body: &[u8],
-    index: &SparseIndex<PlainCursor>,
-    offset: usize,
-    count: usize,
-    theme: &UiTheme,
-) -> Vec<Line<'static>> {
-    let checkpoint = checkpoint_for(&index.checkpoints, offset);
-    let mut cursor = checkpoint.cursor.clone();
-    for _ in checkpoint.line..offset {
-        if scan_plain_line(body, &mut cursor, false).is_none() {
-            return Vec::new();
-        }
-    }
-
-    (0..count)
-        .map_while(|_| scan_plain_line(body, &mut cursor, true))
-        .map(|line| line.into_line(theme))
-        .collect()
-}
-
-fn checkpoint_for<C>(checkpoints: &[Checkpoint<C>], line: usize) -> &Checkpoint<C> {
-    let index = checkpoints
-        .partition_point(|checkpoint| checkpoint.line <= line)
-        .saturating_sub(1);
-    &checkpoints[index]
-}
-
-fn scan_plain_line(body: &[u8], cursor: &mut PlainCursor, render: bool) -> Option<LineBuilder> {
-    if cursor.offset >= body.len() {
-        return None;
-    }
-
-    let start = cursor.offset;
-    let logical_end = cursor.logical_end.unwrap_or_else(|| {
-        let end = memchr(b'\n', &body[start..])
-            .map(|offset| start + offset)
-            .unwrap_or(body.len());
-        cursor.logical_end = Some(end);
-        end
-    });
-    let mut end = start.saturating_add(MAX_LINE_BYTES).min(logical_end);
-    end = utf8_chunk_end(body, start, end);
-    if end == start && logical_end > start {
-        end = start.saturating_add(1).min(logical_end);
-    }
-
-    let mut visible_end = end;
-    if end == logical_end && visible_end > start && body[visible_end - 1] == b'\r' {
-        visible_end -= 1;
-    }
-    let mut line = LineBuilder::new(render);
-    line.push_slice(&body[start..visible_end], TokenKind::Plain);
-
-    cursor.offset = if end == logical_end {
-        cursor.logical_end = None;
-        if logical_end < body.len() {
-            logical_end.saturating_add(1)
+        let visible_end = if end == logical_end && end > start && body[end - 1] == b'\r' {
+            end - 1
         } else {
-            logical_end
-        }
-    } else {
-        end
-    };
-    Some(line)
-}
-
-fn scan_json_line(body: &[u8], cursor: &mut JsonCursor, render: bool) -> Option<LineBuilder> {
-    let mut line = LineBuilder::new(render);
-
-    loop {
-        if cursor.offset >= body.len() {
-            cursor.mode = JsonMode::Normal;
-            return (!line.is_empty()).then_some(line);
-        }
-
-        match cursor.mode {
-            JsonMode::String {
-                kind,
-                mut opening,
-                mut escaped,
-            } => {
-                ensure_indent(&mut line, cursor.depth);
-                let start = cursor.offset;
-                let available = line.remaining();
-                while cursor.offset < body.len() {
-                    let byte = body[cursor.offset];
-                    cursor.offset += 1;
-
-                    if opening {
-                        opening = false;
-                    } else if escaped {
-                        escaped = false;
-                    } else if byte == b'\\' {
-                        escaped = true;
-                    } else if byte == b'"' {
-                        cursor.mode = JsonMode::Normal;
-                        break;
-                    }
-
-                    if cursor.offset.saturating_sub(start) >= available
-                        && (cursor.offset >= body.len()
-                            || !is_utf8_continuation(body[cursor.offset]))
-                    {
-                        line.push_slice(&body[start..cursor.offset], kind);
-                        cursor.mode = JsonMode::String {
-                            kind,
-                            opening,
-                            escaped,
-                        };
-                        return Some(line);
-                    }
-                }
-                line.push_slice(&body[start..cursor.offset], kind);
-
-                if !matches!(cursor.mode, JsonMode::Normal) {
-                    cursor.mode = JsonMode::String {
-                        kind,
-                        opening,
-                        escaped,
-                    };
-                }
-            }
-            JsonMode::Atom(kind) => {
-                ensure_indent(&mut line, cursor.depth);
-                let start = cursor.offset;
-                let available = line.remaining();
-                while cursor.offset < body.len() {
-                    let byte = body[cursor.offset];
-                    if is_atom_delimiter(byte) {
-                        cursor.mode = JsonMode::Normal;
-                        break;
-                    }
-                    cursor.offset += 1;
-                    if cursor.offset.saturating_sub(start) >= available
-                        && (cursor.offset >= body.len()
-                            || !is_utf8_continuation(body[cursor.offset]))
-                    {
-                        line.push_slice(&body[start..cursor.offset], kind);
-                        return Some(line);
-                    }
-                }
-                line.push_slice(&body[start..cursor.offset], kind);
-            }
-            JsonMode::Normal => {
-                skip_json_whitespace(body, &mut cursor.offset);
-                if cursor.offset >= body.len() {
-                    return (!line.is_empty()).then_some(line);
-                }
-                let byte = body[cursor.offset];
-                match byte {
-                    b'{' | b'[' => {
-                        ensure_indent(&mut line, cursor.depth);
-                        line.push_byte(byte, TokenKind::Punctuation);
-                        cursor.offset += 1;
-
-                        let closing = if byte == b'{' { b'}' } else { b']' };
-                        let mut next = cursor.offset;
-                        skip_json_whitespace(body, &mut next);
-                        if body.get(next) == Some(&closing) {
-                            line.push_byte(closing, TokenKind::Punctuation);
-                            cursor.offset = next + 1;
-                            continue;
-                        }
-
-                        cursor.depth = cursor.depth.saturating_add(1);
-                        return Some(line);
-                    }
-                    b'}' | b']' => {
-                        if !line.is_empty() {
-                            return Some(line);
-                        }
-                        cursor.depth = cursor.depth.saturating_sub(1);
-                        ensure_indent(&mut line, cursor.depth);
-                        line.push_byte(byte, TokenKind::Punctuation);
-                        cursor.offset += 1;
-
-                        let mut next = cursor.offset;
-                        skip_json_whitespace(body, &mut next);
-                        if body.get(next) == Some(&b',') {
-                            line.push_byte(b',', TokenKind::Punctuation);
-                            cursor.offset = next + 1;
-                        }
-                        return Some(line);
-                    }
-                    b',' => {
-                        ensure_indent(&mut line, cursor.depth);
-                        line.push_byte(byte, TokenKind::Punctuation);
-                        cursor.offset += 1;
-                        return Some(line);
-                    }
-                    b':' => {
-                        ensure_indent(&mut line, cursor.depth);
-                        line.push_slice(b": ", TokenKind::Punctuation);
-                        cursor.offset += 1;
-                    }
-                    b'"' => {
-                        let kind = json_string_kind(body, cursor.offset);
-                        cursor.mode = JsonMode::String {
-                            kind,
-                            opening: true,
-                            escaped: false,
-                        };
-                    }
-                    _ => {
-                        cursor.mode = JsonMode::Atom(atom_kind(byte));
-                    }
-                }
-            }
-        }
-
-        if line.remaining() == 0
-            && (cursor.offset >= body.len() || !is_utf8_continuation(body[cursor.offset]))
-        {
-            return Some(line);
-        }
-    }
-}
-
-fn ensure_indent(line: &mut LineBuilder, depth: usize) {
-    if !line.is_empty() {
-        return;
-    }
-    let indent = depth.saturating_mul(2).min(MAX_INDENT_BYTES);
-    if indent > 0 {
-        line.push_spaces(indent);
-    }
-}
-
-fn skip_json_whitespace(body: &[u8], offset: &mut usize) {
-    while body
-        .get(*offset)
-        .is_some_and(|byte| byte.is_ascii_whitespace())
-    {
-        *offset += 1;
-    }
-}
-
-fn json_string_kind(body: &[u8], opening_quote: usize) -> TokenKind {
-    let mut offset = opening_quote.saturating_add(1);
-    let mut escaped = false;
-    while let Some(&byte) = body.get(offset) {
-        if escaped {
-            escaped = false;
-        } else if byte == b'\\' {
-            escaped = true;
-        } else if byte == b'"' {
-            offset += 1;
-            skip_json_whitespace(body, &mut offset);
-            return if body.get(offset) == Some(&b':') {
-                TokenKind::Key
+            end
+        };
+        self.offset = if end == logical_end {
+            self.logical_end = None;
+            if logical_end < body.len() {
+                logical_end + 1
             } else {
-                TokenKind::String
-            };
-        }
-        offset += 1;
-    }
-    TokenKind::String
-}
-
-fn is_atom_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || matches!(byte, b',' | b']' | b'}' | b':')
-}
-
-fn atom_kind(first: u8) -> TokenKind {
-    match first {
-        b't' | b'f' => TokenKind::Boolean,
-        b'n' => TokenKind::Null,
-        b'-' | b'0'..=b'9' => TokenKind::Number,
-        _ => TokenKind::Plain,
-    }
-}
-
-fn is_utf8_continuation(byte: u8) -> bool {
-    byte & 0b1100_0000 == 0b1000_0000
-}
-
-fn utf8_chunk_end(body: &[u8], start: usize, end: usize) -> usize {
-    if end >= body.len() {
-        return end;
-    }
-    let mut boundary = end;
-    while boundary > start && is_utf8_continuation(body[boundary]) {
-        boundary -= 1;
-    }
-    boundary
-}
-
-fn is_json_response(headers: &[(String, String)], body: &[u8]) -> bool {
-    let content_type_is_json = headers.iter().any(|(name, value)| {
-        if !name.eq_ignore_ascii_case("content-type") {
-            return false;
-        }
-        let media_type = value
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        media_type == "application/json" || media_type.ends_with("+json")
-    });
-    content_type_is_json
-        || body
-            .iter()
-            .copied()
-            .find(|byte| !byte.is_ascii_whitespace())
-            .is_some_and(|byte| matches!(byte, b'{' | b'['))
-}
-
-fn token_style(kind: TokenKind, theme: &UiTheme) -> Style {
-    match kind {
-        TokenKind::Plain => Style::default().fg(theme.text),
-        TokenKind::Punctuation => Style::default().fg(theme.muted),
-        TokenKind::Key => Style::default()
-            .fg(theme.primary)
-            .add_modifier(Modifier::BOLD),
-        TokenKind::String => Style::default().fg(theme.success),
-        TokenKind::Number => Style::default().fg(theme.warning),
-        TokenKind::Boolean => Style::default()
-            .fg(theme.secondary)
-            .add_modifier(Modifier::BOLD),
-        TokenKind::Null => Style::default().fg(theme.muted),
+                logical_end
+            }
+        } else {
+            end
+        };
+        Some(start..visible_end)
     }
 }

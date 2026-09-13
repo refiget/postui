@@ -1,0 +1,11 @@
+name: 64 MiB HTML 响应
+description: 完整 HTML，包含中文、注释、CSS 和 pre 空白。size_kb 可调为 1024、16384、65536；delay_ms 可用于测试取消。
+url: http://{{host}}/v1/large-response
+timeout: 120
+params:
+  - name: format
+    value: html
+  - name: size_kb
+    value: "65536"
+  - name: delay_ms
+    value: "0"

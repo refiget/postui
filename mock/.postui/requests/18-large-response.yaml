@@ -1,10 +1,10 @@
-name: 10 MiB 响应稳定性
-description: 默认返回 10 MiB JSON，用于手工检查大响应渲染、滚动与输入稳定性。
+name: 10 万条 JSON 响应
+description: 返回 10 万条 JSON，每条 message 为 20–100 个随机字符。
 url: http://{{host}}/v1/large-response
 timeout: 30
 params:
-  - name: size_kb
-    value: "10240"
+  - name: count
+    value: "100000"
   - name: format
     value: json
   - name: delay_ms

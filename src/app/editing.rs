@@ -33,7 +33,7 @@ impl App {
         if let Some(request) = self.workspace_state.current_mut() {
             request.draft.method = METHODS[(index + 1) % METHODS.len()].to_string();
         }
-        self.mark_current_dirty();
+        self.register_request_change();
     }
 
     pub(crate) fn body_preview(&self) -> String {
@@ -62,6 +62,9 @@ impl App {
             .map(template::data_part_text)
             .collect::<Vec<_>>()
             .join("&");
+        if body.len() > 64 * 1024 {
+            return body;
+        }
         serde_json::from_str::<serde_json::Value>(&body).map_or(body, |value| {
             serde_json::to_string_pretty(&value).expect("JSON 请求体应可序列化")
         })
@@ -91,15 +94,13 @@ impl App {
                     return;
                 }
             }
-            self.view.preview.editor = None;
-            self.view.preview.file_editor = None;
+            self.view.preview.cancel_editor();
         }
         let Some(request) = self.current_request() else {
             return;
         };
         if self.request_status(&request.id) == RequestStatus::Sending
-            || self.view.preview.editor.is_some()
-            || self.view.preview.file_editor.is_some()
+            || self.view.preview.is_editing()
         {
             return;
         }
@@ -190,17 +191,6 @@ impl App {
         self.view.focus = Focus::Preview;
     }
 
-    pub(crate) fn cancel_active_editors(&mut self) {
-        self.view.preview.editor = None;
-        self.view.preview.file_editor = None;
-        if let Some(page) = self.view.variables.as_mut() {
-            page.cancel_editor();
-        }
-        if let Some(dialog) = self.view.dialog.as_mut() {
-            dialog.cancel_editor();
-        }
-    }
-
     pub(super) fn handle_body_editor_key(&mut self, key: KeyEvent) {
         if self.view.preview.file_editor.is_some() {
             self.handle_file_editor_key(key);
@@ -246,7 +236,6 @@ impl App {
         let path = editor.input.value().trim();
         if !path.is_empty() && file.path != path {
             file.path = path.to_string();
-            session.dirty = true;
             self.view.notice = None;
         }
     }
@@ -292,7 +281,7 @@ impl App {
             _ => false,
         };
         if changed {
-            self.mark_current_dirty();
+            self.register_request_change();
         }
     }
 }

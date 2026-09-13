@@ -5,26 +5,21 @@
 compile_error!("postui 仅支持 Linux amd64 (x86_64) 和 Windows x86_64");
 
 mod app;
-mod cache;
 mod cli;
 mod clipboard;
-mod config;
 mod editor;
-mod highlight;
-mod http;
 mod i18n;
 mod logging;
 mod paths;
-mod request_executor;
-mod request_file;
 mod response_action;
-mod response_document;
-mod response_output;
-mod settings;
 mod shell;
-mod template;
 mod terminal;
 mod ui;
+
+pub(crate) use postui_core::{
+    config, highlight, http, request_executor, request_file, response_document, response_format,
+    response_output, settings, template,
+};
 
 use crate::{
     app::App,
@@ -68,7 +63,7 @@ fn run_app(options: CliOptions) -> Result<()> {
     let log_path = options
         .log_file
         .unwrap_or_else(|| workspace_path.join("logs/postui-debug.log"));
-    logging::init(options.debug, &log_path)
+    logging::init(options.debug, options.perf, &log_path)
         .with_context(|| format!("初始化 debug 日志失败: {}", log_path.display()))?;
     tracing::debug!(
         config_path = global_config_path
@@ -136,7 +131,7 @@ fn run_app(options: CliOptions) -> Result<()> {
         request_config.default_configuration = scenario;
     }
     let http_client = HttpClient::new().context("初始化 HTTP 客户端失败")?;
-    let request_executor = RequestExecutor::new(http_client);
+    let request_executor = RequestExecutor::new(http_client).context("初始化请求运行时失败")?;
     let mut app = App::new(
         request_config,
         workspace_path,

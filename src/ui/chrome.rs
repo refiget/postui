@@ -22,7 +22,7 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let message = feedback.map_or(text.ready(), |feedback| feedback.message());
     let hint = if app.view.prompt.is_some() {
         text.confirmation_hint()
-    } else if app.is_editing() {
+    } else if app.view.is_editing() {
         text.editing_hint()
     } else if app.view.variables.is_some() {
         text.variables_page_hint()
@@ -55,13 +55,7 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-pub(super) fn draw_header(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    content_area: Rect,
-    send_button: Rect,
-    app: &App,
-) {
+pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, content_area: Rect, app: &App) {
     let theme = &app.global_config.theme;
     let focus = FocusStyles::new(app.view.focus, theme);
     let mut line = vec![
@@ -76,6 +70,15 @@ pub(super) fn draw_header(
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ];
+    if app.current_request_is_insecure() {
+        line.push(Span::styled(
+            "  ⚠ TLS ",
+            Style::default()
+                .fg(theme.background)
+                .bg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if area.width >= 110 {
         line.push(Span::styled(
             format!("  │  {}", app.workspace_path().display()),
@@ -96,31 +99,31 @@ pub(super) fn draw_header(
         Paragraph::new(Line::from(line)).style(Style::default().fg(theme.text)),
         content_area,
     );
+}
 
-    if !send_button.is_empty() && app.has_current_request() {
-        let Some(request) = app.current_request() else {
-            return;
-        };
-        let request_status = app.request_status(&request.id);
-        let loading = request_status == RequestStatus::Sending;
-        let label = if loading {
-            format!(
-                "{} {}",
-                request_status_symbol(request_status, app.view.animation_frame),
-                app.text().send_button(true)
-            )
-        } else {
-            format!("▶ {}", app.text().send_button(false))
-        };
-        draw_send_button(
-            frame,
-            send_button,
-            &label,
-            app.can_execute_preview_action(PreviewAction::Send),
-            app.focused_preview_action() == Some(PreviewAction::Send),
-            theme,
-        );
+pub(super) fn draw_request_send_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.is_empty() || !app.has_current_request() {
+        return;
     }
+    let Some(request) = app.current_request() else {
+        return;
+    };
+    let request_status = app.request_status(&request.id);
+    let loading = request_status == RequestStatus::Sending;
+    let label = if loading {
+        format!("■ {}", app.text().cancel_request())
+    } else {
+        format!("▶ {}", app.text().send_button(false))
+    };
+    draw_send_button_aligned(
+        frame,
+        area,
+        &label,
+        app.can_execute_preview_action(PreviewAction::Send),
+        app.focused_preview_action() == Some(PreviewAction::Send),
+        &app.global_config.theme,
+        Alignment::Right,
+    );
 }
 
 pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &App) {
@@ -132,8 +135,12 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     let theme = &app.global_config.theme;
     let text = app.text();
     let focus = FocusStyles::new(app.view.focus, theme);
+    let title = app.request_search_query().map_or_else(
+        || text.request_selector().to_string(),
+        |query| format!("{} / {}", text.request_selector(), query),
+    );
     frame.render_widget(
-        panel_block(text.request_selector(), area, theme).border_style(focus.sidebar_border()),
+        panel_block(title, area, theme).border_style(focus.sidebar_border()),
         area,
     );
 
@@ -175,15 +182,26 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     }
 
     let request_list_area = list_area;
-    let items = app
+    let visible = app.visible_request_indices();
+    let selected = app
         .workspace_state
-        .requests
+        .selected_request
+        .and_then(|selected| visible.iter().position(|index| *index == selected));
+    let offset = request_list_offset(
+        selected.unwrap_or_default(),
+        visible.len(),
+        usize::from(request_list_area.height),
+    );
+    let items = visible
         .iter()
+        .skip(offset)
+        .take(usize::from(request_list_area.height))
+        .filter_map(|index| app.workspace_state.requests.get(*index))
         .map(|session| {
             request_item(
                 &session.source,
-                app.request_status(&session.source.id),
-                session.dirty,
+                session.status(),
+                app.request_modified(&session.source.id),
                 theme,
                 request_list_area.width,
                 app.view.animation_frame,
@@ -194,50 +212,78 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         .style(Style::default().bg(theme.surface).fg(theme.text))
         .highlight_style(focus.request_selection())
         .highlight_symbol("› ");
-    let offset = request_list_offset(
-        app.workspace_state.selected_request.unwrap_or_default(),
-        app.workspace_state.requests.len(),
-        usize::from(request_list_area.height),
-    );
-    let mut state = ListState::default().with_offset(offset);
-    if let Some(selected) = app.workspace_state.selected_request {
-        state.select(Some(selected));
+    let mut state = ListState::default();
+    if let Some(selected) = selected {
+        state.select(Some(selected.saturating_sub(offset)));
     }
     frame.render_stateful_widget(list, request_list_area, &mut state);
     draw_scrollbar(
         frame,
         scrollbar_area,
-        app.workspace_state.requests.len(),
+        visible.len(),
         usize::from(request_list_area.height),
-        state.offset(),
+        offset,
         theme,
     );
+}
+
+pub(super) fn click_request_list_scrollbar(app: &mut App, row: u16, areas: UiLayout) {
+    let visible = app.visible_request_indices();
+    let visible_count = visible.len();
+    let visible_height = usize::from(areas.request_list.height);
+    let selected_position = app
+        .workspace_state
+        .selected_request
+        .and_then(|selected| visible.iter().position(|index| *index == selected))
+        .unwrap_or_default();
+    let offset = request_list_offset(selected_position, visible_count, visible_height);
+    let Some(bar) = scrollbar_track_state(
+        areas.request_scrollbar,
+        visible_count,
+        visible_height,
+        offset,
+    ) else {
+        return;
+    };
+
+    let selected_visible = selected_position
+        .saturating_sub(offset)
+        .min(visible_height.saturating_sub(1));
+    let selected = scrollbar_offset_from_track(&bar, row)
+        .saturating_add(selected_visible)
+        .min(visible_count.saturating_sub(1));
+
+    if let Some(index) = visible.get(selected).copied() {
+        app.select_request(index);
+    }
+}
+
+pub(super) fn drag_request_list_scrollbar(app: &mut App, row: u16, areas: UiLayout) {
+    click_request_list_scrollbar(app, row, areas);
 }
 
 pub(super) fn request_item(
     request: &ApiRequest,
     status: RequestStatus,
-    dirty: bool,
+    modified: bool,
     theme: &crate::settings::UiTheme,
     width: u16,
     animation_frame: usize,
 ) -> ListItem<'static> {
-    let status_width = 2;
-    let dirty_width = usize::from(dirty) * 2;
+    let status_width = if modified { 4 } else { 2 };
     let label_width = usize::from(width)
         .saturating_sub(usize::from(TABLE_HIGHLIGHT_WIDTH))
-        .saturating_sub(status_width)
-        .saturating_sub(dirty_width);
+        .saturating_sub(status_width);
     let mut spans = vec![Span::styled(
         format!("{} ", request_status_symbol(status, animation_frame)),
         request_status_style(status, theme),
     )];
-    if dirty {
-        spans.push(Span::styled("* ", request_dirty_style(theme)));
-    }
     spans.push(Span::styled(
         truncate(&request.name, label_width),
         Style::default().fg(theme.text),
     ));
+    if modified {
+        spans.push(Span::styled(" *", Style::default().fg(theme.warning)));
+    }
     ListItem::new(Line::from(spans))
 }

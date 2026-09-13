@@ -180,18 +180,28 @@ pub(super) fn draw_variables_table(
             .take(visible)
             .map(|(index, row)| {
                 let editing = page.editor.is_some() && page.selected == index;
-                let value = page
+                let raw_value = page
                     .editor
                     .as_ref()
                     .filter(|_| editing)
                     .map(|editor| editor_view(editor, usize::from(constraint_length(widths[1]))))
                     .unwrap_or_else(|| row.value.clone());
-                let value_style = if value.is_empty() {
+                let value = if row.secret && !editing && !raw_value.is_empty() {
+                    "••••••".to_string()
+                } else {
+                    raw_value
+                };
+                let value_style = if row.missing {
+                    Style::default().fg(theme.error)
+                } else if value.is_empty() {
                     Style::default().fg(theme.muted)
                 } else {
                     Style::default().fg(theme.accent)
                 };
-                let name_style = highlight::variable_style(Style::default(), theme);
+                let mut name_style = highlight::variable_style(Style::default(), theme);
+                if row.missing {
+                    name_style = name_style.fg(theme.error);
+                }
                 let default_style = Style::default().fg(theme.secondary);
                 let mut value_cell =
                     Cell::from(highlight::template_line(&value, value_style, theme));
@@ -538,6 +548,16 @@ pub(super) fn handle_variables_mouse(
     let selected = page.selected;
     let layout = variables_page_layout(area);
     match event.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if contains(layout.rows.scrollbar, event.column, event.row) =>
+        {
+            click_variables_scrollbar(app, event.row, layout);
+        }
+        MouseEventKind::Drag(MouseButton::Left)
+            if contains(layout.rows.scrollbar, event.column, event.row) =>
+        {
+            drag_variables_scrollbar(app, event.row, layout);
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             if contains(layout.apply_button, event.column, event.row) {
                 app.click_variables_page_button(VariablePageFocus::Apply);
@@ -587,6 +607,38 @@ pub(super) fn handle_variables_mouse(
             };
             app.move_variable_selection(direction);
         }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            if contains(layout.rows.scrollbar, event.column, event.row) =>
+        {
+            click_variables_scrollbar(app, event.row, layout);
+        }
         _ => {}
     }
+}
+
+fn click_variables_scrollbar(app: &mut App, row: u16, layout: DialogLayout) {
+    let visible = usize::from(layout.rows.content.height);
+    let Some(page) = app.view.variables.as_ref() else {
+        return;
+    };
+    let count = page.rows.len();
+    if count == 0 || visible == 0 {
+        return;
+    }
+    let offset = request_list_offset(page.selected, count, visible);
+    let Some(bar) = scrollbar_track_state(layout.rows.scrollbar, count, visible, offset) else {
+        return;
+    };
+    let selected_visible = page
+        .selected
+        .saturating_sub(offset)
+        .min(visible.saturating_sub(1));
+    let target = scrollbar_offset_from_track(&bar, row)
+        .saturating_add(selected_visible)
+        .min(count.saturating_sub(1));
+    app.click_variable_row(target, false, None);
+}
+
+fn drag_variables_scrollbar(app: &mut App, row: u16, layout: DialogLayout) {
+    click_variables_scrollbar(app, row, layout);
 }

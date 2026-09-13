@@ -86,7 +86,7 @@ impl App {
                     };
                     session
                         .runtime
-                        .receive_response(request_status, response, document, feedback);
+                        .receive_response(*response, document, feedback);
                 }
                 RequestOutcome::Failed(error) => {
                     let request_status = RequestStatus::from_error(&error);
@@ -110,12 +110,16 @@ impl App {
             };
             if is_current {
                 self.view.response.scroll.reset();
+                self.view.response.search_match_line = None;
             }
         }
         changed
     }
 
     pub(crate) fn send_current_request(&mut self) {
+        if self.workspace_reload.is_some() {
+            return;
+        }
         let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
             self.view.notice = Some(Feedback::Warning(
                 self.text().request_selection_required().to_string(),
@@ -123,7 +127,28 @@ impl App {
             return;
         };
         tracing::debug!(request_id = %request_id, "触发发送当前请求");
-        self.cancel_active_editors();
+        if self.request_status(&request_id) == RequestStatus::Sending {
+            let operation_id = self
+                .workspace_state
+                .request(&request_id)
+                .and_then(|session| {
+                    session
+                        .runtime
+                        .active_operation_id()
+                        .map(|operation_id| operation_id.to_string())
+                });
+            if let Some(operation_id) = operation_id {
+                self.request_executor.cancel(&operation_id);
+            }
+            let feedback = Feedback::Warning(self.text().request_cancelled().to_string());
+            if let Some(session) = self.workspace_state.request_mut(&request_id) {
+                session.runtime.cancel(feedback.clone());
+            }
+            self.view.notice = Some(feedback);
+            tracing::debug!(request_id = %request_id, "取消当前请求");
+            return;
+        }
+        self.view.cancel_active_editors();
         let Some(effective_request) = self.current_effective_request() else {
             self.view.notice = Some(Feedback::Warning(
                 self.text().request_url_required().to_string(),
@@ -137,7 +162,7 @@ impl App {
             return;
         }
         let timeout = effective_request.timeout_seconds;
-        let effective_method = effective_request.method;
+        let effective_method = effective_request.method.clone();
         if !supports_method(&effective_method) {
             self.view.notice = Some(Feedback::Warning(
                 self.text().unsupported_method(&effective_method),
@@ -148,29 +173,37 @@ impl App {
             );
             return;
         }
-        if self.request_status(&request_id) == RequestStatus::Sending {
-            tracing::debug!("已有请求执行中，忽略重复发送");
-            self.view.notice = Some(Feedback::Warning(
-                self.text().request_in_progress().to_string(),
-            ));
+        let missing_variables = crate::template::variable_names(&effective_request)
+            .into_iter()
+            .filter(|name| {
+                self.workspace_state
+                    .variables
+                    .get(name)
+                    .is_none_or(|value| value.trim().is_empty())
+            })
+            .collect::<Vec<_>>();
+        if !missing_variables.is_empty() {
+            let message = self.text().missing_variables(&missing_variables);
+            let selected_name = missing_variables.first().cloned();
+            self.open_variables_at(Some(&missing_variables), selected_name);
+            self.view.notice = Some(Feedback::Warning(message));
             return;
         }
 
-        let Some(resolved) = self.current_resolved_request() else {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().request_url_required().to_string(),
-            ));
-            return;
-        };
+        let resolved =
+            crate::template::resolve_request(&effective_request, &self.workspace_state.variables);
         let operation = self.request_executor.prepare(&request_id);
         let operation_id = operation.operation_id.clone();
         let file_directory = self.config.file_directory.clone();
+        let skip_ssl_verification = effective_request.skip_ssl_verification;
+        let secret_values = self.secret_variable_values();
         tracing::debug!(
             request_id = %request_id,
             operation_id = %operation_id,
             method = %resolved.method,
             timeout_seconds = timeout,
             file_directory = %file_directory.display(),
+            skip_ssl_verification,
             "开始异步发送请求"
         );
         let feedback = Feedback::Info(self.text().request_started(&resolved.method, &resolved.url));
@@ -186,9 +219,14 @@ impl App {
         self.request_executor.start(
             operation,
             resolved,
-            timeout,
-            file_directory,
-            self.global_config.max_response_display_bytes,
+            crate::request_executor::RequestExecutionOptions {
+                timeout_seconds: timeout,
+                file_directory,
+                skip_ssl_verification,
+                secret_values,
+                max_display_bytes: self.global_config.max_response_display_bytes,
+                max_response_bytes: self.global_config.max_response_bytes,
+            },
         );
     }
 }

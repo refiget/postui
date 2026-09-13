@@ -41,6 +41,7 @@ postui /path/to/project
 name: 示例接口
 default_scenario: dev
 timeout: 30
+skip_ssl_verification: false
 
 directories:
   uploads: test_files
@@ -49,6 +50,8 @@ directories:
 variables:
   host: https://api.example.test
   token:
+    value:
+    secret: true
 
 headers:
   Accept: application/json
@@ -59,12 +62,15 @@ headers:
 | `name` | 项目目录名 | 工作区显示名称 |
 | `default_scenario` | 场景名称排序后的第一项 | 启动场景；没有场景文件时为 `default` |
 | `timeout` | `30` | 默认超时秒数，必须是正整数 |
+| `skip_ssl_verification` | `false` | 跳过 HTTPS 证书校验；可由场景或请求覆盖，仅在明确需要时开启 |
 | `directories.uploads` | `test_files` | 上传文件基准目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
 | `variables` | `{}` | 公共变量；空值表示运行时填写 |
 | `headers` | `{}` | 公共 Header |
 
 相对目录以项目根目录为基准，也支持绝对路径。下载目录在保存响应时创建；上传文件缺失时发送报错。
+
+变量支持标量简写和带属性的声明。`secret: true` 的变量在变量页中掩码显示，实际值不会写入调试日志；运行时填写的值只保留在当前进程中。
 
 ## 场景差异
 
@@ -81,6 +87,7 @@ variables:
 variables:
   host: https://test-api.example.test
 timeout: 60
+skip_ssl_verification: true
 headers:
   X-Debug: "true"
 overrides:
@@ -90,7 +97,7 @@ overrides:
       Accept: application/json
 ```
 
-场景仅支持 `variables`、`headers`、`timeout`、`overrides`。覆盖键是相对 `requests/` 的文件路径，例如 `users/detail.yaml`，不加 `requests/` 前缀。请求必须真实存在；路径不能越过请求目录。
+场景仅支持 `variables`、`headers`、`timeout`、`skip_ssl_verification`、`overrides`。覆盖键是相对 `requests/` 的文件路径，例如 `users/detail.yaml`，不加 `requests/` 前缀。请求必须真实存在；路径不能越过请求目录。
 
 启动时可临时指定场景，不回写项目默认值：
 
@@ -107,6 +114,7 @@ postui /path/to/project --scenario test
 | 变量 | 场景同名变量覆盖公共变量，其他变量保留 |
 | Header | 项目 → 场景 → 请求；后一级同名 Header 覆盖前一级，名称不区分大小写 |
 | 超时 | 项目默认值 → 请求 `timeout` → 场景 `timeout` → 场景请求覆盖的 `timeout` |
+| TLS 校验 | 项目默认值 → 请求 `skip_ssl_verification` → 场景同名字段 → 场景请求覆盖的同名字段 |
 | 请求覆盖 | 只替换声明字段；列表整体替换，不逐项拼接 |
 
 超时省略才表示继承，`0` 无效，不表示无限等待。场景 `timeout` 统一调整该场景请求的超时；个别请求例外写在 `overrides` 中。
@@ -124,6 +132,7 @@ postui /path/to/project --scenario test
 language: zh
 theme: catppuccin-mocha
 max_response_display_bytes: 16777216
+max_response_bytes: 67108864
 ```
 
 | 字段 | 默认值 | 可选值或约束 |
@@ -131,8 +140,11 @@ max_response_display_bytes: 16777216
 | `language` | `en` | `en`、`zh` |
 | `theme` | `gruvbox-dark` | `gruvbox-dark`、`dracula`、`catppuccin-mocha`、`tokyo-night`、`nord`、`one-dark`、`solarized-dark`、`kanagawa`、`rose-pine`、`monokai` |
 | `max_response_display_bytes` | `16777216`（16 MiB） | 正整数，只限制格式化及展示，不截断下载内容 |
+| `max_response_bytes` | `67108864`（64 MiB） | 正整数，单次响应接收上限；超过后终止请求，不保留截断内容 |
 
-JSON 按当前视口生成文本和高亮。超过显示上限的响应仍能通过 Response 的 Actions 下载完整内容。
+响应区提供 Raw、Formatted、Headers 页签，可点击或聚焦后按左右键切换。JSON 保留原有按视口缩进、即时高亮逻辑，不生成整份美化副本，不另设 1 MiB 美化或 64 KiB 高亮文件上限。Raw 显示原文；Formatted 还支持 XML 缩进和表单解码，其他文本保留排版。非 JSON 常见格式使用 Syntect 后台分页高亮；超长单行或复杂语法局部降级，不因文件大小整份禁用。二进制只显示摘要。接收与显示容量仍由上表两个配置项控制。
+
+复制 Body 和下载始终使用原始响应，不使用美化后的文本。超过显示上限但未超过接收上限的响应仍能通过 Response 的 Actions 下载完整内容。接收上限也适用于未声明 Content-Length 的分块响应；调高上限会增加内存占用。
 
 可以显式指定个人配置：
 
@@ -154,6 +166,7 @@ description: 查询指定用户
 method: GET
 url: "{{host}}/users/{{item_id}}"
 timeout: 10
+skip_ssl_verification: false
 headers:
   Accept: application/json
   X-Trace-Tag: [one, two]
@@ -165,7 +178,7 @@ extracts:
     path: data.id
 ```
 
-请求支持 `name`、`description`、`method`、`url`、`timeout`、`headers`、`params`、`body`、`form`、`files`、`extracts`。`url` 必填；`method` 默认 `GET`；`timeout` 省略时继承项目默认值，其余内容按需填写。
+请求支持 `name`、`description`、`method`、`url`、`timeout`、`skip_ssl_verification`、`headers`、`params`、`body`、`form`、`files`、`extracts`。`url` 必填；`method` 默认 `GET`；`timeout` 省略时继承项目默认值，其余内容按需填写。
 
 所有层的 Header 都是映射，值为字符串或非空字符串列表；数字、布尔值请加引号。重复 Header 写为同一名称下的列表，不重复声明映射键。保存时同名 Header 归组，保留该名称下各值的顺序。
 
@@ -210,8 +223,13 @@ files:
 - 缺省个人配置和项目配置使用默认值；空文件、只有注释或 `{}` 的个人、项目和场景文件也使用默认值。
 - 显式 `--config` 路径缺失、文件不可读、非法值和未知字段直接报错。
 - `requests/`、`scenarios/` 缺失时视为空目录；同名路径是文件或目录不可读时会报错。
-- 请求文件必须包含非空 URL；新增或手动修改文件后重新启动加载。
-- `Ctrl+S` 保存当前请求及已修改场景覆盖，写出的 Header 只采用新映射格式；有未保存修改时退出需要确认。
+- 请求文件必须包含非空 URL；新增或手动修改文件后可在界面按 `R` 重新加载。加载失败时保留当前可用配置，并显示出错文件及 YAML 位置。
+- 界面中的请求修改只作用于当前运行会话，不写回请求或场景配置文件；退出时直接丢弃。
+- 发送前会汇总当前请求中值为空的变量，并自动打开变量页定位到第一项。
+- 请求发送过程中再次按 `r` 或点击发送区域可取消当前操作；迟到的后台结果会被丢弃。
+  网络等待、上传及响应读取可中断。已开始的后台 JSON 提取或索引计算可能继续完成，但不会更新已取消的请求。最多同时处理 8 个请求，超出时提示稍后重试。
+- `R` 在后台扫描、校验并构建工作区；完成前可以浏览旧状态，暂停发送和切换场景。成功后以新配置替换临时编辑，失败则保留旧状态。
+- 请求体超过 64 KiB 时不在交互线程执行 JSON 美化和正则高亮，改为普通文本预览；发送内容不变。
 - 请求列表聚焦时 `Delete` 经确认删除当前请求文件。
 - `.postui/cache/` 只存解析缓存；源内容变化或缓存版本变化即失效，缓存读写失败不影响源文件解析。缓存、日志、下载产物和个人配置不提交。
 

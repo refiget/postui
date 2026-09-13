@@ -9,32 +9,32 @@ use crate::config::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedRequest {
-    pub(crate) method: String,
-    pub(crate) url: String,
-    pub(crate) headers: Vec<NameValue>,
-    pub(crate) raw_body: Option<String>,
-    pub(crate) form: Vec<RequestParam>,
-    pub(crate) files: Vec<ResolvedFile>,
-    pub(crate) extracts: Vec<ResponseExtract>,
+pub struct ResolvedRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<NameValue>,
+    pub raw_body: Option<String>,
+    pub form: Vec<RequestParam>,
+    pub files: Vec<ResolvedFile>,
+    pub extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedFile {
-    pub(crate) field: String,
-    pub(crate) path: String,
-    pub(crate) filename: Option<String>,
-    pub(crate) content_type: Option<String>,
+pub struct ResolvedFile {
+    pub field: String,
+    pub path: String,
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UrlParts {
-    pub(crate) base: String,
-    pub(crate) query: String,
-    pub(crate) fragment: String,
+pub struct UrlParts {
+    pub base: String,
+    pub query: String,
+    pub fragment: String,
 }
 
-pub(crate) fn resolve_request(
+pub fn resolve_request(
     request: &ApiRequest,
     variables: &BTreeMap<String, String>,
 ) -> ResolvedRequest {
@@ -68,29 +68,29 @@ pub(crate) fn resolve_request(
 }
 
 /// 在接口列表中显示配置里的原始地址，不展开变量。
-pub(crate) fn display_url(request: &ApiRequest) -> String {
+pub fn display_url(request: &ApiRequest) -> String {
     append_display_query(&request.url, &request.query_parts)
 }
 
-pub(crate) fn variable_names(request: &ApiRequest) -> Vec<String> {
+pub fn variable_names(request: &ApiRequest) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text_request(request, &mut names);
     names.into_iter().collect()
 }
 
-pub(crate) fn variable_names_in_override(request_override: &RequestOverride) -> Vec<String> {
+pub fn variable_names_in_override(request_override: &RequestOverride) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text_override(request_override, &mut names);
     names.into_iter().collect()
 }
 
-pub(crate) fn variable_names_in_text(input: &str) -> Vec<String> {
+pub fn variable_names_in_text(input: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text(input, &mut names);
     names.into_iter().collect()
 }
 
-pub(crate) fn extract_json_value(root: &Value, path: &str) -> Result<String, String> {
+pub fn extract_json_value(root: &Value, path: &str) -> Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("响应提取路径不能为空".to_string());
@@ -130,7 +130,7 @@ pub(crate) fn extract_json_value(root: &Value, path: &str) -> Result<String, Str
     }
 }
 
-pub(crate) fn resolve_text(input: &str, variables: &BTreeMap<String, String>) -> String {
+pub fn resolve_text(input: &str, variables: &BTreeMap<String, String>) -> String {
     let mut output = String::with_capacity(input.len());
     let mut rest = input;
 
@@ -191,7 +191,7 @@ fn resolve_data_part(part: &DataPart, variables: &BTreeMap<String, String>) -> S
     }
 }
 
-pub(crate) fn data_part_text(part: &DataPart) -> String {
+pub fn data_part_text(part: &DataPart) -> String {
     match part {
         DataPart::Raw(value) => value.clone(),
         DataPart::UrlEncoded(parameter) => parameter.to_text(),
@@ -249,7 +249,7 @@ fn append_query(url: &str, query: &str) -> String {
     append_query_fallback(url, query)
 }
 
-pub(crate) fn parse_query_params(query: &str) -> Vec<RequestParam> {
+pub fn parse_query_params(query: &str) -> Vec<RequestParam> {
     query
         .split('&')
         .filter(|part| !part.is_empty())
@@ -273,7 +273,7 @@ fn append_display_query(url: &str, parts: &[DataPart]) -> String {
     append_query(url, &query)
 }
 
-pub(crate) fn split_url_query(input: &str) -> UrlParts {
+pub fn split_url_query(input: &str) -> UrlParts {
     let (without_fragment, raw_fragment) = input
         .split_once('#')
         .map_or((input, ""), |(base, fragment)| (base, fragment));
@@ -298,7 +298,7 @@ pub(crate) fn split_url_query(input: &str) -> UrlParts {
     }
 }
 
-pub(crate) fn rebuild_url(base: &str, query_parts: &[RequestParam], fragment: &str) -> String {
+pub fn rebuild_url(base: &str, query_parts: &[RequestParam], fragment: &str) -> String {
     let query = query_parts
         .iter()
         .map(encode_parameter)
@@ -481,7 +481,7 @@ fn path_segments(path: &str) -> Vec<&str> {
         .collect()
 }
 
-pub(crate) fn find_placeholder(input: &str) -> Option<(usize, usize, &str)> {
+pub fn find_placeholder(input: &str) -> Option<(usize, usize, &str)> {
     let start = input.find("{{")?;
     let after_open = &input[start + 2..];
     let close = after_open.find("}}")?;

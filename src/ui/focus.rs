@@ -20,11 +20,11 @@ impl<'a> FocusStyles<'a> {
     }
 
     pub(super) fn header_border(&self) -> Style {
-        self.panel(matches!(self.focus, Focus::Header | Focus::SendButton))
+        self.panel(self.focus == Focus::Header)
     }
 
     pub(super) fn preview_border(&self) -> Style {
-        self.panel(self.focus == Focus::Preview)
+        self.panel(matches!(self.focus, Focus::Preview | Focus::SendButton))
     }
 
     pub(super) fn response_border(&self) -> Style {

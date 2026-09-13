@@ -8,7 +8,7 @@ use ratatui::style::Color;
 use serde::Deserialize;
 
 const DEFAULT_THEME: &str = "gruvbox-dark";
-pub(crate) const BUILT_IN_THEME_NAMES: [&str; 10] = [
+pub const BUILT_IN_THEME_NAMES: [&str; 10] = [
     "gruvbox-dark",
     "dracula",
     "catppuccin-mocha",
@@ -20,11 +20,12 @@ pub(crate) const BUILT_IN_THEME_NAMES: [&str; 10] = [
     "rose-pine",
     "monokai",
 ];
-pub(crate) const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
-pub(crate) const DEFAULT_MAX_RESPONSE_DISPLAY_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_SYNTAX_THEME: &str = "base16-mocha.dark";
+pub const DEFAULT_MAX_RESPONSE_DISPLAY_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-pub(crate) enum Language {
+pub enum Language {
     #[serde(rename = "en")]
     #[default]
     English,
@@ -33,7 +34,7 @@ pub(crate) enum Language {
 }
 
 impl Language {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::Chinese => "zh",
@@ -42,11 +43,12 @@ impl Language {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct GlobalConfig {
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) language: Language,
-    pub(crate) theme: UiTheme,
-    pub(crate) max_response_display_bytes: usize,
+pub struct GlobalConfig {
+    pub path: Option<PathBuf>,
+    pub language: Language,
+    pub theme: UiTheme,
+    pub max_response_display_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 impl Default for GlobalConfig {
@@ -56,26 +58,27 @@ impl Default for GlobalConfig {
             language: Language::default(),
             theme: UiTheme::default(),
             max_response_display_bytes: DEFAULT_MAX_RESPONSE_DISPLAY_BYTES,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UiTheme {
-    pub(crate) name: String,
-    pub(crate) primary: Color,
-    pub(crate) secondary: Color,
-    pub(crate) accent: Color,
-    pub(crate) background: Color,
-    pub(crate) surface: Color,
-    pub(crate) text: Color,
-    pub(crate) muted: Color,
-    pub(crate) error: Color,
-    pub(crate) success: Color,
-    pub(crate) warning: Color,
-    pub(crate) selection: Color,
-    pub(crate) variable: Color,
-    pub(crate) syntax_theme: String,
+pub struct UiTheme {
+    pub name: String,
+    pub primary: Color,
+    pub secondary: Color,
+    pub accent: Color,
+    pub background: Color,
+    pub surface: Color,
+    pub text: Color,
+    pub muted: Color,
+    pub error: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub selection: Color,
+    pub variable: Color,
+    pub syntax_theme: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +90,12 @@ struct RawGlobalConfig {
     theme: String,
     #[serde(default = "default_max_response_display_bytes")]
     max_response_display_bytes: usize,
+    #[serde(default = "default_max_response_bytes")]
+    max_response_bytes: usize,
+}
+
+fn default_max_response_bytes() -> usize {
+    DEFAULT_MAX_RESPONSE_BYTES
 }
 
 impl Default for RawGlobalConfig {
@@ -95,6 +104,7 @@ impl Default for RawGlobalConfig {
             language: Language::default(),
             theme: default_theme(),
             max_response_display_bytes: default_max_response_display_bytes(),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 }
@@ -138,7 +148,7 @@ impl Default for UiTheme {
     }
 }
 
-pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
+pub fn load(path: &Path) -> Result<GlobalConfig> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("无法读取用户界面配置: {}", path.display()))?;
     let raw = serde_saphyr::from_str::<Option<RawGlobalConfig>>(&text)
@@ -157,7 +167,7 @@ pub(crate) fn load(path: &Path) -> Result<GlobalConfig> {
     Ok(global)
 }
 
-pub(crate) fn default_config() -> GlobalConfig {
+pub fn default_config() -> GlobalConfig {
     tracing::debug!(
         language = Language::default().as_str(),
         theme = DEFAULT_THEME,
@@ -168,6 +178,9 @@ pub(crate) fn default_config() -> GlobalConfig {
 }
 
 fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
+    if raw.max_response_bytes == 0 {
+        bail!("max_response_bytes 必须大于 0")
+    }
     if raw.max_response_display_bytes == 0 {
         bail!("max_response_display_bytes 必须大于 0")
     }
@@ -176,11 +189,12 @@ fn normalize(path: &Path, raw: RawGlobalConfig) -> Result<GlobalConfig> {
         path: Some(path.to_path_buf()),
         language: raw.language,
         max_response_display_bytes: raw.max_response_display_bytes,
+        max_response_bytes: raw.max_response_bytes,
         theme: theme(&raw.theme)?,
     })
 }
 
-pub(crate) fn next_theme(current: &str) -> Result<UiTheme> {
+pub fn next_theme(current: &str) -> Result<UiTheme> {
     let current_index = BUILT_IN_THEME_NAMES
         .iter()
         .position(|name| name.eq_ignore_ascii_case(current))

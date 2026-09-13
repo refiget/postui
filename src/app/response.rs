@@ -1,14 +1,178 @@
 use super::Feedback;
-use super::{App, Focus, ResponseMenuAction, ViewMode};
+use super::{App, Focus, ResponseMenuAction, ResponseTab, ViewMode};
+use crate::editor::{EditAction, EditInput};
 use crate::response_action::FinishedResponseAction;
 use crate::{http::ResponseData, response_document::ResponseDocument};
+use crossterm::event::KeyEvent;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+
+pub(super) struct ResponseSearchTask {
+    request: ResponseSearchRequest,
+    cancelled: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<Option<usize>>,
+    pending: Option<ResponseSearchRequest>,
+}
+
+struct ResponseSearchRequest {
+    document: ResponseDocument,
+    query: String,
+    start: usize,
+    reverse: bool,
+}
+
+impl ResponseSearchTask {
+    fn start(request: ResponseSearchRequest) -> Self {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let document = request.document.clone();
+        let query = request.query.clone();
+        let token = cancelled.clone();
+        let start = request.start;
+        let reverse = request.reverse;
+        std::thread::spawn(move || {
+            let found = document.find_line(&query, start, reverse, &token);
+            let _ = sender.send(found);
+        });
+        Self {
+            request,
+            cancelled,
+            receiver,
+            pending: None,
+        }
+    }
+}
+
+impl Drop for ResponseSearchTask {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
 
 impl App {
+    pub(crate) fn open_response_search(&mut self) {
+        if self.view.response.active_tab == ResponseTab::Headers
+            || self.current_response().is_none_or(ResponseData::is_binary)
+            || self.current_response_document().is_none()
+        {
+            return;
+        }
+        self.view.response.search = Some(EditInput::new(self.view.response.search_query.clone()));
+    }
+
+    pub(crate) fn handle_response_search_key(&mut self, key: KeyEvent) {
+        let action = match self.view.response.search.as_mut() {
+            Some(search) => search.handle_key(key),
+            None => return,
+        };
+        match action {
+            EditAction::Cancel => self.view.response.search = None,
+            EditAction::Confirm => {
+                if let Some(search) = self.view.response.search.take() {
+                    self.view.response.search_query = search.confirmed_value();
+                    self.view.response.search_match_line = None;
+                    self.find_response_match(false);
+                }
+            }
+            EditAction::Continue => {}
+        }
+    }
+
+    pub(crate) fn find_response_match(&mut self, reverse: bool) {
+        if self.view.response.active_tab == ResponseTab::Headers
+            || self.current_response().is_none_or(ResponseData::is_binary)
+        {
+            return;
+        }
+        let query = self.view.response.search_query.trim();
+        if query.is_empty() {
+            return;
+        }
+        let start = self.view.response.search_match_line.map_or_else(
+            || if reverse { usize::MAX } else { 0 },
+            |line| {
+                if reverse {
+                    line.checked_sub(1).unwrap_or(usize::MAX)
+                } else {
+                    line.saturating_add(1)
+                }
+            },
+        );
+        let Some(document) = self.current_response_document().cloned() else {
+            return;
+        };
+        let request = ResponseSearchRequest {
+            document,
+            query: query.to_string(),
+            start,
+            reverse,
+        };
+        if let Some(task) = self.response_search_task.as_mut() {
+            task.cancelled.store(true, Ordering::Relaxed);
+            task.pending = Some(request);
+        } else {
+            self.response_search_task = Some(ResponseSearchTask::start(request));
+        }
+    }
+
+    pub(crate) fn poll_response_search(&mut self) -> bool {
+        let Some(task) = self.response_search_task.as_ref() else {
+            return false;
+        };
+        let request = task.pending.as_ref().unwrap_or(&task.request);
+        let valid = self.view.response.active_tab != ResponseTab::Headers
+            && self
+                .current_response_document()
+                .is_some_and(|document| document.same_document(&request.document))
+            && self.view.response.search_query.trim() == request.query;
+        let task = self
+            .response_search_task
+            .as_mut()
+            .expect("active response search");
+        if !valid {
+            task.cancelled.store(true, Ordering::Relaxed);
+            task.pending = None;
+        }
+        let found = match task.receiver.try_recv() {
+            Ok(found) => found,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.response_search_task = None;
+                return false;
+            }
+        };
+        let mut task = self
+            .response_search_task
+            .take()
+            .expect("active response search");
+        if valid {
+            if let Some(request) = task.pending.take() {
+                self.response_search_task = Some(ResponseSearchTask::start(request));
+                return false;
+            }
+        }
+        if !valid || task.cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        if let Some(line) = found {
+            self.view.response.search_match_line = Some(line);
+            self.view.response.scroll.set_offset(line.saturating_add(1));
+        } else {
+            self.view.notice = Some(Feedback::Warning(
+                self.text()
+                    .response_search_no_match(&self.view.response.search_query),
+            ));
+        }
+        true
+    }
+
     pub(crate) fn poll_response_actions(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.response_actions.try_recv() {
             changed = true;
-            self.response_action_running = false;
             match result {
                 FinishedResponseAction::Copied(Ok(())) => {
                     self.view.notice =
@@ -45,6 +209,13 @@ impl App {
         self.workspace_state
             .current()
             .and_then(|session| session.runtime.document())
+            .map(|document| {
+                if self.view.response.active_tab == ResponseTab::Raw {
+                    document.raw()
+                } else {
+                    document
+                }
+            })
     }
 
     pub(crate) fn current_error(&self) -> Option<&str> {
@@ -54,15 +225,7 @@ impl App {
     }
 
     pub(crate) fn scroll_response(&mut self, direction: isize) {
-        let Some(max_offset) = self.current_response_document().map(|document| {
-            1usize
-                .saturating_add(document.line_count())
-                .saturating_add(usize::from(document.limited()))
-                .saturating_sub(1)
-        }) else {
-            return;
-        };
-        if self.view.response.scroll.move_by(direction, max_offset) {
+        if self.view.response.scroll.move_by(direction) {
             tracing::trace!(
                 offset = self.view.response.scroll.offset(),
                 direction,
@@ -72,7 +235,7 @@ impl App {
     }
 
     pub(crate) fn open_response_menu(&mut self) {
-        self.cancel_active_editors();
+        self.view.cancel_active_editors();
         if self.editing_preview_tab().is_some() {
             self.view.dialog = None;
         }
@@ -111,8 +274,39 @@ impl App {
     fn activate_response_action(&mut self, action: ResponseMenuAction) {
         match action {
             ResponseMenuAction::Download => self.download_current_response(),
-            ResponseMenuAction::Copy => self.copy_current_response(),
+            ResponseMenuAction::CopyBody => self.copy_current_response(),
+            ResponseMenuAction::CopyHeaders => self.copy_current_response_headers(),
         }
+    }
+
+    pub(crate) fn move_response_tab(&mut self, reverse: bool) {
+        let tab = if reverse {
+            self.view.response.active_tab.previous()
+        } else {
+            self.view.response.active_tab.next()
+        };
+        self.select_response_tab(tab);
+    }
+
+    pub(crate) fn toggle_response_format_tab(&mut self) {
+        if self.current_response().is_none() {
+            return;
+        }
+        self.select_response_tab(self.view.response.active_tab.toggle_format());
+    }
+
+    pub(crate) fn select_response_tab(&mut self, tab: ResponseTab) {
+        if self.view.response.active_tab == tab {
+            return;
+        }
+        if let Some(task) = self.response_search_task.as_mut() {
+            task.cancelled.store(true, Ordering::Relaxed);
+            task.pending = None;
+        }
+        self.view.response.active_tab = tab;
+        self.view.response.scroll.reset();
+        self.view.response.search_match_line = None;
+        self.view.response.search = None;
     }
 
     pub(crate) fn response_zoomed(&self) -> bool {
@@ -140,24 +334,40 @@ impl App {
     }
 
     fn copy_current_response(&mut self) {
-        if self.response_action_running {
+        if self.response_actions.is_running() {
             return;
         }
-        let Some(body) = self
-            .current_response()
-            .map(|response| response.body_bytes.clone())
-        else {
+        let Some(response) = self.current_response() else {
             self.view.notice = Some(Feedback::Warning(
                 self.text().response_action_no_response().to_string(),
             ));
             return;
         };
-        self.response_action_running = true;
+        if response.is_binary() {
+            self.view.notice = Some(Feedback::Warning(
+                self.text().binary_response_download().to_string(),
+            ));
+            return;
+        }
+        let body = response.body_bytes.clone();
         self.response_actions.copy(body);
     }
 
+    fn copy_current_response_headers(&mut self) {
+        if self.response_actions.is_running() {
+            return;
+        }
+        let Some(value) = self.current_response().map(ResponseData::headers_text) else {
+            self.view.notice = Some(Feedback::Warning(
+                self.text().response_action_no_response().to_string(),
+            ));
+            return;
+        };
+        self.response_actions.copy(value.into());
+    }
+
     fn download_current_response(&mut self) {
-        if self.response_action_running {
+        if self.response_actions.is_running() {
             return;
         }
         let Some((body, headers)) = self
@@ -175,7 +385,6 @@ impl App {
             ));
             return;
         };
-        self.response_action_running = true;
         self.response_actions.download(
             body,
             headers,
