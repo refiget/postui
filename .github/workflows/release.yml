@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install musl linker
         run: |
@@ -37,7 +37,7 @@ jobs:
         run: sh ./package-linux.sh --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload Linux package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: postui-linux-amd64
           path: dist/postui-linux-amd64.tar.gz
@@ -48,7 +48,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust target
         shell: pwsh
@@ -59,7 +59,7 @@ jobs:
         run: .\package-windows.ps1 -OutputDir "$env:GITHUB_WORKSPACE\dist"
 
       - name: Upload Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: postui-windows-amd64
           path: dist/postui-windows-amd64.zip
@@ -70,7 +70,7 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust target
         run: rustup target add x86_64-apple-darwin
@@ -79,7 +79,7 @@ jobs:
         run: sh ./package-macos.sh --target x86_64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload macOS Intel package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: postui-macos-amd64
           path: dist/postui-macos-amd64.tar.gz
@@ -90,7 +90,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust target
         run: rustup target add aarch64-apple-darwin
@@ -99,7 +99,7 @@ jobs:
         run: sh ./package-macos.sh --target aarch64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload macOS Apple Silicon package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: postui-macos-arm64
           path: dist/postui-macos-arm64.tar.gz
@@ -120,7 +120,7 @@ jobs:
       contents: write
     steps:
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: postui-*
           path: dist
