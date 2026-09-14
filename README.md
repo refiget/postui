@@ -4,6 +4,10 @@
 
 ![多主题](assets/themes-switches.gif)
 
+## 可编辑
+
+![可编辑](assets/editable.gif)
+
 PostUI 是一个支持 Linux、Windows 和 macOS 的终端 HTTP 客户端。请求、场景和变量由 YAML 文件定义；界面内的请求编辑默认只在当前会话生效。
 
 ![PostUI 终端界面](assets/screenshot.png)
