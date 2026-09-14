@@ -96,6 +96,23 @@ impl EditInput {
         self.value
     }
 
+    pub(crate) fn paste(&mut self, value: &str) {
+        let value = value
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>();
+        if value.is_empty() {
+            return;
+        }
+        if self.mode == EditMode::Replace {
+            self.value.clear();
+            self.cursor = 0;
+            self.mode = EditMode::Insert;
+        }
+        self.value.insert_str(self.cursor, &value);
+        self.cursor += value.len();
+    }
+
     fn insert(&mut self, character: char) {
         if character.is_control() {
             return;

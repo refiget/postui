@@ -77,7 +77,23 @@ pub(crate) fn run(config: &mut GlobalConfig, debug: bool) -> Result<Option<PathB
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     loop {
         terminal.draw(|frame| draw(frame, &picker, &config.theme, text, debug))?;
-        let Event::Key(key) = event::read()? else {
+        let event = event::read()?;
+        if let Event::Paste(value) = event {
+            let value = value
+                .chars()
+                .filter(|character| !character.is_control())
+                .collect::<String>();
+            match picker.input {
+                Some(Input::Search) => {
+                    picker.query.push_str(&value);
+                    picker.selected = 0;
+                }
+                Some(Input::Path) => picker.path.push_str(&value),
+                None => {}
+            }
+            continue;
+        }
+        let Event::Key(key) = event else {
             continue;
         };
         if key.kind != KeyEventKind::Press {

@@ -78,18 +78,30 @@ impl App {
                 }
             }
             EditAction::Continue => {
-                let index = if self
-                    .request_search_query()
-                    .is_none_or(|query| query.trim().is_empty())
-                {
-                    self.request_filter_origin_index()
-                } else {
-                    self.visible_request_indices().first().copied()
-                };
-                if let Some(index) = index {
-                    self.select_request(index);
-                }
+                self.select_first_search_result();
             }
+        }
+    }
+
+    pub(super) fn paste_request_search(&mut self, value: &str) {
+        let Some(search) = self.view.requests.search.as_mut() else {
+            return;
+        };
+        search.paste(value);
+        self.select_first_search_result();
+    }
+
+    fn select_first_search_result(&mut self) {
+        let index = if self
+            .request_search_query()
+            .is_none_or(|query| query.trim().is_empty())
+        {
+            self.request_filter_origin_index()
+        } else {
+            self.visible_request_indices().first().copied()
+        };
+        if let Some(index) = index {
+            self.select_request(index);
         }
     }
 }

@@ -3,6 +3,52 @@ use crate::shortcuts::{self, Command, Context};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 impl App {
+    pub(crate) fn handle_paste(&mut self, value: &str) {
+        if self.view.curl_import.is_some() {
+            self.handle_curl_import_paste(value);
+            return;
+        }
+        if let Some(search) = self.view.response.search.as_mut() {
+            search.paste(value);
+            return;
+        }
+        if self.view.requests.search.is_some() {
+            self.paste_request_search(value);
+            return;
+        }
+        if let Some(page) = self.view.variables.as_mut() {
+            if let Some(editor) = page.editor.as_mut() {
+                editor.paste(value);
+            }
+            return;
+        }
+        if let Some(dialog) = self.view.dialog.as_mut() {
+            match dialog {
+                Dialog::Configurations(_) => {}
+                Dialog::Headers(dialog) => {
+                    if let Some(editor) = dialog.editor.as_mut() {
+                        editor.paste(value);
+                    }
+                }
+                Dialog::Params(dialog) => {
+                    if let Some(editor) = dialog.editor.as_mut() {
+                        editor.paste(value);
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(editor) = self.view.preview.temporary_variables.editor_mut() {
+            editor.input.paste(value);
+            return;
+        }
+        if let Some(editor) = self.view.preview.editor.as_mut() {
+            editor.input.paste(value);
+        } else if let Some(editor) = self.view.preview.file_editor.as_mut() {
+            editor.input.paste(value);
+        }
+    }
+
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;

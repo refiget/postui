@@ -510,7 +510,7 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_paste(&mut self, value: &str) {
+    pub(crate) fn handle_curl_import_paste(&mut self, value: &str) {
         let Some(page) = self.view.curl_import.as_mut() else {
             return;
         };
