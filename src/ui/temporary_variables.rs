@@ -7,16 +7,19 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
     let table_height = u16::try_from(rows.len())
         .unwrap_or(u16::MAX)
         .saturating_add(1)
-        .min(area.height.saturating_sub(2));
+        .min(area.height.saturating_sub(3));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(table_height),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
         .split(area);
-    let name_width = sections[0].width.saturating_sub(8).min(24);
+    let table_area = sections[1];
+    let body_area = sections[3];
+    let name_width = table_area.width.saturating_sub(8).min(24);
     let widths = [Constraint::Length(name_width), Constraint::Min(1)];
     let header = Row::new(vec![
         Cell::from(text.variables()).style(highlight::variable_style(Style::default(), theme)),
@@ -35,6 +38,11 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
         } else {
             raw_value
         };
+        let display_value = if value.is_empty() && !editing {
+            " "
+        } else {
+            &value
+        };
         let color = if value.is_empty() {
             theme.muted
         } else {
@@ -49,7 +57,7 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
         };
         Row::new(vec![
             Cell::from(row.name.clone()).style(highlight::variable_style(Style::default(), theme)),
-            Cell::from(highlight::template_line(&value, value_style, theme)),
+            Cell::from(highlight::template_line(display_value, value_style, theme)),
         ])
     });
     let table = Table::new(table_rows, widths)
@@ -64,30 +72,30 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
     if editor.is_some_and(|editor| editor.input.mode() == crate::editor::EditMode::Replace) {
         state.select_column(Some(1));
     }
-    frame.render_stateful_widget(table, sections[0], &mut state);
+    frame.render_stateful_widget(table, table_area, &mut state);
 
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(text.body(), section_style(theme))),
             Line::from(Span::styled(text.no_content(), label_style(theme))),
         ]),
-        sections[2],
+        body_area,
     );
 
     let Some(editor) = editor else {
         return;
     };
     let input_area = Rect::new(
-        sections[0]
+        table_area
             .x
             .saturating_add(2)
             .saturating_add(name_width)
             .saturating_add(TABLE_COLUMN_SPACING),
-        sections[0]
+        table_area
             .y
             .saturating_add(1)
             .saturating_add(u16::try_from(selected.unwrap_or_default()).unwrap_or(u16::MAX)),
-        sections[0]
+        table_area
             .width
             .saturating_sub(name_width)
             .saturating_sub(TABLE_COLUMN_SPACING)
