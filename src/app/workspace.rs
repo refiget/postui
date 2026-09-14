@@ -55,7 +55,9 @@ impl App {
             return;
         };
         if let Some(session) = self.workspace_state.request_mut(&request_id) {
-            session.draft = RequestDraft::from(&source.for_configuration(configuration));
+            let request = source.for_configuration(configuration);
+            session.draft = RequestDraft::from(&request);
+            session.reset_temporary_variables(&self.baseline_config, configuration, &request);
         }
         self.view.preview = PreviewContentState::default();
         self.view.dialog = None;
@@ -75,7 +77,9 @@ impl App {
         };
         for session in &mut self.workspace_state.requests {
             if let Some(source) = self.baseline_requests.get(&session.source.id) {
-                session.draft = RequestDraft::from(&source.for_configuration(&configuration));
+                let request = source.for_configuration(&configuration);
+                session.draft = RequestDraft::from(&request);
+                session.reset_temporary_variables(&self.baseline_config, &configuration, &request);
             }
         }
         self.config

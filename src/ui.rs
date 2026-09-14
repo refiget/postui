@@ -28,6 +28,7 @@ mod mouse;
 mod preview;
 mod response;
 mod response_toolbar;
+mod temporary_variables;
 mod variables;
 mod widgets;
 
@@ -38,6 +39,7 @@ pub(crate) use mouse::handle_mouse;
 use preview::*;
 use response::*;
 use response_toolbar::*;
+use temporary_variables::draw_temporary_variables;
 use variables::{draw_variables_page, handle_variables_mouse};
 use widgets::*;
 

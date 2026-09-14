@@ -118,6 +118,12 @@ pub struct VariableDefinition {
     pub default: Option<Value>,
     #[serde(default)]
     pub secret: bool,
+    #[serde(default = "default_temporary_variable")]
+    pub temporary: bool,
+}
+
+pub(super) fn default_temporary_variable() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

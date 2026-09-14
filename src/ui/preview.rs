@@ -189,13 +189,18 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(request) = app.current_effective_request() else {
         return;
     };
+    if app.temporary_variables_visible() {
+        draw_temporary_variables(frame, area, app);
+        return;
+    }
     let has_body = !request.body_parts.is_empty();
     let offset = usize::from(app.view.preview.scroll.offset());
-    let lines = if has_body || app.body_editor().is_some() {
-        let value = app
-            .body_editor()
-            .map_or_else(|| app.body_preview(), |editor| editor.display_document());
-        highlight::json_text_lines_window(&value, offset, usize::from(area.height), theme)
+    let body_value = (has_body || app.body_editor().is_some()).then(|| {
+        app.body_editor()
+            .map_or_else(|| app.body_preview(), |editor| editor.display_document())
+    });
+    let mut lines = if let Some(value) = &body_value {
+        highlight::json_text_lines_window(value, offset, usize::from(area.height), theme)
     } else {
         request_content_lines(app, &request)
             .into_iter()
@@ -203,6 +208,9 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .take(usize::from(area.height))
             .collect()
     };
+    if let Some(value) = &body_value {
+        underline_json_values(value, offset, &mut lines);
+    }
 
     frame.render_widget(Paragraph::new(lines), area);
     if let Some(editor) = app.body_editor() {
@@ -265,6 +273,53 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+fn underline_json_values(value: &str, offset: usize, lines: &mut [Line<'static>]) {
+    let ranges = crate::editor::json_scalar_ranges(value);
+    let mut line_start = value
+        .split_inclusive('\n')
+        .take(offset)
+        .map(str::len)
+        .sum::<usize>();
+    for line in lines {
+        let mut span_start = line_start;
+        let mut underlined = Vec::new();
+        for span in std::mem::take(&mut line.spans) {
+            let text = span.content.as_ref();
+            let span_end = span_start + text.len();
+            let mut boundaries = vec![0, text.len()];
+            for range in &ranges {
+                if range.start < span_end && range.end > span_start {
+                    boundaries.push(range.start.saturating_sub(span_start));
+                    boundaries.push(range.end.min(span_end) - span_start);
+                }
+            }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            for part in boundaries.windows(2) {
+                let start = part[0];
+                let end = part[1];
+                if start == end {
+                    continue;
+                }
+                let position = span_start + start;
+                let style = if ranges.iter().any(|range| range.contains(&position)) {
+                    span.style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    span.style
+                };
+                underlined.push(Span::styled(text[start..end].to_string(), style));
+            }
+            span_start = span_end;
+        }
+        line.spans = underlined;
+        line_start = line_start.saturating_add(
+            value[line_start..]
+                .find('\n')
+                .map_or(value.len() - line_start, |index| index + 1),
+        );
+    }
+}
+
 fn request_content_lines(app: &App, request: &crate::config::ApiRequest) -> Vec<Line<'static>> {
     let theme = &app.global_config.theme;
     let text = app.text();
@@ -314,7 +369,9 @@ fn content_value_line(
     let mut line = Line::from(Span::styled(format!("{name}  "), label_style(theme)));
     line.spans.extend(highlight::template_spans(
         value,
-        Style::default().fg(value_color),
+        Style::default()
+            .fg(value_color)
+            .add_modifier(Modifier::UNDERLINED),
         theme,
     ));
     line

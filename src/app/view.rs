@@ -108,6 +108,7 @@ pub(crate) struct PreviewContentState {
     pub(crate) scroll: ScrollState,
     pub(crate) editor: Option<BodyValueEditor>,
     pub(crate) file_editor: Option<FileValueEditor>,
+    pub(super) temporary_variables: TemporaryVariablesView,
 }
 
 #[derive(Debug)]
@@ -122,6 +123,66 @@ pub(crate) struct FileValueEditor {
     pub(crate) line: usize,
     pub(crate) column: usize,
     pub(crate) input: EditInput,
+}
+
+#[derive(Debug)]
+pub(crate) struct TemporaryVariableEditor {
+    pub(crate) name: String,
+    pub(crate) input: EditInput,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TemporaryVariablesView {
+    selected: usize,
+    editor: Option<TemporaryVariableEditor>,
+}
+
+impl TemporaryVariablesView {
+    pub(super) fn selected(&self, count: usize) -> Option<usize> {
+        (count > 0).then(|| self.selected.min(count - 1))
+    }
+
+    pub(super) fn select(&mut self, index: usize, count: usize) -> bool {
+        if index >= count {
+            return false;
+        }
+        self.selected = index;
+        true
+    }
+
+    pub(super) fn move_by(&mut self, direction: isize, count: usize) {
+        let Some(selected) = self.selected(count) else {
+            return;
+        };
+        self.selected = match direction {
+            value if value < 0 => selected.saturating_sub(1),
+            value if value > 0 => (selected + 1).min(count - 1),
+            _ => selected,
+        };
+    }
+
+    pub(super) fn editor(&self) -> Option<&TemporaryVariableEditor> {
+        self.editor.as_ref()
+    }
+
+    pub(super) fn editor_mut(&mut self) -> Option<&mut TemporaryVariableEditor> {
+        self.editor.as_mut()
+    }
+
+    pub(super) fn start_editing(&mut self, name: String, value: String) {
+        self.editor = Some(TemporaryVariableEditor {
+            name,
+            input: EditInput::new(value),
+        });
+    }
+
+    pub(super) fn finish_editing(&mut self) -> Option<TemporaryVariableEditor> {
+        self.editor.take()
+    }
+
+    pub(super) fn cancel_editing(&mut self) {
+        self.editor = None;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -307,11 +368,14 @@ impl ViewState {
 
 impl PreviewContentState {
     pub(super) fn is_editing(&self) -> bool {
-        self.editor.is_some() || self.file_editor.is_some()
+        self.editor.is_some()
+            || self.file_editor.is_some()
+            || self.temporary_variables.editor().is_some()
     }
 
     pub(super) fn cancel_editor(&mut self) {
         self.editor = None;
         self.file_editor = None;
+        self.temporary_variables.cancel_editing();
     }
 }

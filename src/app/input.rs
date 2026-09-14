@@ -110,6 +110,11 @@ impl App {
             }
         }
 
+        if self.temporary_variable_editor().is_some() {
+            self.handle_temporary_variable_editor_key(key);
+            return;
+        }
+
         if self.view.preview.is_editing() {
             self.handle_body_editor_key(key);
             return;
@@ -227,8 +232,10 @@ impl App {
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
             Focus::Preview => {
-                let action = PreviewAction::Edit(self.view.preview.active_tab);
-                self.handle_preview_action(action);
+                if !self.start_temporary_variable_edit() {
+                    let action = PreviewAction::Edit(self.view.preview.active_tab);
+                    self.handle_preview_action(action);
+                }
             }
             Focus::WorkspaceButton => self.open_configurations(),
             Focus::SendButton => self.handle_preview_action(PreviewAction::Send),
@@ -245,7 +252,9 @@ impl App {
             Focus::Header => {}
             Focus::Requests => self.move_request(direction),
             Focus::Preview => {
-                self.view.preview.scroll.move_by(direction);
+                if !self.move_temporary_variable(direction) {
+                    self.view.preview.scroll.move_by(direction);
+                }
             }
             Focus::Response => self.scroll_response(direction),
             Focus::WorkspaceButton

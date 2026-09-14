@@ -90,7 +90,11 @@ impl App {
                 self.apply_dialog();
             }
             PreviewAction::Edit(PreviewTab::Body) => {
-                if self.view.preview.is_editing() {
+                if self.temporary_variable_editor().is_some() {
+                    self.view.preview.temporary_variables.cancel_editing();
+                } else if self.temporary_variables_visible() {
+                    self.start_temporary_variable_edit();
+                } else if self.view.preview.is_editing() {
                     self.view.preview.cancel_editor();
                 } else {
                     self.start_body_edit(0, 0);

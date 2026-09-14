@@ -95,8 +95,7 @@ pub(crate) fn uninstall() -> Result<()> {
         }
     }
 
-    println!("PostUI 已卸载");
-    println!("用户配置和工作区文件未删除");
+    println!("PostUI has been uninstalled.");
     Ok(())
 }
 
@@ -144,8 +143,7 @@ pub(crate) fn uninstall() -> Result<()> {
         return Err(error);
     }
 
-    println!("PostUI 卸载已安排，程序将在当前进程退出后删除");
-    println!("用户配置和工作区文件未删除");
+    println!("PostUI will be uninstalled when this process exits.");
     Ok(())
 }
 

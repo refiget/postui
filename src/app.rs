@@ -27,11 +27,14 @@ mod input;
 mod response;
 mod search;
 mod session;
+mod temporary_variables;
 mod variables;
 mod view;
 mod workspace;
 use view::ViewState;
-pub(crate) use view::{AppPrompt, FileValueEditor, Focus, ListScrollState};
+pub(crate) use view::{
+    AppPrompt, FileValueEditor, Focus, ListScrollState, TemporaryVariableEditor,
+};
 use view::{PreviewContentState, ResponseContentState, ViewMode};
 
 use dialog::DialogAction;
@@ -42,7 +45,7 @@ pub(crate) use dialog::{
 pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
-pub(crate) use variables::VariablesPage;
+pub(crate) use variables::{VariableRow, VariablesPage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PreviewTab {
@@ -262,6 +265,8 @@ impl App {
             self.config.editable_variables.insert(name.clone());
             self.workspace_state.variables.entry(name).or_default();
         }
+        self.workspace_state
+            .sync_current_temporary_variables(&self.config);
     }
 
     fn request_quit(&mut self) {
@@ -347,6 +352,7 @@ impl App {
             self.workspace_state.selected_request = Some(index);
             self.view.preview.active_tab = PreviewTab::Body;
             self.view.preview.scroll.reset();
+            self.view.preview.temporary_variables = Default::default();
             self.view.response.scroll.reset();
             self.view.response.search_match_line = None;
             let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
@@ -364,7 +370,7 @@ impl App {
 
     pub(crate) fn current_resolved_request(&self) -> Option<ResolvedRequest> {
         self.current_effective_request()
-            .map(|request| template::resolve_request(&request, &self.workspace_state.variables))
+            .map(|request| template::resolve_request(&request, &self.current_request_variables()))
     }
 
     pub(crate) fn current_effective_request(&self) -> Option<ApiRequest> {

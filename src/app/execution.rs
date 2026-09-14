@@ -165,7 +165,7 @@ impl App {
             return;
         }
         let resolved =
-            crate::template::resolve_request(&effective_request, &self.workspace_state.variables);
+            crate::template::resolve_request(&effective_request, &self.current_request_variables());
         let operation = self.request_executor.prepare(&request_id);
         let operation_id = operation.operation_id.clone();
         let file_directory = self.config.file_directory.clone();

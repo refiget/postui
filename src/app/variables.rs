@@ -5,44 +5,58 @@ use crossterm::event::KeyEvent;
 use super::{App, Focus};
 
 impl App {
-    pub(crate) fn variable_default_value(&self, variable: &str) -> String {
-        let definition = self
-            .config
+    pub(super) fn variable_definition(
+        &self,
+        variable: &str,
+    ) -> Option<&crate::config::VariableDefinition> {
+        self.config
             .configurations
             .get(self.active_configuration())
             .and_then(|configuration| configuration.variables.get(variable))
-            .or_else(|| self.config.variables.get(variable));
+            .or_else(|| self.config.variables.get(variable))
+    }
+
+    pub(crate) fn variable_default_value(&self, variable: &str) -> String {
         if self.variable_is_secret(variable) {
             return "••••••".to_string();
         }
-        definition
+        self.variable_definition(variable)
             .and_then(|definition| definition.default.as_ref())
             .map(crate::config::value_to_string)
             .unwrap_or_else(|| "—".to_string())
     }
 
     pub(super) fn variable_is_secret(&self, variable: &str) -> bool {
-        let scenario_secret = self
-            .config
-            .configurations
-            .get(self.active_configuration())
-            .and_then(|configuration| configuration.variables.get(variable))
-            .is_some_and(|definition| definition.secret);
-        scenario_secret
+        self.config
+            .variables
+            .get(variable)
+            .is_some_and(|definition| definition.secret)
             || self
                 .config
-                .variables
-                .get(variable)
+                .configurations
+                .get(self.active_configuration())
+                .and_then(|configuration| configuration.variables.get(variable))
                 .is_some_and(|definition| definition.secret)
     }
 
     pub(crate) fn secret_variable_values(&self) -> Vec<String> {
-        self.workspace_state
+        let mut values = self
+            .workspace_state
             .variables
             .iter()
             .filter(|(name, value)| self.variable_is_secret(name) && !value.is_empty())
             .map(|(_, value)| value.clone())
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(session) = self.workspace_state.current() {
+            values.extend(
+                session
+                    .temporary_variables
+                    .iter()
+                    .filter(|(name, value)| self.variable_is_secret(name) && !value.is_empty())
+                    .map(|(_, value)| value.clone()),
+            );
+        }
+        values
     }
 
     pub(crate) fn open_variables(&mut self) {

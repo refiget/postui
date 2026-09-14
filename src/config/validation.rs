@@ -44,14 +44,17 @@ pub(super) fn normalize_variables(
             None => VariableDefinition {
                 default: None,
                 secret: false,
+                temporary: true,
             },
             Some(RawVariableDefinition::Value(default)) => VariableDefinition {
                 default: Some(default),
                 secret: false,
+                temporary: true,
             },
             Some(RawVariableDefinition::Definition(definition)) => VariableDefinition {
                 default: definition.value,
                 secret: definition.secret,
+                temporary: definition.temporary,
             },
         };
         if variables.insert(name.clone(), definition).is_some() {

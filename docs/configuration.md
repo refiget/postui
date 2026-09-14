@@ -50,6 +50,9 @@ variables:
   token:
     value:
     secret: true
+  order_id:
+    value:
+    temporary: false
 headers:
   Accept: application/json
 ```
@@ -68,6 +71,14 @@ headers:
 Relative upload and download paths are resolved from the project root. Secret
 variables are masked in the variable editor and excluded from debug values.
 Runtime variable edits are not written to YAML.
+
+Structured variables accept `value`, `secret`, and `temporary`. `temporary`
+defaults to `true`. Referenced variables appear in the request Body view when
+the request has no body content. `temporary: false` excludes a variable from
+that area. Temporary values are stored per request and take precedence over the
+current workspace value and the configured default.
+Response extraction writes workspace values. Extracted variables do not appear
+in the temporary variable area unless the request also references them as input.
 
 ## Scenarios
 

@@ -78,6 +78,12 @@ pub fn variable_names(request: &ApiRequest) -> Vec<String> {
     names.into_iter().collect()
 }
 
+pub fn input_variable_names(request: &ApiRequest) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    collect_request_inputs(request, &mut names);
+    names.into_iter().collect()
+}
+
 pub fn variable_names_in_override(request_override: &RequestOverride) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text_override(request_override, &mut names);
@@ -370,6 +376,16 @@ fn collect_text_values(values: &[NameValue], names: &mut BTreeSet<String>) {
 }
 
 fn collect_text_request(request: &ApiRequest, names: &mut BTreeSet<String>) {
+    collect_request_inputs(request, names);
+    for extract in &request.extracts {
+        let variable = strip_variable_delimiters(&extract.variable);
+        if !variable.is_empty() {
+            names.insert(variable.to_string());
+        }
+    }
+}
+
+fn collect_request_inputs(request: &ApiRequest, names: &mut BTreeSet<String>) {
     collect_text(&request.url, names);
     collect_text_values(&request.headers, names);
     collect_text_params(&request.form, names);
@@ -385,12 +401,6 @@ fn collect_text_request(request: &ApiRequest, names: &mut BTreeSet<String>) {
     }
     for part in request.body_parts.iter().chain(&request.query_parts) {
         collect_text_data_part(part, names);
-    }
-    for extract in &request.extracts {
-        let variable = strip_variable_delimiters(&extract.variable);
-        if !variable.is_empty() {
-            names.insert(variable.to_string());
-        }
     }
 }
 

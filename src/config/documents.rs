@@ -20,6 +20,8 @@ pub struct VariableDefinitionDocument {
     pub value: Option<Value>,
     #[serde(default)]
     pub secret: bool,
+    #[serde(default = "super::default_temporary_variable")]
+    pub temporary: bool,
 }
 
 impl From<VariableDefinition> for RawVariableDefinition {
@@ -27,6 +29,7 @@ impl From<VariableDefinition> for RawVariableDefinition {
         Self::Definition(VariableDefinitionDocument {
             value: definition.default,
             secret: definition.secret,
+            temporary: definition.temporary,
         })
     }
 }

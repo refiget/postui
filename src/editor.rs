@@ -353,6 +353,34 @@ pub(crate) fn json_scalar_at(
     document: &str,
     offset: usize,
 ) -> Option<(Range<usize>, JsonScalarKind, String)> {
+    let mut found = None;
+    visit_json_scalars(document, |span, kind| {
+        if span.contains(&offset) {
+            found = Some((span, kind));
+            false
+        } else {
+            true
+        }
+    });
+    let (span, kind) = found?;
+    let token = &document[span.clone()];
+    let input = match kind {
+        JsonScalarKind::String => serde_json::from_str::<String>(token).ok()?,
+        _ => token.to_string(),
+    };
+    Some((span, kind, input))
+}
+
+pub(crate) fn json_scalar_ranges(document: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    visit_json_scalars(document, |span, _| {
+        ranges.push(span);
+        true
+    });
+    ranges
+}
+
+fn visit_json_scalars(document: &str, mut visit: impl FnMut(Range<usize>, JsonScalarKind) -> bool) {
     let bytes = document.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -403,17 +431,10 @@ pub(crate) fn json_scalar_at(
                 continue;
             }
         };
-        if !span.contains(&offset) {
-            continue;
+        if !visit(span, kind) {
+            return;
         }
-        let token = &document[span.clone()];
-        let input = match kind {
-            JsonScalarKind::String => serde_json::from_str::<String>(token).ok()?,
-            _ => token.to_string(),
-        };
-        return Some((span, kind, input));
     }
-    None
 }
 
 pub(crate) fn convert_json_scalar(kind: JsonScalarKind, input: &str) -> Option<String> {

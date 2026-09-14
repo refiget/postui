@@ -157,8 +157,10 @@ impl RequestRuntimeState {
 pub(crate) struct RequestSession {
     pub(crate) source: ApiRequest,
     pub(crate) draft: RequestDraft,
+    pub(crate) temporary_variables: BTreeMap<String, String>,
     pub(super) runtime: RequestRuntimeState,
     inactive_headers: BTreeMap<String, Vec<HeaderRow>>,
+    inactive_temporary_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl RequestSession {
@@ -166,13 +168,21 @@ impl RequestSession {
         self.runtime.status()
     }
 
-    pub(super) fn new(source: ApiRequest, configuration: &WorkspaceConfiguration) -> Self {
-        let draft = RequestDraft::from(&source.for_configuration(configuration));
+    pub(super) fn new(
+        source: ApiRequest,
+        configuration: &WorkspaceConfiguration,
+        config: &WorkspaceConfig,
+    ) -> Self {
+        let effective = source.for_configuration(configuration);
+        let temporary_variables = initial_temporary_variables(config, configuration, &effective);
+        let draft = RequestDraft::from(&effective);
         Self {
             source,
             draft,
+            temporary_variables,
             runtime: RequestRuntimeState::default(),
             inactive_headers: BTreeMap::new(),
+            inactive_temporary_variables: BTreeMap::new(),
         }
     }
 
@@ -206,15 +216,48 @@ impl RequestSession {
         previous_name: &str,
         name: &str,
         configuration: &WorkspaceConfiguration,
+        config: &WorkspaceConfig,
     ) {
-        let mut draft = RequestDraft::from(&self.source.for_configuration(configuration));
+        let effective = self.source.for_configuration(configuration);
+        let mut draft = RequestDraft::from(&effective);
         if let Some(headers) = self.inactive_headers.remove(name) {
             draft.headers = headers;
         }
         let previous = std::mem::replace(&mut self.draft, draft);
         self.inactive_headers
             .insert(previous_name.to_string(), previous.headers);
+        let next_temporary_variables = self
+            .inactive_temporary_variables
+            .remove(name)
+            .unwrap_or_else(|| initial_temporary_variables(config, configuration, &effective));
+        let previous_temporary_variables =
+            std::mem::replace(&mut self.temporary_variables, next_temporary_variables);
+        self.inactive_temporary_variables
+            .insert(previous_name.to_string(), previous_temporary_variables);
         self.runtime.reset();
+    }
+
+    fn sync_temporary_variables(
+        &mut self,
+        configuration: &WorkspaceConfiguration,
+        config: &WorkspaceConfig,
+    ) {
+        let request = self.effective_request(configuration, config);
+        let initial = initial_temporary_variables(config, configuration, &request);
+        self.temporary_variables
+            .retain(|name, _| initial.contains_key(name));
+        for (name, value) in initial {
+            self.temporary_variables.entry(name).or_insert(value);
+        }
+    }
+
+    pub(super) fn reset_temporary_variables(
+        &mut self,
+        config: &WorkspaceConfig,
+        configuration: &WorkspaceConfiguration,
+        request: &ApiRequest,
+    ) {
+        self.temporary_variables = initial_temporary_variables(config, configuration, request);
     }
 
     pub(super) fn has_inactive_header_changes(
@@ -343,7 +386,7 @@ impl WorkspaceSession {
             variables,
             requests: requests
                 .into_iter()
-                .map(|request| RequestSession::new(request, configuration))
+                .map(|request| RequestSession::new(request, configuration, config))
                 .collect(),
             selected_request: has_requests.then_some(0),
             configuration_variables,
@@ -371,6 +414,7 @@ impl WorkspaceSession {
                 &self.active_configuration,
                 configuration,
                 &target_configuration,
+                config,
             );
         }
         self.active_configuration = configuration.to_string();
@@ -395,6 +439,15 @@ impl WorkspaceSession {
 
     pub(super) fn current_effective_request(&self, config: &WorkspaceConfig) -> Option<ApiRequest> {
         self.effective_request(config, self.current()?)
+    }
+
+    pub(super) fn sync_current_temporary_variables(&mut self, config: &WorkspaceConfig) {
+        let Some(configuration) = config.configurations.get(&self.active_configuration) else {
+            return;
+        };
+        if let Some(session) = self.current_mut() {
+            session.sync_temporary_variables(configuration, config);
+        }
     }
 
     pub(super) fn effective_request(
@@ -446,6 +499,30 @@ fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<
                 .map(value_to_string)
                 .unwrap_or_default();
             (name.clone(), value)
+        })
+        .collect()
+}
+
+fn initial_temporary_variables(
+    config: &WorkspaceConfig,
+    configuration: &WorkspaceConfiguration,
+    request: &ApiRequest,
+) -> BTreeMap<String, String> {
+    crate::template::input_variable_names(request)
+        .into_iter()
+        .filter_map(|name| {
+            let definition = configuration
+                .variables
+                .get(&name)
+                .or_else(|| config.variables.get(&name))?;
+            definition.temporary.then(|| {
+                let value = definition
+                    .default
+                    .as_ref()
+                    .map(value_to_string)
+                    .unwrap_or_default();
+                (name, value)
+            })
         })
         .collect()
 }

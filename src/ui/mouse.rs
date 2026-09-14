@@ -204,6 +204,13 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
             }
         } else {
             if app.view.preview.active_tab == PreviewTab::Body {
+                if app.temporary_variables_visible() {
+                    let line = usize::from(row.saturating_sub(areas.preview_content.y));
+                    if line > 0 {
+                        app.select_temporary_variable(line - 1, is_double);
+                    }
+                    return;
+                }
                 let line = usize::from(row.saturating_sub(areas.preview_content.y))
                     .saturating_add(usize::from(app.view.preview.scroll.offset()));
                 let column = usize::from(column.saturating_sub(areas.preview_content.x));
