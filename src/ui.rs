@@ -1,7 +1,7 @@
 use crate::{
     app::{
         App, AppPrompt, Dialog, Focus, HeaderSource, KeyValueField, PreviewAction, PreviewTab,
-        RequestStatus, ResponseMenuAction, ResponseTab, VariablePageFocus,
+        RequestStatus, ResponseMenuAction, ResponseTab,
     },
     config::ApiRequest,
     highlight, http_method,

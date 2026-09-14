@@ -42,7 +42,7 @@ pub(crate) use dialog::{
 pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
-pub(crate) use variables::{VariablePageFocus, VariablesPage};
+pub(crate) use variables::VariablesPage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PreviewTab {

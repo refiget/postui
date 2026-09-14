@@ -259,19 +259,11 @@ const MENU: &[Binding] = &[
     binding!(Back, "Esc/q", "Close", "关闭", plain(Esc), plain(Char('q'))),
 ];
 const VARIABLES: &[Binding] = &[
-    binding!(FocusNext, "Tab", "Next focus", "下一焦点", plain(Tab)),
-    binding!(
-        FocusPrevious,
-        "Shift+Tab",
-        "Previous focus",
-        "上一焦点",
-        plain(BackTab)
-    ),
     binding!(
         Activate,
         "Enter/Space",
-        "Edit / apply button",
-        "编辑 / 执行按钮",
+        "Edit",
+        "编辑",
         plain(Enter),
         plain(Char(' '))
     ),

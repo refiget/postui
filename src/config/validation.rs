@@ -3,7 +3,6 @@ use super::{
     RequestOverrideDocument, RequestParam, ResponseExtract, VariableDefinition,
     files::ParsedRequest,
 };
-use crate::template;
 use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderName, HeaderValue};
 use std::{
@@ -87,7 +86,6 @@ pub(super) fn normalize_request(
     raw: ParsedRequest,
     default_timeout_seconds: u64,
     default_skip_ssl_verification: bool,
-    file_directory: &Path,
 ) -> Result<ApiRequest> {
     let id = raw.id;
     let document = raw.document;
@@ -113,7 +111,7 @@ pub(super) fn normalize_request(
         .into_iter()
         .collect();
     let form = normalize_params(document.form, &id, "form")?;
-    let files = normalize_files(document.files, &id, file_directory)?;
+    let files = normalize_files(document.files, &id)?;
     let extracts = normalize_extracts(document.extracts, &id)?;
     let timeout_seconds = document
         .timeout
@@ -145,7 +143,6 @@ pub(super) fn normalize_override(
     raw: RequestOverrideDocument,
     request_id: &str,
     configuration: &str,
-    file_directory: &Path,
 ) -> Result<RequestOverride> {
     let method = raw
         .method
@@ -174,7 +171,7 @@ pub(super) fn normalize_override(
         .transpose()?;
     let files = raw
         .files
-        .map(|files| normalize_files(files, request_id, file_directory))
+        .map(|files| normalize_files(files, request_id))
         .transpose()?;
     let extracts = raw
         .extracts
@@ -228,13 +225,9 @@ fn normalize_params(
     Ok(normalized)
 }
 
-fn normalize_files(
-    files: Vec<FileUpload>,
-    request_id: &str,
-    file_directory: &Path,
-) -> Result<Vec<FileUpload>> {
+fn normalize_files(files: Vec<FileUpload>, request_id: &str) -> Result<Vec<FileUpload>> {
     for file in &files {
-        validate_file(request_id, file, file_directory)?;
+        validate_file(request_id, file)?;
     }
     Ok(files)
 }
@@ -259,7 +252,7 @@ fn normalize_extracts(
     Ok(normalized)
 }
 
-fn validate_file(request_id: &str, file: &FileUpload, file_directory: &Path) -> Result<()> {
+fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
     if file.field.trim().is_empty() {
         bail!("Request {request_id} upload file is missing field")
     }
@@ -275,20 +268,7 @@ fn validate_file(request_id: &str, file: &FileUpload, file_directory: &Path) -> 
     {
         bail!("Request {request_id} upload file path cannot contain ..")
     }
-    if normalized.is_relative()
-        && !contains_template(trimmed)
-        && !file_directory.join(normalized).is_file()
-    {
-        bail!(
-            "Request {request_id} upload file does not exist: {}",
-            file_directory.join(normalized).display()
-        )
-    }
     Ok(())
-}
-
-fn contains_template(value: &str) -> bool {
-    template::find_placeholder(value).is_some()
 }
 
 fn normalize_extract(request_id: &str, extract: &mut ResponseExtract) -> Result<()> {

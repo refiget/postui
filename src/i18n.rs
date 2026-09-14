@@ -130,7 +130,7 @@ impl UiText {
             Context::Confirm => &[Confirm, Back],
             Context::Help => &[Up, Down, Back],
             Context::Menu => &[Up, Down, Activate, Back, Help],
-            Context::Variables => &[Up, Down, Activate, FocusNext, Back, Help],
+            Context::Variables => &[Up, Down, Activate, Back, Help],
             Context::Headers => &[Activate, Add, Delete, Toggle, FocusNext, Help],
             Context::Params => &[Activate, Add, Delete, FocusNext, Help],
             Context::Response => &[
@@ -274,18 +274,6 @@ impl UiText {
 
     pub(crate) fn no_headers(self) -> &'static str {
         self.pick("Headers: empty", "请求头：空")
-    }
-
-    pub(crate) fn apply(self) -> &'static str {
-        self.pick("Apply", "应用")
-    }
-
-    pub(crate) fn close(self) -> &'static str {
-        self.pick("Cancel", "取消")
-    }
-
-    pub(crate) fn variables_applied(self) -> &'static str {
-        self.pick("Applied", "已应用")
     }
 
     pub(crate) fn configuration_switched(self) -> &'static str {

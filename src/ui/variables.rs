@@ -5,8 +5,6 @@ struct VariablesLayout {
     area: Rect,
     table_header: Rect,
     rows: ScrollAreas,
-    apply_button: Rect,
-    close_button: Rect,
 }
 
 pub(super) fn draw_variables_page(
@@ -30,46 +28,15 @@ pub(super) fn draw_variables_page(
 
 fn variables_page_layout(area: Rect) -> VariablesLayout {
     let inner = area.inner(Margin::new(u16::from(area.width >= 48) + 1, 1));
-    let footer_height = inner.height.min(3);
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(footer_height),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
-    let (apply_button, close_button) = dialog_buttons(sections[2]);
     VariablesLayout {
         area,
         table_header: sections[0],
         rows: inner_scroll_areas(sections[1]),
-        apply_button,
-        close_button,
     }
-}
-
-fn dialog_buttons(area: Rect) -> (Rect, Rect) {
-    if area.is_empty() {
-        return (Rect::default(), Rect::default());
-    }
-
-    if area.height >= 3 && area.width >= 22 {
-        let buttons = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(10),
-                Constraint::Length(10),
-            ])
-            .split(area);
-        return (buttons[1], buttons[2]);
-    }
-    let buttons = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-    (buttons[0], buttons[1])
 }
 
 fn draw_variables_table(
@@ -147,10 +114,7 @@ fn draw_variables_table(
             .collect::<Vec<_>>();
         let table = Table::new(rows, widths.as_slice())
             .column_spacing(TABLE_COLUMN_SPACING)
-            .cell_highlight_style(super::focus::selection_style(
-                theme,
-                page.focus == VariablePageFocus::Content,
-            ))
+            .cell_highlight_style(super::focus::selection_style(theme, true))
             .highlight_symbol("▸ ")
             .highlight_spacing(HighlightSpacing::Always)
             .style(Style::default().bg(theme.surface).fg(theme.text));
@@ -177,7 +141,6 @@ fn draw_variables_table(
         offset,
         theme,
     );
-    draw_variables_footer(frame, app, page.focus, layout);
 }
 
 fn variable_table_widths(width: u16) -> [Constraint; 3] {
@@ -191,36 +154,6 @@ fn variable_table_widths(width: u16) -> [Constraint; 3] {
         Constraint::Length(value),
         Constraint::Length(default),
     ]
-}
-
-fn draw_variables_footer(
-    frame: &mut Frame<'_>,
-    app: &App,
-    focus: VariablePageFocus,
-    layout: VariablesLayout,
-) {
-    let theme = &app.global_config.theme;
-    let text = app.text();
-    if !layout.apply_button.is_empty() {
-        draw_send_button(
-            frame,
-            layout.apply_button,
-            text.apply(),
-            true,
-            focus == VariablePageFocus::Apply,
-            theme,
-        );
-    }
-    if !layout.close_button.is_empty() {
-        draw_send_button(
-            frame,
-            layout.close_button,
-            text.close(),
-            true,
-            focus == VariablePageFocus::Close,
-            theme,
-        );
-    }
 }
 
 pub(super) fn handle_variables_mouse(
@@ -246,14 +179,6 @@ pub(super) fn handle_variables_mouse(
             drag_variables_scrollbar(app, event.row, layout);
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if contains(layout.apply_button, event.column, event.row) {
-                app.click_variables_page_button(VariablePageFocus::Apply);
-                return;
-            }
-            if contains(layout.close_button, event.column, event.row) {
-                app.click_variables_page_button(VariablePageFocus::Close);
-                return;
-            }
             if !contains(layout.rows.content, event.column, event.row) {
                 app.cancel_variable_edit();
                 return;

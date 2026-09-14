@@ -222,25 +222,6 @@ pub(super) fn panel_block(
     }
 }
 
-pub(super) fn draw_send_button(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    enabled: bool,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-) {
-    draw_send_button_aligned(
-        frame,
-        area,
-        label,
-        enabled,
-        focused,
-        theme,
-        Alignment::Center,
-    );
-}
-
 pub(super) fn draw_send_button_aligned(
     frame: &mut Frame<'_>,
     area: Rect,

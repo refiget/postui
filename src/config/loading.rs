@@ -165,12 +165,7 @@ fn normalize_config(
     for file in request_files {
         let raw_request = parse_request_file(file, workspace_path)?;
         let request = diagnostics::standardize(
-            normalize_request(
-                raw_request,
-                timeout_seconds,
-                skip_ssl_verification,
-                &file_directory,
-            ),
+            normalize_request(raw_request, timeout_seconds, skip_ssl_verification),
             &file.path,
             "request",
         )?;
@@ -198,7 +193,7 @@ fn normalize_config(
     }
 
     let configurations = diagnostics::standardize(
-        normalize_configurations(configuration_files, &request_ids, &file_directory),
+        normalize_configurations(configuration_files, &request_ids),
         path,
         "scenarios",
     )?;
@@ -265,7 +260,6 @@ fn normalize_config(
 fn normalize_configurations(
     configuration_files: &[ConfigurationFile],
     request_ids: &BTreeSet<String>,
-    file_directory: &Path,
 ) -> Result<BTreeMap<String, WorkspaceConfiguration>> {
     if configuration_files.is_empty() {
         return Ok(BTreeMap::from([(
@@ -311,7 +305,7 @@ fn normalize_configurations(
                 ));
             }
             let request_override = diagnostics::standardize(
-                normalize_override(raw_override, &request_id, &file.name, file_directory),
+                normalize_override(raw_override, &request_id, &file.name),
                 &file.path,
                 format!("overrides.{request_id}"),
             )?;
