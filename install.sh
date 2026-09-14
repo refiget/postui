@@ -13,7 +13,7 @@ usage() {
 选项:
   --prefix DIR       安装目录，默认是 ~/.local/share/postui
   --archive-url URL  使用指定发布包地址（优先于本地包和版本号）
-  --version VERSION 安装指定发布版本，例如 0.1.1（默认最新版本）
+  --version VERSION 安装指定发布版本，例如 0.1.2（默认最新版本）
   --skip-init        安装后不执行 postui init
   -h, --help         显示帮助
 

@@ -1,10 +1,10 @@
 use crate::{
     app::{
         App, AppPrompt, Dialog, Focus, HeaderSource, KeyValueField, PreviewAction, PreviewTab,
-        RequestStatus, ResponseMenuAction, ResponseTab, VariablePageFocus, supports_method,
+        RequestStatus, ResponseMenuAction, ResponseTab, VariablePageFocus,
     },
     config::ApiRequest,
-    highlight,
+    highlight, http_method,
 };
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{

@@ -190,22 +190,6 @@ impl UiText {
         self.pick("Request in progress", "请求处理中")
     }
 
-    pub(crate) fn missing_variables(self, names: &[String]) -> String {
-        let missing = names
-            .iter()
-            .map(|name| format!("- {name}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        match self.language {
-            Language::English => {
-                format!("Required variables are missing:\n{}", missing)
-            }
-            Language::Chinese => {
-                format!("以下变量缺少值：\n{}", missing)
-            }
-        }
-    }
-
     pub(crate) fn request_status_not_sent(self) -> &'static str {
         self.pick("Not sent", "未发送")
     }
@@ -312,10 +296,10 @@ impl UiText {
         self.pick("Params: empty", "参数：空")
     }
 
-    pub(crate) fn unsupported_method(self, method: &str) -> String {
+    pub(crate) fn invalid_method(self, method: &str) -> String {
         match self.language {
-            Language::English => format!("{method} is not supported. Use GET or POST."),
-            Language::Chinese => format!("不支持 {method}，请使用 GET 或 POST"),
+            Language::English => format!("Invalid HTTP method: {method}"),
+            Language::Chinese => format!("无效的 HTTP 方法：{method}"),
         }
     }
 

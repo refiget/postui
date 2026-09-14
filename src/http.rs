@@ -7,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use reqwest::{
-    Client, Method,
+    Client,
     header::HeaderName,
     multipart::{Form, Part},
 };
@@ -179,7 +179,7 @@ pub async fn send(
         "开始准备 HTTP 请求"
     );
 
-    let method = Method::from_bytes(request.method.as_bytes()).map_err(|error| {
+    let method = crate::http_method::parse(&request.method).map_err(|error| {
         tracing::debug!(error = %error, method = %request.method, "HTTP 方法无效");
         HttpError::InvalidRequest(format!("Invalid HTTP method: {error}"))
     })?;

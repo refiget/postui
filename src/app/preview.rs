@@ -115,7 +115,7 @@ impl App {
                     .unwrap_or(&session.source.url)
                     .trim()
                     .is_empty()
-                    && supports_method(&session.draft.method)
+                    && http_method::parse(&session.draft.method).is_ok()
                     && !matches!(self.view.dialog, Some(Dialog::Configurations(_)))
                     && self.view.variables.is_none()
                     && !self.view.preview.is_editing()

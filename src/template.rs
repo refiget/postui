@@ -141,8 +141,6 @@ pub fn resolve_text(input: &str, variables: &BTreeMap<String, String>) -> String
             output.push_str(token);
         } else if let Some(value) = variables.get(name) {
             output.push_str(value);
-        } else {
-            output.push_str(token);
         }
         rest = &rest[end..];
     }

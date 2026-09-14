@@ -1,72 +1,99 @@
 use std::{
-    env,
+    env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
+use anyhow::{Context, Result, bail, ensure};
+use directories::ProjectDirs;
+
+#[derive(Debug)]
+pub(crate) enum WorkspaceSource {
+    Explicit,
+    Discovered,
+}
+
+pub(crate) struct WorkspaceLocation {
+    pub(crate) path: PathBuf,
+    pub(crate) source: WorkspaceSource,
+}
+
 pub(crate) fn discover_user_config_path() -> Option<PathBuf> {
-    let home = user_home_directory();
-    let found =
-        config_directory(home.as_deref()).map(|directory| directory.join("postui/config.yaml"));
-    if let Some(path) = &found {
-        tracing::debug!(path = %path.display(), "自动发现用户界面配置");
-    }
-    found
+    ProjectDirs::from("", "", "postui")
+        .map(|directories| directories.config_dir().join("config.yaml"))
 }
 
-fn find_project_path(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .find(|directory| directory.join(".postui").is_dir())
-        .map(Path::to_path_buf)
+pub(crate) fn resolve_workspace(input: Option<&Path>) -> Result<WorkspaceLocation> {
+    if let Some(input) = input {
+        ensure!(
+            !input.as_os_str().is_empty(),
+            "Workspace path must not be empty"
+        );
+        let directory = fs::canonicalize(input)
+            .with_context(|| format!("Cannot resolve workspace path: {}", input.display()))?;
+        ensure!(
+            fs::metadata(&directory)
+                .with_context(|| format!("Cannot access directory: {}", directory.display()))?
+                .is_dir(),
+            "Workspace path must be a directory: {}",
+            input.display()
+        );
+        let path = if input.file_name().is_some_and(|name| name == ".postui")
+            || directory.file_name().is_some_and(|name| name == ".postui")
+        {
+            directory
+        } else {
+            directory.join(".postui")
+        };
+        let path = existing_workspace(&path)?
+            .with_context(|| format!("PostUI workspace not found: {}", path.display()))?;
+        return Ok(WorkspaceLocation {
+            path,
+            source: WorkspaceSource::Explicit,
+        });
+    }
+
+    let start = env::current_dir().context("Cannot determine current directory")?;
+    for directory in start.ancestors() {
+        if let Some(path) = existing_workspace(&directory.join(".postui"))? {
+            return Ok(WorkspaceLocation {
+                path,
+                source: WorkspaceSource::Discovered,
+            });
+        }
+    }
+    bail!(
+        "No .postui workspace found in {} or its parents; specify a project or .postui directory",
+        start.display()
+    )
 }
 
-fn user_home_directory() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(PathBuf::from))
-    }
-    #[cfg(not(windows))]
-    {
-        env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
-fn config_directory(home: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
-        return Some(path);
-    }
-    #[cfg(windows)]
-    if let Some(path) = env::var_os("APPDATA").map(PathBuf::from) {
-        return Some(path);
-    }
-    home.map(|path| path.join(".config"))
-}
-
-pub(crate) fn discover_project_path() -> Option<PathBuf> {
-    let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let path = find_project_path(&current_directory);
-    match path.as_deref() {
-        Some(path) => tracing::debug!(
-            start = %current_directory.display(),
-            path = %path.display(),
-            "自动发现 PostUI 项目"
-        ),
-        None => tracing::debug!(
-            start = %current_directory.display(),
-            "当前目录及父目录没有 PostUI 项目"
-        ),
-    }
-    path
-}
-
-pub(crate) fn resolve_cli_path(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
+fn existing_workspace(path: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot access workspace: {}", path.display()));
+        }
+    };
+    let metadata = if metadata.is_symlink() {
+        fs::metadata(path).with_context(|| {
+            format!("Cannot access workspace symlink target: {}", path.display())
+        })?
     } else {
-        env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    }
+        metadata
+    };
+    ensure!(
+        metadata.is_dir(),
+        "Workspace path must be a directory: {}",
+        path.display()
+    );
+    fs::canonicalize(path)
+        .map(Some)
+        .with_context(|| format!("Cannot resolve workspace path: {}", path.display()))
+}
+
+pub(crate) fn resolve_cli_path(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path).with_context(|| format!("Cannot resolve path: {}", path.display()))
 }

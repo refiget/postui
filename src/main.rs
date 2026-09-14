@@ -24,8 +24,8 @@ mod terminal;
 mod ui;
 
 pub(crate) use postui_core::{
-    config, diagnostics, highlight, http, request_executor, request_file, response_document,
-    response_format, response_output, settings, template,
+    config, diagnostics, highlight, http, http_method, request_executor, request_file,
+    response_document, response_format, response_output, settings, template,
 };
 
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
     cli::{CliCommand, CliOptions, parse_args, print_help},
     config::load as load_request_config,
     http::HttpClient,
-    paths::{discover_project_path, discover_user_config_path, resolve_cli_path},
+    paths::{discover_user_config_path, resolve_cli_path, resolve_workspace},
     request_executor::RequestExecutor,
     shell::init_shell_integration,
 };
@@ -56,28 +56,20 @@ fn main() -> Result<()> {
 }
 
 fn run_app(options: CliOptions) -> Result<()> {
-    let project_path = options
-        .project_path
-        .as_deref()
-        .map(resolve_cli_path)
-        .or_else(discover_project_path)
-        .unwrap_or_else(|| {
-            let path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            tracing::debug!(
-                path = %path.display(),
-                "No PostUI project found; opening the default workspace"
-            );
-            path
-        });
-    let workspace_path = project_path.join(".postui");
+    let workspace = resolve_workspace(options.project_path.as_deref())?;
+    let workspace_path = workspace.path;
     let explicit_user_config = options.config_path.is_some();
     let global_config_path = options
         .config_path
         .as_deref()
         .map(resolve_cli_path)
+        .transpose()?
         .or_else(discover_user_config_path);
     let log_path = options
         .log_file
+        .as_deref()
+        .map(resolve_cli_path)
+        .transpose()?
         .unwrap_or_else(|| workspace_path.join("logs/postui-debug.log"));
     logging::init(options.debug, options.perf, &log_path)
         .with_context(|| format!("Failed to initialize debug logging: {}", log_path.display()))?;
@@ -86,7 +78,8 @@ fn run_app(options: CliOptions) -> Result<()> {
             .as_deref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<内置界面配置>".to_string()),
-        project_path = %project_path.display(),
+        workspace_path = %workspace_path.display(),
+        workspace_source = ?workspace.source,
         debug = options.debug,
         log_file = %log_path.display(),
         "启动 PostUI"
@@ -111,10 +104,6 @@ fn run_app(options: CliOptions) -> Result<()> {
         },
         None => settings::default_config(),
     };
-    tracing::debug!(
-        path = %workspace_path.display(),
-        "选择 PostUI 工作区"
-    );
     let mut request_config = match load_request_config(&workspace_path) {
         Ok(config) => config,
         Err(error) => {

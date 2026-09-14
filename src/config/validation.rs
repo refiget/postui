@@ -4,7 +4,7 @@ use super::{
     files::ParsedRequest,
 };
 use crate::template;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderName, HeaderValue};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -200,16 +200,9 @@ pub(super) fn normalize_override(
 }
 
 fn normalize_method(value: &str, request_id: &str) -> Result<String> {
-    let method = value.trim().to_ascii_uppercase();
-    if method.is_empty() {
-        bail!("Request {request_id} method cannot be empty")
-    }
-    if !method.chars().all(|character| {
-        character.is_ascii_uppercase() || character.is_ascii_digit() || character == '-'
-    }) {
-        bail!("Request {request_id} has an invalid method: {value}")
-    }
-    Ok(method)
+    crate::http_method::parse(value)
+        .map(|method| method.to_string())
+        .with_context(|| format!("Request {request_id} has an invalid method: {value}"))
 }
 
 pub(super) fn validate_timeout(seconds: u64) -> Result<u64> {

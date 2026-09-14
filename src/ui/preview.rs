@@ -116,9 +116,9 @@ fn request_summary_lines(app: &App) -> Vec<Line<'static>> {
         theme,
     ));
     let mut lines = vec![Line::from(url_line), Line::from(description_line)];
-    if !supports_method(method) {
+    if http_method::parse(method).is_err() {
         lines[0] = Line::from(Span::styled(
-            text.unsupported_method(method),
+            text.invalid_method(method),
             Style::default().fg(theme.warning),
         ));
     }

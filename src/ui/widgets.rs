@@ -160,7 +160,7 @@ pub(super) fn scrollbar_position(
 }
 
 pub(super) fn method_style(method: &str, theme: &crate::settings::UiTheme) -> Style {
-    if !supports_method(method) {
+    if http_method::parse(method).is_err() {
         return Style::default()
             .fg(theme.muted)
             .add_modifier(Modifier::BOLD);
@@ -168,6 +168,9 @@ pub(super) fn method_style(method: &str, theme: &crate::settings::UiTheme) -> St
     let color = match method {
         "GET" => theme.success,
         "POST" => theme.warning,
+        "PUT" | "PATCH" => theme.accent,
+        "DELETE" => theme.error,
+        "HEAD" | "OPTIONS" => theme.secondary,
         _ => theme.primary,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)

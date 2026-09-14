@@ -46,23 +46,7 @@ impl App {
     }
 
     pub(crate) fn open_variables(&mut self) {
-        self.open_variables_at(None, None);
-    }
-
-    pub(super) fn open_variables_at(
-        &mut self,
-        missing_variables: Option<&[String]>,
-        selected_name: Option<String>,
-    ) {
-        let missing = missing_variables
-            .map(|variables| {
-                variables
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let mut rows = self
+        let rows = self
             .config
             .editable_variables
             .iter()
@@ -74,20 +58,13 @@ impl App {
                     .get(name)
                     .cloned()
                     .unwrap_or_default(),
-                missing: missing.contains(name.as_str()),
                 secret: self.variable_is_secret(name),
             })
             .collect::<Vec<_>>();
-        rows.sort_by_key(|row| !row.missing);
-        let selected = selected_name
-            .as_deref()
-            .and_then(|name| rows.iter().position(|row| row.name == name))
-            .or_else(|| rows.iter().position(|row| row.missing))
-            .unwrap_or_default();
         let return_focus = self.view.focus;
         self.view.variables = Some(VariablesPage {
             rows,
-            selected,
+            selected: 0,
             scroll: Default::default(),
             focus: VariablePageFocus::Content,
             editor: None,
@@ -102,7 +79,6 @@ impl App {
 pub(crate) struct VariableRow {
     pub(crate) name: String,
     pub(crate) value: String,
-    pub(crate) missing: bool,
     pub(crate) secret: bool,
 }
 

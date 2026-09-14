@@ -178,7 +178,7 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
         app.view.focus = Focus::Requests;
         click_request_list_scrollbar(app, row, areas);
     } else if contains(areas.request_list, column, row) {
-        click_request_list(app, column, row, areas.request_list);
+        click_request_list(app, column, row, areas.request_list, is_double);
     } else if contains(areas.send_button, column, row)
         && app.can_execute_preview_action(PreviewAction::Send)
     {
@@ -191,8 +191,13 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
         app.view.focus = Focus::Preview;
         if contains(areas.preview_summary, column, row) {
             let method_width = app
-                .current_effective_request()
-                .map(|request| u16::try_from(request.method.len()).unwrap_or(u16::MAX) + 3)
+                .current_request()
+                .and_then(|request| app.request_draft(&request.id))
+                .map(|draft| {
+                    u16::try_from(draft.method.len())
+                        .unwrap_or(u16::MAX)
+                        .saturating_add(3)
+                })
                 .unwrap_or_default();
             if column < areas.preview_summary.x.saturating_add(method_width) {
                 app.cycle_method();
@@ -238,7 +243,7 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
     }
 }
 
-fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
+fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect, is_double: bool) {
     if area.is_empty() || row < area.y || column >= area.right() {
         return;
     }
@@ -253,9 +258,19 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect) {
     let Some(index) = visible_indices.get(visible_index).copied() else {
         return;
     };
+    let same_request = app.workspace_state.selected_request == Some(index);
     app.select_request(index);
     app.view.focus = Focus::Requests;
     tracing::debug!(index, "通过左侧接口列表选择接口");
+    if is_double
+        && same_request
+        && app.can_execute_preview_action(PreviewAction::Send)
+        && app
+            .current_request()
+            .is_some_and(|request| app.request_status(&request.id) != RequestStatus::Sending)
+    {
+        app.handle_preview_action(PreviewAction::Send);
+    }
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {

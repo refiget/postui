@@ -4,12 +4,12 @@
 
 | 用途 | 位置 | 内容 |
 | --- | --- | --- |
-| 个人偏好 | 用户配置目录的 `postui/config.yaml` | 语言、主题、响应显示上限 |
+| 个人偏好 | [平台标准配置目录](#个人偏好) | 语言、主题、响应显示上限 |
 | 项目默认值 | `.postui/postui.yaml` | 公共变量、Header、超时、文件目录 |
 | 场景差异 | `.postui/scenarios/<名称>.yaml` | 当前场景的变量、Header、超时和请求覆盖 |
 | 请求定义 | `.postui/requests/**/*.yaml` | URL、方法、参数和请求体 |
 
-只读取新规范，不提供旧字段、旧目录或旧 Header 条目数组的兼容解析。
+配置字段按本文定义读取，未知字段会报错。
 
 ## 最小工作区
 
@@ -27,11 +27,16 @@ url: https://example.test/health
 
 方法默认 `GET`，名称默认取文件名，超时默认 30 秒。`.postui/requests/` 也可以不存在，空工作区仍能打开。
 
-在项目目录或子目录运行 `postui`，会向上查找最近的 `.postui/`，也可指定项目目录：
+在项目目录或子目录运行 `postui`，会向上查找最近的 `.postui/`，也可指定项目目录或 `.postui` 目录：
 
 ```bash
 postui /path/to/project
+postui /path/to/project/.postui
 ```
+
+显式指定目录时不向父目录搜索。自动发现一直搜索到文件系统根目录，不以 `.git` 为边界。最近的 `.postui` 如果不是目录、无法访问或是失效的符号链接，会直接报错，不跳过它去加载外层工作区；内部配置有误也不会回退到父级。
+
+未找到工作区时退出，不自动创建 `.postui`。新建空工作区可先执行 `mkdir .postui`，再运行 `postui`。相对路径以启动目录为基准；符号链接按实际目标解析。
 
 ## 项目默认值
 
@@ -65,7 +70,7 @@ headers:
 | `skip_ssl_verification` | `false` | 跳过 HTTPS 证书校验；可由场景或请求覆盖 |
 | `directories.uploads` | `test_files` | 上传文件基准目录 |
 | `directories.downloads` | `temp` | 响应下载目录 |
-| `variables` | `{}` | 公共变量；空值表示运行时填写 |
+| `variables` | `{}` | 公共变量；未填写时按空字符串展开，可在运行时手动修改 |
 | `headers` | `{}` | 公共 Header |
 
 相对目录以项目根目录为基准，也支持绝对路径。下载目录在保存响应时创建；上传文件缺失时发送报错。
@@ -115,6 +120,7 @@ postui /path/to/project --scenario test
 | Header | 项目 → 场景 → 请求；后一级同名 Header 覆盖前一级，名称不区分大小写 |
 | 超时 | 项目默认值 → 请求 `timeout` → 场景 `timeout` → 场景请求覆盖的 `timeout` |
 | TLS 校验 | 项目默认值 → 请求 `skip_ssl_verification` → 场景同名字段 → 场景请求覆盖的同名字段 |
+| HTTP 方法 | 请求 `method`（省略为 `GET`）→ 场景 `overrides` 中该请求的 `method` |
 | 请求覆盖 | 只替换声明字段；列表整体替换，不逐项拼接 |
 
 超时省略才表示继承，`0` 无效，不表示无限等待。场景 `timeout` 统一调整该场景请求的超时；个别请求例外写在 `overrides` 中。
@@ -123,10 +129,13 @@ postui /path/to/project --scenario test
 
 ## 个人偏好
 
-默认位置：
+默认位置由 `directories::ProjectDirs` 按平台规范确定：
 
 - Linux：`${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`
-- Windows：`%APPDATA%\postui\config.yaml`；显式设置 `XDG_CONFIG_HOME` 时优先使用该目录。
+- macOS：`~/Library/Application Support/postui/config.yaml`
+- Windows：用户 Roaming AppData 下的 `postui\config\config.yaml`，通常为 `%APPDATA%\postui\config\config.yaml`。
+
+`XDG_CONFIG_HOME` 仅用于 Linux，且必须是绝对路径；空值或相对路径使用平台默认位置。不读取旧路径，不自动迁移配置。默认配置文件不存在时使用内置偏好；显式 `--config` 指定的文件不存在或无法读取时显示配置错误。
 
 ```yaml
 language: en
@@ -152,7 +161,7 @@ max_response_bytes: 67108864
 postui /path/to/project --config /path/to/ui.yaml --scenario test
 ```
 
-`--config` 替代自动发现的个人配置，不合并两份文件。相对路径以启动目录为基准；项目根目录的 `config.yaml` 不会自动读取。个人配置仅包含上述三个选项，请求行为不放在这里。
+`--config` 替代自动发现的个人配置，不合并两份文件。相对路径以启动目录为基准；项目根目录的 `config.yaml` 不会自动读取。个人配置仅包含上表选项，请求行为不放在这里。
 
 Debug 构建使用 `--debug` 启动后，可按 `F5` 依次热加载全部内置主题。切换仅影响当前进程，不写回个人配置。
 
@@ -180,7 +189,58 @@ extracts:
 
 请求支持 `name`、`description`、`method`、`url`、`timeout`、`skip_ssl_verification`、`headers`、`params`、`body`、`form`、`files`、`extracts`。`url` 必填；`method` 默认 `GET`；`timeout` 省略时继承项目默认值，其余内容按需填写。
 
-所有层的 Header 都是映射，值为字符串或非空字符串列表；数字、布尔值请加引号。重复 Header 写为同一名称下的列表，不重复声明映射键。保存时同名 Header 归组，保留该名称下各值的顺序。
+### HTTP 方法配置
+
+直接在 `.postui/requests/**/*.yaml` 或 `.yml` 的顶层声明 `method`，不需要额外启用方法：
+
+```yaml
+# .postui/requests/users/update.yaml
+name: 更新用户
+method: PUT
+url: "{{host}}/users/123"
+headers:
+  Content-Type: application/json
+body: |
+  {"name": "Example"}
+```
+
+`method` 支持 `GET`、`POST`、`PUT`、`PATCH`、`DELETE`、`HEAD`、`OPTIONS`、`TRACE`、`CONNECT`，也支持合法的扩展方法（如 `PROPFIND`）。各方法使用相同的请求字段；每个文件只定义一个请求。
+
+场景通过 `overrides` 修改已有请求的方法；例如让上述 `users/update.yaml` 在 `dev` 场景使用 `PATCH`：
+
+```yaml
+# .postui/scenarios/dev.yaml
+variables:
+  host: http://127.0.0.1:8080
+overrides:
+  users/update.yaml:
+    method: PATCH
+    body: |
+      {"name": "Changed"}
+```
+
+覆盖键相对 `requests/`，且必须对应真实文件。URL 和 Header 未覆盖时沿用原请求。`method` 不属于个人配置、项目默认值或场景顶层字段，只放在请求定义或场景的请求覆盖中。
+
+| 写法 | 读取行为 |
+| --- | --- |
+| 请求省略 `method` | 使用 `GET` |
+| 覆盖省略 `method` 或写 `method: null` | 保留原请求方法 |
+| `method: " patch "` | 去除首尾空白，转为 `PATCH` |
+| `method: PROPFIND` | 作为扩展方法加载和发送 |
+| `method: ""`、全空白或 `method: "BAD METHOD"` | 配置加载失败，不回退为 `GET` |
+| 请求定义写 `method: null` | 配置加载失败；默认值仅适用于省略字段 |
+
+覆盖项必须至少包含一个有效的覆盖字段；只写 `method: null` 会成为空覆盖项并报错，无差异时应删除整个覆盖项。
+
+方法由 HTTP 库校验语法，不展开变量。保存文件后首次启动会读取；应用已打开时按 `R` 重载。可用 `postui /path/to/project --scenario dev` 读取指定场景。
+
+界面点击方法依次切换上述九种标准方法，扩展方法从 `GET` 开始；发送中不可切换。切换保留其他请求字段，仅影响本次会话。持久设置请修改 YAML。
+
+各方法共用请求体和上传流程，服务器是否接受以实际响应为准。`CONNECT` 仅发送请求并展示响应，不提供交互式隧道。
+
+### 参数与请求体
+
+所有层的 Header 都是映射，值为字符串或非空字符串列表；数字、布尔值请加引号。重复 Header 写为同一名称下的列表，列表顺序保留，不重复声明映射键。
 
 `params`、`form` 使用 `name/value` 条目列表，保留重复名称和顺序。Query 的无等号参数使用 `has_equals: false`，例如：
 
@@ -225,7 +285,8 @@ files:
 - `requests/`、`scenarios/` 缺失时视为空目录；同名路径是文件或目录不可读时会报错。
 - 请求文件必须包含非空 URL；新增或手动修改文件后可在界面按 `R` 重新加载。加载失败时保留当前可用配置，并显示出错文件及 YAML 位置。
 - 界面中的请求修改只作用于当前运行会话，不写回请求或场景配置文件；退出时直接丢弃。
-- 发送前会汇总当前请求中值为空的变量，并自动打开变量页定位到第一项。
+- 未定义或值为空的变量按空字符串展开，不阻止发送，也不自动打开变量页；展开后的非法 URL、请求头或文件路径由请求执行流程报错。
+- 单击接口选择，双击接口直接发送；正在发送的接口不会因双击而取消或重复发送。
 - 请求发送过程中再次按 `r` 或点击发送区域可取消当前操作；迟到的后台结果会被丢弃。
   网络等待、上传及响应读取可中断。已开始的后台 JSON 提取或索引计算可能继续完成，但不会更新已取消的请求。最多同时处理 8 个请求，超出时提示稍后重试。
 - `R` 在后台扫描、校验并构建工作区；完成前可以浏览旧状态，暂停发送和切换场景。成功后以新配置替换临时编辑，失败则保留旧状态。
@@ -233,4 +294,4 @@ files:
 - 请求列表聚焦时 `Delete` 经确认删除当前请求文件。
 - `.postui/cache/` 只存解析缓存；源内容变化或缓存版本变化即失效，缓存读写失败不影响源文件解析。缓存、日志、下载产物和个人配置不提交。
 
-公共示例见 [双场景 Echo API](../examples/public-api/README.md)。已有本地配置需按本规范手动整理，程序不会迁移或改写旧配置。
+公共示例见 [双场景 Echo API](../examples/public-api/README.md)。

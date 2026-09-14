@@ -124,17 +124,12 @@ fn draw_variables_table(
                 } else {
                     raw_value
                 };
-                let value_style = if row.missing {
-                    Style::default().fg(theme.error)
-                } else if value.is_empty() {
+                let value_style = if value.is_empty() {
                     Style::default().fg(theme.muted)
                 } else {
                     Style::default().fg(theme.accent)
                 };
-                let mut name_style = highlight::variable_style(Style::default(), theme);
-                if row.missing {
-                    name_style = name_style.fg(theme.error);
-                }
+                let name_style = highlight::variable_style(Style::default(), theme);
                 let default_style = Style::default().fg(theme.secondary);
                 let mut value_cell =
                     Cell::from(highlight::template_line(&value, value_style, theme));

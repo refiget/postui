@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod config;
 pub mod highlight;
 pub mod http;
+pub mod http_method;
 pub mod request_executor;
 pub mod request_file;
 pub mod response_document;

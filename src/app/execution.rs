@@ -1,5 +1,5 @@
 use super::Feedback;
-use super::{App, RequestStatus, supports_method};
+use super::{App, RequestStatus, http_method};
 use crate::request_executor::{FinishedRequest, RequestOutcome};
 
 impl App {
@@ -154,34 +154,16 @@ impl App {
             return;
         }
         let timeout = effective_request.timeout_seconds;
-        let effective_method = effective_request.method.clone();
-        if !supports_method(&effective_method) {
+        if http_method::parse(&effective_request.method).is_err() {
             self.view.notice = Some(Feedback::Warning(
-                self.text().unsupported_method(&effective_method),
+                self.text().invalid_method(&effective_request.method),
             ));
             tracing::debug!(
-                method = %effective_method,
-                "忽略不支持的 HTTP 方法"
+                method = %effective_request.method,
+                "HTTP 方法无效"
             );
             return;
         }
-        let missing_variables = crate::template::variable_names(&effective_request)
-            .into_iter()
-            .filter(|name| {
-                self.workspace_state
-                    .variables
-                    .get(name)
-                    .is_none_or(|value| value.trim().is_empty())
-            })
-            .collect::<Vec<_>>();
-        if !missing_variables.is_empty() {
-            let message = self.text().missing_variables(&missing_variables);
-            let selected_name = missing_variables.first().cloned();
-            self.open_variables_at(Some(&missing_variables), selected_name);
-            self.view.notice = Some(Feedback::Warning(message));
-            return;
-        }
-
         let resolved =
             crate::template::resolve_request(&effective_request, &self.workspace_state.variables);
         let operation = self.request_executor.prepare(&request_id);

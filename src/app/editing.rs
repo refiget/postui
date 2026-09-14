@@ -21,24 +21,18 @@ impl App {
     }
 
     pub(crate) fn cycle_method(&mut self) {
-        let Some(request) = self.current_request() else {
+        let Some(request) = self.workspace_state.current_mut() else {
             return;
         };
-        if self.request_status(&request.id) == RequestStatus::Sending {
+        if request.status() == RequestStatus::Sending {
             return;
         }
-        const METHODS: [&str; 2] = ["GET", "POST"];
-        let current = self
-            .current_effective_request()
-            .map(|request| request.method)
-            .unwrap_or_else(|| request.method.clone());
-        let index = METHODS
+        use crate::http_method::STANDARD_METHODS;
+        let next = STANDARD_METHODS
             .iter()
-            .position(|method| *method == current.as_str())
-            .unwrap_or(0);
-        if let Some(request) = self.workspace_state.current_mut() {
-            request.draft.method = METHODS[(index + 1) % METHODS.len()].to_string();
-        }
+            .position(|method| method.as_str() == request.draft.method)
+            .map_or(0, |index| (index + 1) % STANDARD_METHODS.len());
+        request.draft.method = STANDARD_METHODS[next].to_string();
         self.register_request_change();
     }
 

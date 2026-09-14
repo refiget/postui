@@ -38,7 +38,7 @@ App（主线程编排）
 
 转换方法一次替换阶段。UI 读取状态和内容，不直接构造阶段。
 
-发送前由 `app/execution.rs` 汇总缺失变量、准备有效请求和操作 ID，再交给执行器。完成消息必须同时匹配请求 ID 与活动操作 ID 才能应用；取消后到达的旧消息不会重新覆盖界面。
+发送前由 `app/execution.rs` 展开变量、准备有效请求和操作 ID，再交给执行器。未定义变量展开为空字符串，不触发变量页。完成消息必须同时匹配请求 ID 与活动操作 ID 才能应用；取消后到达的旧消息不会重新覆盖界面。
 
 ### 草稿和场景
 
@@ -69,7 +69,7 @@ App（主线程编排）
 
 ## 渲染与输入
 
-`ui.rs` 组合页面，`ui/mouse.rs` 分发鼠标事件；`ui/layout.rs` 定义区域和共用滚动区域，`ui/focus.rs` 映射焦点到所属边框。变量页、行内编辑器、响应工具栏分别放在 `ui/variables.rs`、`ui/inline_editor.rs`、`ui/response_toolbar.rs`。变量页和行内编辑器各自持有布局类型，不共享无用的按钮占位。业务动作放在 `app/`，绘制代码不负责发送 HTTP 或保存文件。
+`ui.rs` 组合页面，`ui/mouse.rs` 分发鼠标事件；`ui/layout.rs` 定义区域和共用滚动区域，`ui/focus.rs` 映射焦点到所属边框。变量页、行内编辑器、响应工具栏分别放在 `ui/variables.rs`、`ui/inline_editor.rs`、`ui/response_toolbar.rs`。各页面持有自己的布局类型，业务动作由 `app/` 处理。
 
 `shortcuts.rs` 定义按键、修饰键、作用域和语义动作，同时提供底栏与帮助的键位文案。`app/input.rs` 根据确认框、搜索、菜单、变量页、编辑态和焦点选择作用域；主界面区域继承全局键位，弹层与编辑器隔离普通全局键位。输入组件只执行解析后的动作，文本编辑保留字符输入。终端的 Shift 编码在入口归一化；Release 不执行，Repeat 仅允许移动和编辑删除等可重复动作。终端未区分长按与连续 Press 时按普通按键处理。
 
@@ -87,7 +87,7 @@ JSON 保留原有共享字节、稀疏索引、按视口格式化和即时 token
 
 - `config.rs` 保留配置领域模型及公开导出；`config/documents.rs` 定义 YAML 文档与序列化转换，`config/files.rs` 负责文件扫描、路径和源指纹，`config/loading.rs` 编排加载与场景组装，`config/validation.rs` 校验请求字段。对外类型路径和 YAML 格式保持一致。
 - `highlight.rs` 负责文本及模板着色；`highlight/response.rs` 管理响应分页缓存、队列和失效，`highlight/response/scanner.rs` 持有 Syntect 解析器和检查点。解析器仍在使用它的线程中创建，不在线程间传递。
-- `http.rs` 负责传输及上传边界，HTTP 日志字段的脱敏和长度限制集中在 `http/logging.rs`。
+- `http_method.rs` 统一配置、界面和发送层的方法解析，使用 reqwest 校验；`http.rs` 负责传输及上传，`http/logging.rs` 负责日志脱敏和长度限制。
 - URL、query 与表单编码使用 `url`、`form_urlencoded`。包含变量的原始模板可能不是合法 URL，展开前保留文本回退路径。
 - YAML 使用固定版本的 `serde-saphyr`。配置结构负责未知字段和类型校验。
 - 配置诊断统一封装 YAML 解析，行列号读取解析库的结构化位置；默认主题与主题切换共用一份配色定义，颜色解析使用 Ratatui。
@@ -98,8 +98,6 @@ JSON 保留原有共享字节、稀疏索引、按视口格式化和即时 token
 - 剪贴板使用 `arboard`，无可用图形后端时尝试平台命令。
 
 ## 已知限制
-
-当前限制：
 
 - 单个响应有接收上限，但多个请求保留的响应没有总内存预算；大 JSON 提取也可能放大内存。
 - 请求过滤仍扫描列表并转换大小写；Modified 判断会重建基线草稿，大请求预览仍可能克隆数据。视口渲染不等于所有输入规模下恒定耗时。

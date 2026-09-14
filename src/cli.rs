@@ -112,11 +112,12 @@ fn option_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result
 pub(crate) fn print_help() {
     print!(
         "用法:\n\
-  postui [项目目录] [--config <路径>] [--scenario <名称>] [--debug | --perf] [--log-file <路径>]\n\
+  postui [项目目录或 .postui 目录] [--config <路径>] [--scenario <名称>] [--debug | --perf] [--log-file <路径>]\n\
   postui init\n\
   postui --version\n\n\
-不传项目目录时，从当前目录向上查找 .postui。公共请求位于 .postui/requests，场景差异位于 .postui/scenarios。\n\
-个人语言和主题配置位于用户配置目录的 postui/config.yaml。\n\
+不传目录时，从当前目录向上查找最近的 .postui；未找到或无法访问时退出，不自动创建工作区。\n\
+公共请求位于 .postui/requests，场景差异位于 .postui/scenarios。\n\
+个人语言和主题配置使用各平台标准配置目录，详见配置文档；可用 --config 指定。\n\
 --config 指定个人界面配置；--scenario 指定启动场景，不修改项目默认配置。\n\
 默认 debug 日志: .postui/logs/postui-debug.log\n\
 --debug 仅在 debug 构建中可用。\n\

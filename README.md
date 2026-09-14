@@ -1,6 +1,8 @@
 # PostUI
 
-PostUI 是一个终端界面的 HTTP 请求工具，支持 `GET` 和 `POST`，支持 Linux、Windows 和 macOS。
+PostUI 是一个终端界面的 HTTP 请求工具，支持标准及扩展 HTTP 方法，支持 Linux、Windows 和 macOS。
+
+请求文件通过 `method: PUT`、`method: PATCH` 等声明方法，场景可单独覆盖；完整写法见 [HTTP 方法配置](docs/configuration.md#http-方法配置)。
 
 界面以鼠标操作为主。
 
@@ -35,11 +37,11 @@ curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | sh
 指定版本、目录或跳过 shell 初始化：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | sh -s -- --version 0.1.1 --prefix "$HOME/.local/share/postui" --skip-init
+curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | sh -s -- --version 0.1.2 --prefix "$HOME/.local/share/postui" --skip-init
 ```
 
 ```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content)) -Version 0.1.1 -InstallDir "$env:LOCALAPPDATA\Programs\PostUI" -SkipInit
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content)) -Version 0.1.2 -InstallDir "$env:LOCALAPPDATA\Programs\PostUI" -SkipInit
 ```
 
 跳过初始化后使用安装目录中的 `postui`（Windows 为 `postui.exe`）启动，或自行加入 PATH。也可解压 Release 发布包后运行其中的 `install.sh` / `install.ps1`，直接安装本地二进制。
@@ -99,11 +101,11 @@ macOS 发布包（在对应架构的 macOS 上运行）：
 仓库中的 GitHub Actions 会在推送 `v*` 版本标签后，自动构建 Linux amd64、Windows amd64、macOS Intel 和 macOS Apple Silicon，并创建 GitHub Release。发布新版本只需要推送标签：
 
 ```bash
-git tag -a v0.1.1 -m "Release v0.1.1"
-git push origin main v0.1.1
+git tag -a v0.1.2 -m "Release v0.1.2"
+git push origin main v0.1.2
 ```
 
-如需重发，在 Actions 中手动运行发布工作流并填写已有标签（例如 `v0.1.1`）；工作流会检出该标签并更新附件，不需要移动标签。
+如需重发，在 Actions 中手动运行发布工作流并填写已有标签（例如 `v0.1.2`）；工作流会检出该标签并更新附件，不需要移动标签。
 
 ## 配置
 
@@ -114,7 +116,7 @@ git push origin main v0.1.1
 url: https://example.test/health
 ```
 
-运行 `postui /path/to/project`，或在项目目录及子目录中直接运行 `postui`。
+运行 `postui /path/to/project` 或 `postui /path/to/project/.postui`；在项目目录及子目录中直接运行 `postui` 会向上查找最近的工作区。未找到或无法访问时退出，不自动创建目录。
 
 需要多个场景时，共享请求保持一份：
 
@@ -155,9 +157,11 @@ theme: catppuccin-mocha
 max_response_display_bytes: 16777216
 ```
 
-默认从用户配置目录读取 `postui/config.yaml`，也可使用 `--config <路径>`。显示上限不影响完整响应下载。
+默认从各平台标准配置目录读取个人偏好，具体路径见[个人偏好](docs/configuration.md#个人偏好)，也可使用 `--config <路径>`。显示上限不影响完整响应下载。
 
 响应区支持点击或用左右键切换 Raw / Formatted / Headers。JSON 保留按视口格式化与即时高亮；XML、表单支持美化，其他常见代码格式使用 Syntect 后台分页高亮，HTML 等保留原文排版。复制与下载始终保留原始 Body。本地接口可放在 Git 忽略的 `example-api/` 目录中手工验证。
+
+单击接口选择，双击接口直接发送；发送中的接口忽略双击。
 
 常用快捷键：`/` 搜索请求（响应区聚焦时搜索响应体），`n`/`N` 跳转响应匹配项，`r` 发送或取消，`R` 重载配置，`w` 切换场景，`v` 打开变量，`o` 打开响应操作，`u` 恢复当前请求，`X` 恢复当前场景全部请求修改，`?` 查看当前区域的按键表。
 
@@ -165,4 +169,4 @@ max_response_display_bytes: 16777216
 
 参数、请求头用 `a` 添加行、`Enter` 编辑、`Delete` / `d` 删除行，请求头用空格启停。表格删除仅影响会话；接口列表的 `Delete` 会先确认，再删除源文件。编辑和搜索输入内，`Enter` / `Tab` 应用，`Esc` / `Ctrl+C` 取消输入；其他界面的 `Ctrl+C` 请求退出，确认框内则取消确认。普通字母快捷键不接受额外的 Ctrl/Alt 修饰键。
 
-仅支持新配置规范，不兼容旧 `configs/`、`default_configuration` 或 Header 条目数组。Header 使用映射，重复值使用字符串列表。详细字段、场景合并和保存规则见[配置与请求文件](docs/configuration.md)，可运行示例见[公共 API 双场景示例](examples/public-api/README.md)。
+Header 使用映射，重复值使用字符串列表。详细字段、场景合并和会话修改规则见[配置与请求文件](docs/configuration.md)，可运行示例见[公共 API 双场景示例](examples/public-api/README.md)。

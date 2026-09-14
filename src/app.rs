@@ -6,6 +6,7 @@ use std::{
 use crate::shortcuts::{self, Command, Context};
 use crate::{
     config::{ApiRequest, DataPart, RequestConfig, RequestParam, WorkspaceConfig},
+    http_method,
     i18n::UiText,
     request_executor::RequestExecutor,
     request_file::RequestFileStore,
@@ -424,11 +425,6 @@ impl App {
         let next = (current as isize + delta).rem_euclid(count as isize) as usize;
         self.select_request(visible[next]);
     }
-}
-
-pub(crate) fn supports_method(method: &str) -> bool {
-    let method = method.trim();
-    method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST")
 }
 
 pub(crate) fn key_kind(code: KeyCode) -> &'static str {

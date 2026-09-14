@@ -21,7 +21,7 @@ package-macos.sh     macOS Intel/Apple Silicon 打包脚本
 
 | 路径 | 原因 |
 | --- | --- |
-| 用户配置目录中的 `postui/config.yaml` | 个人语言和主题偏好 |
+| [平台标准配置目录](configuration.md#个人偏好)中的个人配置 | 个人语言和主题偏好 |
 | 根目录 `.postui/` | 个人工作区、变量和请求配置 |
 | 根目录 `test_files/` 中的真实文件 | 用户上传内容 |
 | 根目录 `themes/` | 本地主题配置 |
