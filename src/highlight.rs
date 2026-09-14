@@ -135,7 +135,7 @@ fn syntax_theme(name: &str) -> &'static Theme {
         .themes
         .get(DEFAULT_SYNTAX_THEME)
         .or_else(|| themes.themes.values().next())
-        .expect("syntect 默认主题不应为空")
+        .expect("syntect must provide at least one default theme")
 }
 
 fn syntect_style(style: syntect::highlighting::Style) -> Style {

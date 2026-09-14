@@ -66,7 +66,7 @@ impl App {
             return body;
         }
         serde_json::from_str::<serde_json::Value>(&body).map_or(body, |value| {
-            serde_json::to_string_pretty(&value).expect("JSON 请求体应可序列化")
+            serde_json::to_string_pretty(&value).expect("JSON request body must be serializable")
         })
     }
 

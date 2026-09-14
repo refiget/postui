@@ -83,12 +83,13 @@ impl App {
         }
     }
 
-    pub(super) fn paste_request_search(&mut self, value: &str) {
+    pub(super) fn paste_request_search(&mut self, value: &str) -> bool {
         let Some(search) = self.view.requests.search.as_mut() else {
-            return;
+            return false;
         };
-        search.paste(value);
+        let truncated = search.paste(value);
         self.select_first_search_result();
+        truncated
     }
 
     fn select_first_search_result(&mut self) {

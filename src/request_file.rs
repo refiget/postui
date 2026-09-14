@@ -27,15 +27,20 @@ impl RequestFileStore {
 
     pub fn delete(&self, request_id: &str) -> Result<()> {
         let path = self.path_for_id(request_id)?;
-        fs::remove_file(&path).with_context(|| format!("无法删除请求文件: {}", path.display()))?;
+        fs::remove_file(&path)
+            .with_context(|| format!("Could not delete request file: {}", path.display()))?;
         tracing::debug!(path = %path.display(), "删除请求文件");
         Ok(())
     }
 
     pub fn create(&self, name: &str, request: &RequestDocument) -> Result<PathBuf> {
         let directory = self.workspace_path.join("requests");
-        fs::create_dir_all(&directory)
-            .with_context(|| format!("无法创建请求目录: {}", directory.display()))?;
+        fs::create_dir_all(&directory).with_context(|| {
+            format!(
+                "Could not create request directory: {}",
+                directory.display()
+            )
+        })?;
 
         let stem = request_file_stem(name);
         create_yaml_file(&directory, &stem, request)
@@ -46,9 +51,15 @@ impl RequestFileStore {
         path: &Path,
         configuration: &ConfigurationDocument,
     ) -> Result<()> {
-        let directory = path.parent().ok_or_else(|| anyhow!("场景配置路径无效"))?;
-        fs::create_dir_all(directory)
-            .with_context(|| format!("无法创建场景目录: {}", directory.display()))?;
+        let directory = path
+            .parent()
+            .ok_or_else(|| anyhow!("Invalid scenario configuration path"))?;
+        fs::create_dir_all(directory).with_context(|| {
+            format!(
+                "Could not create scenario directory: {}",
+                directory.display()
+            )
+        })?;
         write_yaml_file(path, configuration)
     }
 
@@ -56,7 +67,7 @@ impl RequestFileStore {
         let relative = request_id
             .strip_prefix("requests/")
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("请求没有可写入的源文件"))?;
+            .ok_or_else(|| anyhow::anyhow!("Request has no writable source file"))?;
         let relative_path = Path::new(relative);
         if relative_path.is_absolute()
             || relative_path.components().any(|component| {
@@ -66,7 +77,7 @@ impl RequestFileStore {
                 )
             })
         {
-            bail!("请求源路径无效")
+            bail!("Invalid request source path")
         }
         Ok(self.workspace_path.join("requests").join(relative_path))
     }
@@ -108,7 +119,7 @@ fn create_yaml_file<T: serde::Serialize>(
     stem: &str,
     value: &T,
 ) -> Result<PathBuf> {
-    let contents = serde_saphyr::to_string(value).context("无法序列化配置")?;
+    let contents = serde_saphyr::to_string(value).context("Could not serialize configuration")?;
     for suffix in 1_u32.. {
         let file_name = if suffix == 1 {
             format!("{stem}.yaml")
@@ -129,7 +140,7 @@ fn create_yaml_file<T: serde::Serialize>(
             }
             Err(error) => {
                 let save_error = Err(anyhow!(error))
-                    .with_context(|| format!("无法保存请求文件: {}", path.display()));
+                    .with_context(|| format!("Could not save request file: {}", path.display()));
                 return match remove_temporary_file(&temporary) {
                     Ok(()) => save_error,
                     Err(cleanup_error) => save_error.map_err(|error| error.context(cleanup_error)),
@@ -141,7 +152,7 @@ fn create_yaml_file<T: serde::Serialize>(
 }
 
 fn write_yaml_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let text = serde_saphyr::to_string(value).context("无法序列化配置")?;
+    let text = serde_saphyr::to_string(value).context("Could not serialize configuration")?;
     let temporary = temporary_path(path);
     let result = write_temporary_file(&temporary, path, text.as_bytes())
         .and_then(|()| replace_file(&temporary, path));
@@ -159,16 +170,17 @@ fn write_temporary_file(temporary: &Path, path: &Path, contents: &[u8]) -> Resul
         .write(true)
         .create_new(true)
         .open(temporary)
-        .with_context(|| format!("无法创建临时请求文件: {}", temporary.display()))?;
+        .with_context(|| format!("Could not create temporary file: {}", temporary.display()))?;
     file.write_all(contents)
         .and_then(|()| file.sync_all())
-        .with_context(|| format!("无法写入请求文件: {}", path.display()))?;
+        .with_context(|| format!("Could not write request file: {}", path.display()))?;
     Ok(())
 }
 
 #[cfg(not(windows))]
 fn replace_file(temporary: &Path, path: &Path) -> Result<()> {
-    fs::rename(temporary, path).with_context(|| format!("无法保存请求文件: {}", path.display()))?;
+    fs::rename(temporary, path)
+        .with_context(|| format!("Could not save request file: {}", path.display()))?;
     Ok(())
 }
 
@@ -192,7 +204,7 @@ fn replace_file(temporary: &Path, path: &Path) -> Result<()> {
     let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
     if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
         return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("无法保存请求文件: {}", path.display()));
+            .with_context(|| format!("Could not save request file: {}", path.display()));
     }
     Ok(())
 }
@@ -206,7 +218,7 @@ fn sync_parent_directory(path: &Path) -> Result<()> {
         .read(true)
         .open(directory)
         .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("无法同步请求目录: {}", directory.display()))
+        .with_context(|| format!("Could not sync request directory: {}", directory.display()))
 }
 
 #[cfg(not(unix))]
@@ -218,8 +230,7 @@ fn remove_temporary_file(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(anyhow!(error)).with_context(|| format!("无法清理临时请求文件: {}", path.display()))
-        }
+        Err(error) => Err(anyhow!(error))
+            .with_context(|| format!("Could not remove temporary file: {}", path.display())),
     }
 }

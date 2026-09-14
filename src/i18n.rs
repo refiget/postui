@@ -58,6 +58,10 @@ impl UiText {
         self.pick("Directory is required", "请输入目录")
     }
 
+    pub(crate) fn paste_truncated(self) -> &'static str {
+        self.pick("Paste limited to 1 MiB", "粘贴内容已限制为 1 MiB")
+    }
+
     pub(crate) fn workspace_min_size(self) -> &'static str {
         self.pick("Minimum terminal size: 48 × 20", "窗口最小尺寸：48 × 20")
     }

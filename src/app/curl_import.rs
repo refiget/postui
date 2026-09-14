@@ -1,4 +1,5 @@
 use super::App;
+use crate::editor::sanitize_paste;
 use crate::shortcuts::{self, Command, Context};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
@@ -522,18 +523,15 @@ impl App {
             page.focus,
             CurlImportFocus::RegisteredVariables | CurlImportFocus::Command
         );
+        let (value, truncated) = sanitize_paste(value, multiline);
         let Some(field) = page.active_field_mut() else {
             return;
         };
-        if multiline {
-            field.insert(value);
-        } else {
-            for (index, line) in value.lines().enumerate() {
-                if index > 0 {
-                    field.insert(" ");
-                }
-                field.insert(line);
-            }
+        field.insert(&value);
+        if truncated {
+            self.view.notice = Some(super::Feedback::Warning(
+                self.text().paste_truncated().to_string(),
+            ));
         }
     }
 }

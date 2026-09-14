@@ -6,6 +6,25 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 
+pub(crate) const MAX_PASTE_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn sanitize_paste(value: &str, multiline: bool) -> (String, bool) {
+    let mut sanitized = String::with_capacity(value.len().min(MAX_PASTE_BYTES));
+    let mut truncated = false;
+    for character in value.chars() {
+        let keep = !character.is_control() || multiline && character == '\n';
+        if !keep {
+            continue;
+        }
+        if sanitized.len().saturating_add(character.len_utf8()) > MAX_PASTE_BYTES {
+            truncated = true;
+            break;
+        }
+        sanitized.push(character);
+    }
+    (sanitized, truncated)
+}
+
 pub(crate) fn open_file(path: &Path) -> Result<()> {
     if let Some(editor) = configured_editor("VISUAL").or_else(|| configured_editor("EDITOR")) {
         return run_editor(editor, &[], path);
@@ -96,13 +115,10 @@ impl EditInput {
         self.value
     }
 
-    pub(crate) fn paste(&mut self, value: &str) {
-        let value = value
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect::<String>();
+    pub(crate) fn paste(&mut self, value: &str) -> bool {
+        let (value, truncated) = sanitize_paste(value, false);
         if value.is_empty() {
-            return;
+            return truncated;
         }
         if self.mode == EditMode::Replace {
             self.value.clear();
@@ -111,6 +127,7 @@ impl EditInput {
         }
         self.value.insert_str(self.cursor, &value);
         self.cursor += value.len();
+        truncated
     }
 
     fn insert(&mut self, character: char) {

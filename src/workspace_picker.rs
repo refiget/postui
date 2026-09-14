@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::{
+    editor::sanitize_paste,
     i18n::UiText,
     paths::resolve_workspace,
     recent_workspaces::RecentWorkspaces,
@@ -79,10 +80,7 @@ pub(crate) fn run(config: &mut GlobalConfig, debug: bool) -> Result<Option<PathB
         terminal.draw(|frame| draw(frame, &picker, &config.theme, text, debug))?;
         let event = event::read()?;
         if let Event::Paste(value) = event {
-            let value = value
-                .chars()
-                .filter(|character| !character.is_control())
-                .collect::<String>();
+            let (value, truncated) = sanitize_paste(&value, false);
             match picker.input {
                 Some(Input::Search) => {
                     picker.query.push_str(&value);
@@ -90,6 +88,9 @@ pub(crate) fn run(config: &mut GlobalConfig, debug: bool) -> Result<Option<PathB
                 }
                 Some(Input::Path) => picker.path.push_str(&value),
                 None => {}
+            }
+            if truncated {
+                picker.notice = text.paste_truncated().to_string();
             }
             continue;
         }

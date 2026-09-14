@@ -4,48 +4,51 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 impl App {
     pub(crate) fn handle_paste(&mut self, value: &str) {
+        if self.error_page().is_some() || self.view.help_scroll.is_some() {
+            return;
+        }
         if self.view.curl_import.is_some() {
+            if self.view.dialog.is_some() {
+                return;
+            }
             self.handle_curl_import_paste(value);
             return;
         }
+        if self.view.prompt.is_some() || self.view.response.menu.is_open() {
+            return;
+        }
+        let mut truncated = false;
         if let Some(search) = self.view.response.search.as_mut() {
-            search.paste(value);
-            return;
-        }
-        if self.view.requests.search.is_some() {
-            self.paste_request_search(value);
-            return;
-        }
-        if let Some(page) = self.view.variables.as_mut() {
+            truncated = search.paste(value);
+        } else if self.view.requests.search.is_some() {
+            truncated = self.paste_request_search(value);
+        } else if let Some(page) = self.view.variables.as_mut() {
             if let Some(editor) = page.editor.as_mut() {
-                editor.paste(value);
+                truncated = editor.paste(value);
             }
-            return;
-        }
-        if let Some(dialog) = self.view.dialog.as_mut() {
+        } else if let Some(dialog) = self.view.dialog.as_mut() {
             match dialog {
                 Dialog::Configurations(_) => {}
                 Dialog::Headers(dialog) => {
                     if let Some(editor) = dialog.editor.as_mut() {
-                        editor.paste(value);
+                        truncated = editor.paste(value);
                     }
                 }
                 Dialog::Params(dialog) => {
                     if let Some(editor) = dialog.editor.as_mut() {
-                        editor.paste(value);
+                        truncated = editor.paste(value);
                     }
                 }
             }
-            return;
-        }
-        if let Some(editor) = self.view.preview.temporary_variables.editor_mut() {
-            editor.input.paste(value);
-            return;
-        }
-        if let Some(editor) = self.view.preview.editor.as_mut() {
-            editor.input.paste(value);
+        } else if let Some(editor) = self.view.preview.temporary_variables.editor_mut() {
+            truncated = editor.input.paste(value);
+        } else if let Some(editor) = self.view.preview.editor.as_mut() {
+            truncated = editor.input.paste(value);
         } else if let Some(editor) = self.view.preview.file_editor.as_mut() {
-            editor.input.paste(value);
+            truncated = editor.input.paste(value);
+        }
+        if truncated {
+            self.view.notice = Some(Feedback::Warning(self.text().paste_truncated().to_string()));
         }
     }
 

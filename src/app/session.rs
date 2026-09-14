@@ -380,7 +380,7 @@ impl WorkspaceSession {
         let configuration = config
             .configurations
             .get(&active_configuration)
-            .expect("默认配置应已在加载时规范化");
+            .expect("default configuration must be normalized during loading");
         Self {
             active_configuration: active_configuration.clone(),
             variables,
@@ -407,7 +407,7 @@ impl WorkspaceSession {
         let target_configuration = config
             .configurations
             .get(configuration)
-            .expect("已验证配置存在")
+            .expect("configuration existence checked above")
             .clone();
         for session in &mut self.requests {
             session.activate_configuration(
