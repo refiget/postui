@@ -24,16 +24,6 @@ pub struct VariableDefinitionDocument {
     pub temporary: bool,
 }
 
-impl From<VariableDefinition> for RawVariableDefinition {
-    fn from(definition: VariableDefinition) -> Self {
-        Self::Definition(VariableDefinitionDocument {
-            value: definition.default,
-            secret: definition.secret,
-            temporary: definition.temporary,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestDocument {
@@ -136,7 +126,7 @@ impl From<&WorkspaceConfiguration> for ConfigurationDocument {
             variables: configuration
                 .variables
                 .iter()
-                .map(|(name, definition)| (name.clone(), Some(definition.clone().into())))
+                .map(|(name, definition)| (name.clone(), variable_document(definition)))
                 .collect(),
             headers: configuration.headers.clone(),
             timeout: configuration.timeout_seconds,
@@ -156,6 +146,19 @@ impl From<&WorkspaceConfiguration> for ConfigurationDocument {
                 .collect(),
         }
     }
+}
+
+fn variable_document(definition: &VariableDefinition) -> Option<RawVariableDefinition> {
+    if !definition.secret && definition.temporary {
+        return definition.default.clone().map(RawVariableDefinition::Value);
+    }
+    Some(RawVariableDefinition::Definition(
+        VariableDefinitionDocument {
+            value: definition.default.clone(),
+            secret: definition.secret,
+            temporary: definition.temporary,
+        },
+    ))
 }
 
 impl From<&RequestOverride> for RequestOverrideDocument {

@@ -1,4 +1,4 @@
-use super::{Dialog, Feedback, PreviewTab, ResponseTab, VariablesPage};
+use super::{CurlImportPage, Dialog, Feedback, PreviewTab, ResponseTab, VariablesPage};
 use crate::editor::{BodyValueEditor, EditInput};
 use std::time::{Duration, Instant};
 
@@ -188,7 +188,7 @@ impl TemporaryVariablesView {
 #[derive(Debug, Default)]
 pub(crate) struct ResponseContentState {
     pub(crate) scroll: ResponseScrollState,
-    pub(crate) menu_selection: Option<usize>,
+    pub(crate) menu: tui_assets_rust::DropdownState,
     pub(crate) active_tab: ResponseTab,
     pub(crate) search: Option<EditInput>,
     pub(crate) search_query: String,
@@ -286,6 +286,7 @@ pub(crate) struct ViewState {
     pub(crate) preview: PreviewContentState,
     pub(crate) response: ResponseContentState,
     pub(crate) variables: Option<VariablesPage>,
+    pub(crate) curl_import: Option<CurlImportPage>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) prompt: Option<AppPrompt>,
     pub(crate) notice: Option<Feedback>,
@@ -303,6 +304,7 @@ impl Default for ViewState {
             preview: PreviewContentState::default(),
             response: ResponseContentState::default(),
             variables: None,
+            curl_import: None,
             dialog: None,
             prompt: None,
             notice: None,
@@ -329,6 +331,7 @@ impl ViewState {
 
     pub(crate) fn is_editing(&self) -> bool {
         self.preview.is_editing()
+            || self.curl_import.is_some()
             || self.response.search.is_some()
             || self.requests.search.is_some()
             || self

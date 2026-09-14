@@ -33,9 +33,25 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, content_area: Rect, app: &App) {
+pub(super) fn draw_header(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    content_area: Rect,
+    action_area: Rect,
+    app: &App,
+) {
     let theme = &app.global_config.theme;
     let focus = FocusStyles::new(app.view.focus, theme);
+    let title_area = if action_area.is_empty() {
+        content_area
+    } else {
+        Rect::new(
+            content_area.x,
+            content_area.y,
+            action_area.x.saturating_sub(content_area.x),
+            content_area.height,
+        )
+    };
     let mut line = vec![
         Span::styled(
             " POSTUI ",
@@ -69,7 +85,16 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, content_area: Rect,
     );
     frame.render_widget(
         Paragraph::new(Line::from(line)).style(Style::default().fg(theme.text)),
-        content_area,
+        title_area,
+    );
+    draw_response_toolbar_button_left(
+        frame,
+        action_area,
+        "+ 新建",
+        "+",
+        FlatButtonState::Idle,
+        theme.primary,
+        theme,
     );
 }
 

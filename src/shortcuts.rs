@@ -11,6 +11,7 @@ pub(crate) enum Context {
     Params,
     Menu,
     Variables,
+    CurlImport,
     Confirm,
     Editor,
     Help,
@@ -35,12 +36,11 @@ pub(crate) enum Command {
     Reload,
     Workspace,
     Variables,
+    ImportCurl,
     ResponseMenu,
     Search,
     NextMatch,
     PreviousMatch,
-    PreviousTab,
-    NextTab,
     Help,
     Theme,
     ResetRequest,
@@ -116,18 +116,19 @@ const GLOBAL: &[Binding] = &[
         "上一焦点",
         plain(BackTab)
     ),
-    binding!(Send, "r", "Send/Stop", "发送/停止", plain(Char('r'))),
-    binding!(Reload, "R", "Reload YAML", "重载 YAML", plain(Char('R'))),
-    binding!(Workspace, "w", "Scenario", "场景", plain(Char('w'))),
+    binding!(Send, "s", "Send/Stop", "发送/停止", plain(Char('s'))),
+    binding!(Reload, "r", "Reload", "重载", plain(Char('r'))),
+    binding!(Workspace, "c", "Scenario", "场景", plain(Char('c'))),
     binding!(Variables, "v", "Variables", "变量", plain(Char('v'))),
+    binding!(ImportCurl, "n", "New", "新建", plain(Char('n'))),
     binding!(
         ResponseMenu,
-        "o",
+        "m",
         "Response actions",
         "响应操作",
-        plain(Char('o'))
+        plain(Char('m'))
     ),
-    binding!(Search, "/", "Filter requests", "筛选接口", plain(Char('/'))),
+    binding!(Search, "/", "Filter", "筛选", plain(Char('/'))),
     binding!(Help, "?", "Keys", "按键", plain(Char('?'))),
     binding!(
         Back,
@@ -147,8 +148,8 @@ const GLOBAL: &[Binding] = &[
     ),
 ];
 const MOVEMENT: &[Binding] = &[
-    binding!(Up, "↑/k", "Up", "上移", plain(Up), plain(Char('k'))),
-    binding!(Down, "↓/j", "Down", "下移", plain(Down), plain(Char('j'))),
+    binding!(Up, "k/↑", "Up", "上移", plain(Char('k')), plain(Up)),
+    binding!(Down, "j/↓", "Down", "下移", plain(Char('j')), plain(Down)),
 ];
 const REQUESTS: &[Binding] = &[
     binding!(
@@ -160,42 +161,19 @@ const REQUESTS: &[Binding] = &[
     ),
     binding!(
         ResetScenario,
-        "X",
+        "U",
         "Reset scenario",
         "重置场景",
-        plain(Char('X'))
+        plain(Char('U'))
     ),
     binding!(
         Delete,
-        "Delete",
+        "d/Delete",
         "Delete source file (confirm)",
         "删除源文件（确认）",
+        plain(Char('d')),
         plain(Delete)
     ),
-];
-const PREVIEW: &[Binding] = &[
-    binding!(
-        Left,
-        "←/h/k",
-        "Previous tab",
-        "上一页签",
-        plain(Left),
-        plain(Char('h')),
-        plain(Char('k'))
-    ),
-    binding!(
-        Right,
-        "→/j/l",
-        "Next tab",
-        "下一页签",
-        plain(Right),
-        plain(Char('j')),
-        plain(Char('l'))
-    ),
-];
-const RESPONSE_TABS: &[Binding] = &[
-    binding!(Left, "←", "Previous tab", "上一页签", plain(Left)),
-    binding!(Right, "→", "Next tab", "下一页签", plain(Right)),
 ];
 const RESPONSE: &[Binding] = &[
     binding!(Search, "/", "Search response", "搜索响应", plain(Char('/'))),
@@ -209,8 +187,22 @@ const RESPONSE: &[Binding] = &[
     ),
 ];
 const TABLE: &[Binding] = &[
-    binding!(Left, "←", "Name column", "名称列", plain(Left)),
-    binding!(Right, "→", "Value column", "值列", plain(Right)),
+    binding!(
+        Left,
+        "h/←",
+        "Name column",
+        "名称列",
+        plain(Char('h')),
+        plain(Left)
+    ),
+    binding!(
+        Right,
+        "l/→",
+        "Value column",
+        "值列",
+        plain(Char('l')),
+        plain(Right)
+    ),
     binding!(
         Activate,
         "Enter/Space",
@@ -222,7 +214,7 @@ const TABLE: &[Binding] = &[
     binding!(Add, "a", "Add row", "添加行", plain(Char('a'))),
     binding!(
         Delete,
-        "Delete/d",
+        "d/Delete",
         "Remove row (session)",
         "删除行（会话）",
         plain(Delete),
@@ -268,6 +260,18 @@ const VARIABLES: &[Binding] = &[
         plain(Char(' '))
     ),
     binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
+];
+const CURL_IMPORT: &[Binding] = &[
+    binding!(FocusNext, "Tab", "Next field", "下一字段", plain(Tab)),
+    binding!(
+        FocusPrevious,
+        "Shift+Tab",
+        "Previous field",
+        "上一字段",
+        plain(BackTab)
+    ),
+    binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
+    binding!(Clear, "Ctrl+U", "Clear", "清空", ctrl(Char('u'))),
 ];
 const CONFIRM: &[Binding] = &[
     binding!(
@@ -392,19 +396,21 @@ const COMMON: &[Binding] = &[
 ];
 const TABS: &[Binding] = &[
     binding!(
-        PreviousTab,
-        "h/Alt+←",
+        Left,
+        "h/←",
         "Previous tab",
         "上一页签",
         plain(Char('h')),
+        plain(Left),
         (Left, KeyModifiers::ALT)
     ),
     binding!(
-        NextTab,
-        "l/Alt+→",
+        Right,
+        "l/→",
         "Next tab",
         "下一页签",
         plain(Char('l')),
+        plain(Right),
         (Right, KeyModifiers::ALT)
     ),
 ];
@@ -414,12 +420,13 @@ fn bindings(context: Context, debug: bool) -> impl Iterator<Item = &'static Bind
     let groups: &[&[Binding]] = match context {
         Context::Global => &[GLOBAL],
         Context::Requests => &[REQUESTS, MOVEMENT],
-        Context::Preview => &[PREVIEW, MOVEMENT],
-        Context::Response => &[RESPONSE, RESPONSE_TABS, MOVEMENT],
+        Context::Preview => &[MOVEMENT],
+        Context::Response => &[RESPONSE, MOVEMENT],
         Context::Headers => &[HEADERS, TABLE, MOVEMENT],
         Context::Params => &[TABLE, MOVEMENT],
         Context::Menu => &[MENU, MOVEMENT],
         Context::Variables => &[VARIABLES, MOVEMENT],
+        Context::CurlImport => &[CURL_IMPORT],
         Context::Confirm => &[CONFIRM],
         Context::Editor => &[EDITOR],
         Context::Help => &[HELP],

@@ -1,4 +1,6 @@
+use super::curl_import::CurlImportLayout;
 use super::*;
+use crate::app::CurlImportFocus;
 
 pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     if app.error_page().is_some() {
@@ -26,9 +28,20 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
         handle_variables_mouse(app, event, variables_page(area).response, is_double);
         return;
     }
+    if app.view.curl_import.is_some() {
+        app.view.response.scroll.drag_anchor = None;
+        let layout = curl_import_layout(variables_page(area).response);
+        if matches!(app.view.dialog, Some(Dialog::Configurations(_))) {
+            handle_configuration_mouse(app, event, area, layout.workspace, Some(layout));
+        } else {
+            handle_curl_import_mouse(app, event, layout);
+        }
+        return;
+    }
     if matches!(app.view.dialog, Some(Dialog::Configurations(_))) {
         app.view.response.scroll.drag_anchor = None;
-        handle_configuration_mouse(app, event, area);
+        let selector = screen_layout_for_app(area, app).workspace_selector;
+        handle_configuration_mouse(app, event, area, selector, None);
         return;
     }
     let areas = screen_layout_for_app(area, app);
@@ -71,7 +84,7 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
             );
             handle_scroll(app, event.column, event.row, areas, direction);
         }
-        MouseEventKind::Moved if app.view.response.menu_selection.is_some() => {
+        MouseEventKind::Moved if app.view.response.menu.is_open() => {
             update_response_hover(app, event.column, event.row, areas);
         }
         _ => {}
@@ -87,11 +100,20 @@ fn update_response_hover(app: &mut App, column: u16, row: u16, areas: UiLayout) 
 
     let index = usize::from(row.saturating_sub(content.y));
     if index < ResponseMenuAction::all().len() {
-        app.view.response.menu_selection = Some(index);
+        app.view
+            .response
+            .menu
+            .select(index, ResponseMenuAction::all().len());
     }
 }
 
-fn handle_configuration_mouse(app: &mut App, event: MouseEvent, area: Rect) {
+fn handle_configuration_mouse(
+    app: &mut App,
+    event: MouseEvent,
+    area: Rect,
+    selector: Rect,
+    curl_layout: Option<CurlImportLayout>,
+) {
     let areas = screen_layout_for_app(area, app);
     let Some(row_count) = app.view.dialog.as_ref().and_then(|dialog| match dialog {
         Dialog::Configurations(dialog) => Some(dialog.rows.len()),
@@ -99,61 +121,95 @@ fn handle_configuration_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     }) else {
         return;
     };
-    let menu = configuration_menu_area(area, areas.workspace_selector, row_count);
-    let content = menu.inner(Margin::new(1, 1));
-    match event.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            if contains(content, event.column, event.row) {
-                let index = usize::from(event.row.saturating_sub(content.y));
-                if index < row_count {
-                    app.click_configuration_row(index);
-                    app.apply_dialog();
-                }
-            } else {
-                app.close_dialog();
-                if contains(areas.workspace_selector, event.column, event.row) {
-                    app.view.focus = Focus::WorkspaceButton;
-                } else {
-                    handle_click(app, event.column, event.row, areas, false);
-                }
-            }
+    let menu = configuration_menu_area(area, selector, row_count);
+    let dropdown_event = match app.view.dialog.as_mut() {
+        Some(Dialog::Configurations(dialog)) => {
+            dialog.state.handle_mouse(event, selector, menu, row_count)
         }
-        MouseEventKind::Moved if contains(content, event.column, event.row) => {
-            let index = usize::from(event.row.saturating_sub(content.y));
-            if index < row_count {
-                app.click_configuration_row(index);
-            }
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            if contains(content, event.column, event.row) =>
-        {
-            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                -1
-            } else {
-                1
-            };
-            app.move_dialog_selection(direction);
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                -1
-            } else {
-                1
-            };
+        _ => return,
+    };
+    match dropdown_event {
+        tui_assets_rust::DropdownEvent::Selected(_) => app.apply_dialog(),
+        tui_assets_rust::DropdownEvent::Closed => {
             app.close_dialog();
-            handle_scroll(app, event.column, event.row, areas, direction);
+            if !contains(selector, event.column, event.row) {
+                if let Some(layout) = curl_layout {
+                    handle_curl_import_click(app, event.column, event.row, layout);
+                } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    handle_click(app, event.column, event.row, areas, false);
+                } else if matches!(
+                    event.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                        -1
+                    } else {
+                        1
+                    };
+                    handle_scroll(app, event.column, event.row, areas, direction);
+                }
+            }
         }
-        _ => {}
+        tui_assets_rust::DropdownEvent::Opened => {
+            if curl_layout.is_some() {
+                app.focus_curl_import(CurlImportFocus::Workspace);
+            } else {
+                app.view.focus = Focus::WorkspaceButton;
+            }
+        }
+        tui_assets_rust::DropdownEvent::None
+        | tui_assets_rust::DropdownEvent::SelectionChanged(_) => {}
     }
+}
+
+fn handle_curl_import_mouse(app: &mut App, event: MouseEvent, layout: CurlImportLayout) {
+    let clicked = app.view.curl_import.as_mut().and_then(|page| {
+        page.handle_button_mouse(event, layout.workspace, layout.confirm, layout.cancel)
+    });
+    if let Some(focus) = clicked {
+        app.activate_curl_import(focus);
+        return;
+    }
+    if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
+        handle_curl_import_click(app, event.column, event.row, layout);
+    }
+}
+
+fn handle_curl_import_click(app: &mut App, column: u16, row: u16, layout: CurlImportLayout) {
+    if contains_curl_field(layout.name, layout.wide(), column, row) {
+        app.focus_curl_import(CurlImportFocus::Name);
+    } else if contains(layout.workspace, column, row) {
+        app.focus_curl_import(CurlImportFocus::Workspace);
+    } else if contains_curl_field(layout.description, layout.wide(), column, row) {
+        app.focus_curl_import(CurlImportFocus::Description);
+    } else if contains_curl_field(layout.registered_variables, layout.wide(), column, row) {
+        app.focus_curl_import(CurlImportFocus::RegisteredVariables);
+    } else if contains(layout.command, column, row) {
+        app.focus_curl_import(CurlImportFocus::Command);
+    } else if contains(layout.confirm, column, row) {
+        app.focus_curl_import(CurlImportFocus::Confirm);
+    } else if contains(layout.cancel, column, row) {
+        app.focus_curl_import(CurlImportFocus::Cancel);
+    }
+}
+
+fn contains_curl_field(area: Rect, stacked: bool, column: u16, row: u16) -> bool {
+    contains(area, column, row)
+        || stacked && row == area.y.saturating_sub(1) && column >= area.x && column < area.right()
 }
 
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double: bool) {
     if !is_double {
         app.view.cancel_active_editors();
     }
+    if contains(areas.header_action, column, row) {
+        app.view.focus = Focus::Header;
+        app.open_curl_import();
+        return;
+    }
     focus_panel_at(app, column, row, areas);
 
-    if app.view.response.menu_selection.is_some() {
+    if app.view.response.menu.is_open() {
         let menu = response_menu_area(areas.response, areas.response_menu_button);
         let content = menu.inner(Margin::new(1, 1));
         if contains(content, column, row) {
@@ -283,7 +339,7 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect, is_doubl
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
     focus_panel_at(app, column, row, areas);
     let response_menu = response_menu_area(areas.response, areas.response_menu_button);
-    if app.view.response.menu_selection.is_some() && contains(response_menu, column, row) {
+    if app.view.response.menu.is_open() && contains(response_menu, column, row) {
         app.move_response_menu_selection(direction);
     } else if contains(areas.request_scrollbar, column, row)
         || contains(areas.request_list, column, row)

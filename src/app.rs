@@ -16,6 +16,7 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent};
 
+mod curl_import;
 mod dialog;
 mod editing;
 mod error_page;
@@ -37,6 +38,7 @@ pub(crate) use view::{
 };
 use view::{PreviewContentState, ResponseContentState, ViewMode};
 
+pub(crate) use curl_import::{CurlImportFocus, CurlImportPage};
 use dialog::DialogAction;
 pub(crate) use dialog::{
     ConfigurationsDialog, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog,
@@ -251,6 +253,7 @@ impl App {
 
     pub(crate) fn has_pending_background_work(&self) -> bool {
         self.is_animating()
+            || self.curl_import_is_parsing()
             || self.workspace_reload.is_some()
             || self.response_search_task.is_some()
             || self.response_actions.is_running()

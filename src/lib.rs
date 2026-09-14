@@ -11,6 +11,7 @@ compile_error!("postui 仅支持 Linux amd64、Windows x86_64、macOS Intel 和 
 pub mod diagnostics;
 
 pub mod config;
+pub mod curl;
 pub mod highlight;
 pub mod http;
 pub mod http_method;

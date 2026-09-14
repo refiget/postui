@@ -63,7 +63,7 @@ pub(crate) struct ParamsDialogRow {
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigurationsDialog {
     pub(crate) rows: Vec<String>,
-    pub(crate) selected: usize,
+    pub(crate) state: tui_assets_rust::DropdownState,
 }
 
 #[derive(Debug, Clone)]
@@ -120,12 +120,10 @@ impl ConfigurationsDialog {
     }
 
     fn move_selection(&mut self, direction: isize) {
-        self.selected = move_index(self.selected, direction, self.rows.len());
-    }
-
-    fn click_row(&mut self, index: usize) {
-        if index < self.rows.len() {
-            self.selected = index;
+        if direction < 0 {
+            self.state.previous(self.rows.len());
+        } else if direction > 0 {
+            self.state.next(self.rows.len());
         }
     }
 }
@@ -434,21 +432,6 @@ impl Dialog {
             Self::Configurations(dialog) => dialog.handle_key(key),
             Self::Headers(dialog) => dialog.handle_key(key),
             Self::Params(dialog) => dialog.handle_key(key),
-        }
-    }
-
-    pub(super) fn move_selection(&mut self, direction: isize) {
-        self.cancel_editor();
-        match self {
-            Self::Configurations(dialog) => dialog.move_selection(direction),
-            Self::Headers(dialog) => dialog.move_selection(direction),
-            Self::Params(dialog) => dialog.move_selection(direction),
-        }
-    }
-
-    pub(super) fn click_configuration_row(&mut self, index: usize) {
-        if let Self::Configurations(dialog) = self {
-            dialog.click_row(index);
         }
     }
 

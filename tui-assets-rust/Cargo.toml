@@ -1,0 +1,11 @@
+[package]
+name = "tui-assets-rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Reusable Ratatui buttons and dropdowns"
+license = "MIT"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"

@@ -68,13 +68,104 @@ impl UiText {
 
     pub(crate) fn workspace_picker_hint(self) -> &'static str {
         self.pick(
-            "↑↓ Select  Enter Open  / Filter  o Directory  d Remove  q Quit",
-            "↑↓ 选择  Enter 打开  / 筛选  o 输入目录  d 移除记录  q 退出",
+            "j/k Select  Enter Open  / Filter  o Directory  d Remove  q Quit",
+            "j/k 选择  Enter 打开  / 筛选  o 输入目录  d 移除记录  q 退出",
         )
     }
 
     pub(crate) fn workspace(self) -> &'static str {
         self.pick("Workspace", "工作区")
+    }
+
+    pub(crate) fn curl_import_name(self) -> &'static str {
+        self.pick("* Name", "* 名称")
+    }
+
+    pub(crate) fn curl_import_title(self) -> &'static str {
+        self.pick("cURL import", "cURL 导入")
+    }
+
+    pub(crate) fn curl_import_details(self) -> &'static str {
+        self.pick("REQUEST DETAILS", "请求信息")
+    }
+
+    pub(crate) fn curl_import_request(self) -> &'static str {
+        self.pick("Request", "请求")
+    }
+
+    pub(crate) fn curl_import_description(self) -> &'static str {
+        self.pick("Description", "描述")
+    }
+
+    pub(crate) fn curl_import_variables(self) -> &'static str {
+        self.pick("Register variables", "注册变量")
+    }
+
+    pub(crate) fn curl_import_variables_hint(self) -> &'static str {
+        self.pick(
+            "{{example1}}\n{{example2}}\n{{example3}}=\"hello, world!\"",
+            "{{example1}}\n{{example2}}\n{{example3}}=\"hello, world!\"",
+        )
+    }
+
+    pub(crate) fn curl_import_workspace(self) -> &'static str {
+        self.pick("Workspace", "工作空间")
+    }
+
+    pub(crate) fn curl_import_command(self) -> &'static str {
+        self.pick("Command", "命令")
+    }
+
+    pub(crate) fn curl_import_confirm(self) -> &'static str {
+        self.pick("Import request", "导入请求")
+    }
+
+    pub(crate) fn curl_import_cancel(self) -> &'static str {
+        self.pick("Cancel", "取消")
+    }
+
+    pub(crate) fn curl_import_parsing(self) -> &'static str {
+        self.pick("Parsing", "解析中")
+    }
+
+    pub(crate) fn curl_import_saving(self) -> &'static str {
+        self.pick("Saving", "保存中")
+    }
+
+    pub(crate) fn curl_import_stopped(self) -> &'static str {
+        self.pick("Import stopped", "解析任务已停止")
+    }
+
+    pub(crate) fn curl_import_invalid_variable(self, value: &str) -> String {
+        match self.language {
+            Language::English => format!("Invalid variable: {value}"),
+            Language::Chinese => format!("变量格式无效: {value}"),
+        }
+    }
+
+    pub(crate) fn curl_import_duplicate_variable(self, name: &str) -> String {
+        match self.language {
+            Language::English => format!("Duplicate variable: {name}"),
+            Language::Chinese => format!("变量重复: {name}"),
+        }
+    }
+
+    pub(crate) fn curl_import_empty_variable(self) -> &'static str {
+        self.pick("Variable list contains an empty item", "变量列表存在空项")
+    }
+
+    pub(crate) fn curl_import_unclosed_default(self) -> &'static str {
+        self.pick(
+            "Variable default has an unclosed quote",
+            "变量默认值引号未闭合",
+        )
+    }
+
+    pub(crate) fn curl_import_invalid_default(self, value: &str) -> String {
+        match self.language {
+            Language::English => format!("Invalid variable default: {value}"),
+            Language::Chinese => format!("变量默认值无效: {value}"),
+        }
     }
 
     pub(crate) fn variables(self) -> &'static str {

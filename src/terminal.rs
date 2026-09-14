@@ -5,7 +5,10 @@ use crate::{
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::Show,
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event,
+    },
     execute,
     style::force_color_output,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -40,7 +43,12 @@ impl TerminalSession {
     pub(crate) fn enter() -> Result<Self> {
         enable_raw_mode().context("启用终端 raw 模式失败")?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
             disable_raw_mode().ok();
             return Err(error).context("初始化终端界面失败");
         }
@@ -52,6 +60,7 @@ impl TerminalSession {
         execute!(
             io::stdout(),
             DisableMouseCapture,
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             Show
         )
@@ -61,7 +70,12 @@ impl TerminalSession {
 
     fn resume(&mut self) -> Result<()> {
         enable_raw_mode().context("Enable terminal raw mode failed")?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
+        if let Err(error) = execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
             disable_raw_mode().ok();
             return Err(error).context("Restore TUI screen failed");
         }
@@ -75,6 +89,7 @@ impl Drop for TerminalSession {
         execute!(
             io::stdout(),
             DisableMouseCapture,
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             Show
         )
@@ -99,6 +114,7 @@ fn run(
         redraw |= app.poll_response_actions();
         redraw |= app.poll_response_search();
         redraw |= app.poll_workspace_reload();
+        redraw |= app.poll_curl_import();
         redraw |= crate::highlight::take_response_highlight_change();
 
         let now = Instant::now();
@@ -204,11 +220,13 @@ fn handle_terminal_event(
             let redraw = matches!(
                 mouse.kind,
                 crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                    | crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)
                     | crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left)
                     | crossterm::event::MouseEventKind::ScrollUp
                     | crossterm::event::MouseEventKind::ScrollDown
             ) || matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
-                && (app.view.response.menu_selection.is_some()
+                && (app.view.curl_import.is_some()
+                    || app.view.response.menu.is_open()
                     || matches!(app.view.dialog, Some(app::Dialog::Configurations(_))));
             ui::handle_mouse(app, mouse, area);
             redraw
@@ -216,6 +234,10 @@ fn handle_terminal_event(
         Event::Resize(width, height) => {
             app.view.cancel_scroll_drag();
             tracing::debug!(width, height, "终端尺寸变化");
+            true
+        }
+        Event::Paste(value) => {
+            app.handle_paste(&value);
             true
         }
         _ => false,

@@ -26,7 +26,7 @@ mod ui;
 mod workspace_picker;
 
 pub(crate) use postui_core::{
-    config, diagnostics, highlight, http, http_method, request_executor, request_file,
+    config, curl, diagnostics, highlight, http, http_method, request_executor, request_file,
     response_document, response_format, response_output, settings, template,
 };
 

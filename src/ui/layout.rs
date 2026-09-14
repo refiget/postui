@@ -20,6 +20,7 @@ pub(super) struct UiLayout {
     pub(super) header: Rect,
     pub(super) footer: Rect,
     pub(super) header_content: Rect,
+    pub(super) header_action: Rect,
     pub(super) requests: Rect,
     pub(super) workspace_selector: Rect,
     pub(super) variables_button: Rect,
@@ -65,6 +66,7 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
         header: sections[0],
         footer: sections[2],
         header_content,
+        header_action: Rect::default(),
         requests: Rect::default(),
         workspace_selector: Rect::default(),
         variables_button: Rect::default(),
@@ -130,11 +132,18 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
     let preview = preview_sections(preview_content_area, summary_height);
     let (response_format_button, response_zoom_button, response_menu_button) =
         response_action_buttons(main[1]);
-
+    let send_button = request_send_button(main[0]);
+    let header_action = Rect::new(
+        response_menu_button.x,
+        header_content.y,
+        response_menu_button.width,
+        u16::from(!response_menu_button.is_empty()),
+    );
     UiLayout {
         header: sections[0],
         footer: sections[2],
         header_content,
+        header_action,
         requests: columns[0],
         workspace_selector: sidebar.workspace_selector,
         variables_button: sidebar.variables_button,
@@ -145,7 +154,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         preview_summary: preview.summary,
         preview_tabs: preview.tabs,
         preview_content: preview.content,
-        send_button: request_send_button(main[0]),
+        send_button,
         response: main[1],
         response_format_button,
         response_menu_button,

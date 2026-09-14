@@ -9,72 +9,29 @@ pub(super) struct InlineEditorLayout {
 
 pub(super) fn draw_configuration_dropdown(
     frame: &mut Frame<'_>,
-    app: &App,
-    dialog: &crate::app::ConfigurationsDialog,
+    dialog: &mut crate::app::ConfigurationsDialog,
     selector: Rect,
+    title: &str,
+    theme: AssetTheme,
 ) {
     let area = configuration_menu_area(frame.area(), selector, dialog.rows.len());
     if area.is_empty() {
         return;
     }
-
-    let theme = &app.global_config.theme;
-    let text = app.text();
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.secondary))
-            .style(Style::default().bg(theme.surface).fg(theme.text))
-            .title(Span::styled(
-                format!(" {} ", text.workspace()),
-                Style::default()
-                    .fg(theme.secondary)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        area,
-    );
-    let content = area.inner(Margin::new(1, 1));
     let items = dialog
         .rows
         .iter()
-        .map(|configuration| ListItem::new(Line::from(configuration.clone())))
+        .map(|configuration| AssetDropdownItem::new(configuration))
         .collect::<Vec<_>>();
-    let list = List::new(items)
-        .style(Style::default().bg(theme.surface).fg(theme.text))
-        .highlight_style(
-            Style::default()
-                .bg(theme.selection)
-                .fg(theme.secondary)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
-    let mut state = ListState::default();
-    if !dialog.rows.is_empty() {
-        state.select(Some(dialog.selected));
-    }
-    frame.render_stateful_widget(list, content, &mut state);
+    frame.render_stateful_widget(
+        AssetDropdown::new(title, &items, theme),
+        area,
+        &mut dialog.state,
+    );
 }
 
 pub(super) fn configuration_menu_area(screen: Rect, selector: Rect, row_count: usize) -> Rect {
-    if screen.is_empty() || selector.is_empty() {
-        return Rect::default();
-    }
-    let width = selector.width.max(18).min(screen.width);
-    let height = u16::try_from(row_count.saturating_add(2))
-        .unwrap_or(u16::MAX)
-        .min(screen.height);
-    if width == 0 || height == 0 {
-        return Rect::default();
-    }
-    let x = selector.x.min(screen.right().saturating_sub(width));
-    let below = selector.y.saturating_add(selector.height);
-    let y = if below.saturating_add(height) <= screen.bottom() {
-        below
-    } else {
-        selector.y.saturating_sub(height)
-    };
-    Rect::new(x, y.max(screen.y), width, height)
+    tui_assets_rust::dropdown_menu_area(screen, selector, row_count, 18)
 }
 
 pub(super) fn draw_headers_dialog(

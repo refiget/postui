@@ -33,6 +33,11 @@ impl App {
             return;
         }
 
+        if self.view.curl_import.is_some() {
+            self.handle_curl_import_key(key);
+            return;
+        }
+
         let command = shortcuts::resolve(self.key_context(), key, self.debug_mode);
         match command {
             Some(Command::Help) => {
@@ -45,15 +50,6 @@ impl App {
             }
             Some(Command::Quit) => {
                 self.request_quit();
-                return;
-            }
-            Some(Command::PreviousTab | Command::NextTab) => {
-                let reverse = command == Some(Command::PreviousTab);
-                if self.view.focus.container() == Focus::Response {
-                    self.move_response_tab(reverse);
-                } else {
-                    self.move_preview_tab(if reverse { -1 } else { 1 });
-                }
                 return;
             }
             _ => {}
@@ -74,7 +70,7 @@ impl App {
             return;
         }
 
-        if self.view.response.menu_selection.is_some() {
+        if self.view.response.menu.is_open() {
             match command {
                 Some(Command::Back) => self.close_response_menu(),
                 Some(Command::Up) => self.move_response_menu_selection(-1),
@@ -141,6 +137,7 @@ impl App {
             Some(Command::Reload) => self.reload_workspace(),
             Some(Command::Workspace) => self.open_configurations(),
             Some(Command::Variables) => self.open_variables(),
+            Some(Command::ImportCurl) => self.open_curl_import(),
             Some(Command::ResponseMenu) => self.open_response_menu(),
             Some(Command::Search) if self.view.focus.container() == Focus::Response => {
                 self.open_response_search()
@@ -173,10 +170,13 @@ impl App {
         if self.view.prompt.is_some() {
             return Context::Confirm;
         }
+        if self.view.curl_import.is_some() {
+            return Context::CurlImport;
+        }
         if self.view.response.search.is_some() || self.view.requests.search.is_some() {
             return Context::Editor;
         }
-        if self.view.response.menu_selection.is_some() {
+        if self.view.response.menu.is_open() {
             return Context::Menu;
         }
         if let Some(page) = &self.view.variables {

@@ -238,32 +238,37 @@ impl App {
         if self.editing_preview_tab().is_some() {
             self.view.dialog = None;
         }
-        self.view.response.menu_selection = Some(0);
+        self.view
+            .response
+            .menu
+            .select(0, ResponseMenuAction::all().len());
+        self.view.response.menu.open();
         self.view.focus = Focus::ResponseActions;
     }
 
     pub(crate) fn close_response_menu(&mut self) {
-        self.view.response.menu_selection = None;
+        self.view.response.menu.close();
     }
 
     pub(crate) fn move_response_menu_selection(&mut self, direction: isize) {
         let action_count = ResponseMenuAction::all().len();
-        if let Some(selected) = self.view.response.menu_selection.as_mut() {
-            *selected = (*selected as isize + direction).rem_euclid(action_count as isize) as usize;
+        if direction < 0 {
+            self.view.response.menu.previous(action_count);
+        } else if direction > 0 {
+            self.view.response.menu.next(action_count);
         }
     }
 
     pub(crate) fn choose_response_action(&mut self, index: usize) {
-        self.view.response.menu_selection = Some(index);
+        self.view
+            .response
+            .menu
+            .select(index, ResponseMenuAction::all().len());
         self.activate_selected_response_action();
     }
 
     pub(crate) fn activate_selected_response_action(&mut self) {
-        let action = self
-            .view
-            .response
-            .menu_selection
-            .and_then(ResponseMenuAction::from_index);
+        let action = ResponseMenuAction::from_index(self.view.response.menu.active());
         self.close_response_menu();
         if let Some(action) = action {
             self.activate_response_action(action);

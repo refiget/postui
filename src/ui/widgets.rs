@@ -257,23 +257,6 @@ pub(super) fn draw_flat_button_aligned(
     draw_flat_button_colored(frame, area, label, state, theme.accent, theme, alignment);
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum FlatButtonState {
-    Disabled,
-    Idle,
-    Focused,
-}
-
-impl FlatButtonState {
-    pub(super) fn new(enabled: bool, focused: bool) -> Self {
-        match (enabled, focused) {
-            (false, _) => Self::Disabled,
-            (true, true) => Self::Focused,
-            (true, false) => Self::Idle,
-        }
-    }
-}
-
 pub(super) fn draw_flat_button_colored(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -283,47 +266,26 @@ pub(super) fn draw_flat_button_colored(
     theme: &crate::settings::UiTheme,
     alignment: Alignment,
 ) {
-    let line = match state {
-        FlatButtonState::Disabled => Line::from(vec![
-            Span::styled("│", Style::default().fg(theme.muted)),
-            Span::styled(
-                format!(" {label} "),
-                Style::default()
-                    .fg(theme.muted)
-                    .underline_color(theme.selection)
-                    .add_modifier(Modifier::DIM | Modifier::UNDERLINED),
-            ),
-        ]),
-        FlatButtonState::Idle | FlatButtonState::Focused => {
-            let fill = if matches!(state, FlatButtonState::Focused) {
-                theme.text
-            } else {
-                color
-            };
-            let edge = blend_rgb(color, theme.surface, 65);
-            let style = Style::default()
-                .fg(theme.background)
-                .bg(fill)
-                .underline_color(edge)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-            Line::from(vec![
-                Span::styled("▌", Style::default().fg(edge).bg(fill)),
-                Span::styled(format!(" {label} "), style),
-            ])
-        }
-    };
-    frame.render_widget(Paragraph::new(line).alignment(alignment), area);
+    frame.render_widget(
+        AssetButton::new(label, asset_theme(theme))
+            .state(state)
+            .color(color)
+            .alignment(alignment),
+        area,
+    );
 }
 
-pub(super) fn blend_rgb(foreground: Color, background: Color, foreground_percent: u16) -> Color {
-    let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (foreground, background) else {
-        return foreground;
-    };
-    let background_percent = 100 - foreground_percent;
-    let blend = |front: u8, back: u8| {
-        ((u16::from(front) * foreground_percent + u16::from(back) * background_percent) / 100) as u8
-    };
-    Color::Rgb(blend(fr, br), blend(fg, bg), blend(fb, bb))
+pub(super) fn asset_theme(theme: &crate::settings::UiTheme) -> AssetTheme {
+    AssetTheme {
+        primary: theme.primary,
+        secondary: theme.secondary,
+        accent: theme.accent,
+        background: theme.background,
+        surface: theme.surface,
+        text: theme.text,
+        muted: theme.muted,
+        selection: theme.selection,
+    }
 }
 
 fn bordered_block(

@@ -98,10 +98,10 @@ impl App {
             .iter()
             .position(|configuration| configuration == self.active_configuration())
             .unwrap_or_default();
-        self.view.dialog = Some(Dialog::Configurations(ConfigurationsDialog {
-            rows,
-            selected,
-        }));
+        let mut state = tui_assets_rust::DropdownState::default();
+        state.select(selected, rows.len());
+        state.open();
+        self.view.dialog = Some(Dialog::Configurations(ConfigurationsDialog { rows, state }));
         self.view.focus = Focus::WorkspaceButton;
         tracing::debug!(
             configuration = %self.active_configuration(),

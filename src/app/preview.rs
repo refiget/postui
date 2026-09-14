@@ -156,7 +156,7 @@ impl App {
         };
         match dialog {
             Dialog::Configurations(dialog) => {
-                if let Some(configuration) = dialog.rows.get(dialog.selected).cloned() {
+                if let Some(configuration) = dialog.rows.get(dialog.state.active()).cloned() {
                     self.switch_configuration(&configuration);
                 }
             }
@@ -207,22 +207,6 @@ impl App {
                 }
                 self.close_dialog();
             }
-        }
-    }
-
-    pub(crate) fn move_dialog_selection(&mut self, direction: isize) {
-        if let Some(dialog) = self.view.dialog.as_mut() {
-            dialog.move_selection(direction);
-            tracing::debug!(direction, "移动配置窗口列表选择");
-        }
-        if self.sync_dialog_draft() {
-            self.register_request_change();
-        }
-    }
-
-    pub(crate) fn click_configuration_row(&mut self, index: usize) {
-        if let Some(dialog) = self.view.dialog.as_mut() {
-            dialog.click_configuration_row(index);
         }
     }
 

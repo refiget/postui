@@ -18,8 +18,13 @@ use ratatui::{
         Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
     },
 };
+use tui_assets_rust::{
+    Button as AssetButton, ButtonState as FlatButtonState, Dropdown as AssetDropdown,
+    DropdownItem as AssetDropdownItem, Theme as AssetTheme, blend_rgb,
+};
 
 mod chrome;
+mod curl_import;
 mod dialog;
 mod focus;
 mod inline_editor;
@@ -33,6 +38,7 @@ mod variables;
 mod widgets;
 
 use chrome::*;
+use curl_import::{curl_import_layout, draw_curl_import_page};
 use dialog::*;
 use inline_editor::*;
 pub(crate) use mouse::handle_mouse;
@@ -55,7 +61,7 @@ const INLINE_DELETE_WIDTH: u16 = 3;
 const DELETE_ICON: &str = "−";
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let areas = screen_layout_for_app(frame.area(), app);
-    if app.view.variables.is_none() {
+    if app.view.variables.is_none() && app.view.curl_import.is_none() {
         sync_response_scroll(app, areas);
     }
     let theme = &app.global_config.theme;
@@ -70,9 +76,17 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
 
-    draw_header(frame, areas.header, areas.header_content, app);
+    draw_header(
+        frame,
+        areas.header,
+        areas.header_content,
+        areas.header_action,
+        app,
+    );
     draw_footer(frame, areas.footer, app);
-    if let Some(variables) = &app.view.variables {
+    if app.view.curl_import.is_some() {
+        draw_curl_import_page(frame, areas.response, app);
+    } else if let Some(variables) = &app.view.variables {
         draw_variables_page(frame, app, variables, areas.response);
     } else {
         if !app.response_zoomed() {
@@ -95,15 +109,23 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
             areas.response_zoom_button,
             app,
         );
-        if app.view.response.menu_selection.is_some() {
+        if app.view.response.menu.is_open() {
             draw_response_menu(
                 frame,
                 response_menu_area(areas.response, areas.response_menu_button),
                 app,
             );
         }
-        if let Some(Dialog::Configurations(dialog)) = &app.view.dialog {
-            draw_configuration_dropdown(frame, app, dialog, areas.workspace_selector)
+        let dropdown_title = app.text().workspace();
+        let dropdown_theme = asset_theme(&app.global_config.theme);
+        if let Some(Dialog::Configurations(dialog)) = &mut app.view.dialog {
+            draw_configuration_dropdown(
+                frame,
+                dialog,
+                areas.workspace_selector,
+                dropdown_title,
+                dropdown_theme,
+            )
         }
     }
     if app.view.prompt.is_some() {
@@ -115,6 +137,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
+    if app.view.curl_import.is_some() {
+        return variables_page(area);
+    }
     if app.view.variables.is_some() {
         return variables_page(area);
     }

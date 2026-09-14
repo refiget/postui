@@ -51,7 +51,7 @@ pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: 
         return;
     }
     let label = format!("{} ▾", app.text().response_menu());
-    draw_response_toolbar_button(
+    draw_response_toolbar_button_left(
         frame,
         area,
         &label,
@@ -82,7 +82,7 @@ pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: 
     );
 }
 
-fn draw_response_toolbar_button(
+pub(super) fn draw_response_toolbar_button(
     frame: &mut Frame<'_>,
     area: Rect,
     label: &str,
@@ -91,23 +91,40 @@ fn draw_response_toolbar_button(
     color: Color,
     theme: &crate::settings::UiTheme,
 ) {
+    let text = response_toolbar_button_text(area, label, symbol);
+    draw_flat_button_colored(frame, area, text, state, color, theme, Alignment::Center);
+}
+
+pub(super) fn draw_response_toolbar_button_left(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    symbol: &str,
+    state: FlatButtonState,
+    color: Color,
+    theme: &crate::settings::UiTheme,
+) {
+    let text = response_toolbar_button_text(area, label, symbol);
+    draw_flat_button_colored(frame, area, text, state, color, theme, Alignment::Left);
+}
+
+fn response_toolbar_button_text<'a>(area: Rect, label: &'a str, symbol: &'a str) -> &'a str {
     let width = usize::from(area.width);
     if width == 0 || area.is_empty() {
-        return;
+        return "";
     }
 
     let content_width = width.saturating_sub(3);
-    let text = if Line::from(label).width() <= content_width {
+    if Line::from(label).width() <= content_width {
         label
     } else if Line::from(symbol).width() <= content_width {
         symbol
     } else {
         ""
-    };
-    draw_flat_button_colored(frame, area, text, state, color, theme, Alignment::Center);
+    }
 }
 
-pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if area.is_empty() || area.width < 3 || area.height < 3 {
         return;
     }
@@ -116,41 +133,19 @@ pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let items = ResponseMenuAction::all()
         .into_iter()
         .map(|action| {
-            let style = Style::default().fg(theme.text).bg(theme.surface);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{}  ", response_action_symbol(action)), style),
-                Span::styled(response_action_label(action, text), style),
-            ]))
-            .style(style)
+            AssetDropdownItem::new(response_action_label(action, text))
+                .symbol(response_action_symbol(action))
         })
         .collect::<Vec<_>>();
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_set(border::PLAIN)
-            .border_style(Style::default().fg(theme.accent))
-            .style(Style::default().bg(theme.surface)),
-        area,
-    );
-    let inner = area.inner(Margin::new(1, 1));
-    if inner.is_empty() {
-        return;
-    }
-    let mut state = ListState::default().with_selected(Some(
-        app.view
-            .response
-            .menu_selection
-            .unwrap_or_default()
-            .min(ResponseMenuAction::all().len().saturating_sub(1)),
-    ));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .fg(theme.background)
-            .bg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    frame.render_stateful_widget(list, inner, &mut state);
+    let dropdown = AssetDropdown::new("", &items, asset_theme(theme))
+        .border_color(theme.accent)
+        .highlight_style(
+            Style::default()
+                .fg(theme.background)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(dropdown, area, &mut app.view.response.menu);
 }
 
 fn response_action_symbol(action: ResponseMenuAction) -> &'static str {
