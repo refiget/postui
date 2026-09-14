@@ -255,6 +255,13 @@ impl App {
 
     fn register_request_change(&mut self) {
         self.view.notice = None;
+        let Some(request) = self.current_effective_request() else {
+            return;
+        };
+        for name in template::variable_names(&request) {
+            self.config.editable_variables.insert(name.clone());
+            self.workspace_state.variables.entry(name).or_default();
+        }
     }
 
     fn request_quit(&mut self) {

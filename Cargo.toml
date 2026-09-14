@@ -1,6 +1,6 @@
 [package]
 name = "postui"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Terminal client for sending configured HTTP requests"
@@ -38,9 +38,7 @@ path = "design-lab/ui-studies/delete_icon_gallery.rs"
 
 [dependencies]
 anyhow = "1.0"
-blake3 = "1.8"
 bytes = "1.10"
-cacache = { version = "13.1", default-features = false, features = ["async-std", "mmap"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 crossterm = "0.28"
 directories = "6.0"

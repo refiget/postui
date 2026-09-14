@@ -18,6 +18,61 @@ impl UiText {
         }
     }
 
+    pub(crate) fn workspace_theme_hint(self) -> &'static str {
+        self.pick("F5 Theme", "F5 主题")
+    }
+
+    pub(crate) fn workspace_picker_title(self) -> &'static str {
+        self.pick("Select workspace", "选择工作区")
+    }
+
+    pub(crate) fn workspace_recent(self) -> &'static str {
+        self.pick("Recent workspaces", "最近工作区")
+    }
+
+    pub(crate) fn workspace_not_found(self) -> &'static str {
+        self.pick("No .postui found", "未找到 .postui")
+    }
+
+    pub(crate) fn workspace_path_missing(self) -> &'static str {
+        self.pick(" [missing]", " [不存在]")
+    }
+
+    pub(crate) fn workspace_other(self) -> &'static str {
+        self.pick("Open another directory…", "打开其他目录…")
+    }
+
+    pub(crate) fn workspace_no_recent(self) -> &'static str {
+        self.pick("No recent workspaces", "无最近工作区")
+    }
+
+    pub(crate) fn workspace_no_match(self) -> &'static str {
+        self.pick("No matches", "没有匹配项")
+    }
+
+    pub(crate) fn workspace_directory(self) -> &'static str {
+        self.pick("Directory", "目录")
+    }
+
+    pub(crate) fn workspace_empty_path(self) -> &'static str {
+        self.pick("Directory is required", "请输入目录")
+    }
+
+    pub(crate) fn workspace_min_size(self) -> &'static str {
+        self.pick("Minimum terminal size: 48 × 20", "窗口最小尺寸：48 × 20")
+    }
+
+    pub(crate) fn workspace_input_hint(self) -> &'static str {
+        self.pick("Enter Confirm  Esc Back", "Enter 确认  Esc 返回")
+    }
+
+    pub(crate) fn workspace_picker_hint(self) -> &'static str {
+        self.pick(
+            "↑↓ Select  Enter Open  / Filter  o Directory  d Remove  q Quit",
+            "↑↓ 选择  Enter 打开  / 筛选  o 输入目录  d 移除记录  q 退出",
+        )
+    }
+
     pub(crate) fn workspace(self) -> &'static str {
         self.pick("Workspace", "工作区")
     }
@@ -213,34 +268,18 @@ impl UiText {
     pub(crate) fn request_error(self, error: &crate::http::HttpError) -> &'static str {
         use crate::http::HttpError;
         match error {
-            HttpError::InvalidRequest(_) => self.pick(
-                "Invalid request; check the URL, method, headers and file types",
-                "请求参数无效；请检查地址、方法、请求头和文件类型",
-            ),
-            HttpError::Upload(_) => self.pick(
-                "Cannot read upload file; check its path and read permissions",
-                "无法读取上传文件；请检查文件路径和读取权限",
-            ),
-            HttpError::Timeout(_) => self.pick(
-                "Request timed out; check the service or increase the timeout",
-                "请求超时；请检查服务状态或增加超时时间",
-            ),
-            HttpError::Connection(_) => self.pick(
-                "Cannot connect; check the address, network and proxy settings",
-                "无法连接服务；请检查地址、网络和代理设置",
-            ),
-            HttpError::Transport(_) => self.pick(
-                "Request interrupted; check the network and service before retrying",
-                "请求传输中断；请检查网络和服务状态后重试",
-            ),
+            HttpError::InvalidRequest(_) => self.pick("Invalid request", "请求参数无效"),
+            HttpError::Upload(_) => self.pick("Upload file could not be read", "上传文件读取失败"),
+            HttpError::Timeout(_) => self.pick("Request timed out", "请求超时"),
+            HttpError::Connection(_) => self.pick("Connection failed", "连接失败"),
+            HttpError::Transport(_) => self.pick("Request interrupted", "请求传输中断"),
             HttpError::ResponseTooLarge(_) => self.pick(
-                "Response exceeds max_response_bytes; increase the limit if needed",
-                "响应超过 max_response_bytes 限制；如确有需要，可提高配置上限",
+                "Response exceeds max_response_bytes",
+                "响应超过 max_response_bytes 限制",
             ),
-            HttpError::ClientInitialization(_) => self.pick(
-                "Cannot initialize the HTTP client; check system and proxy settings",
-                "无法初始化 HTTP 客户端；请检查系统和代理设置",
-            ),
+            HttpError::ClientInitialization(_) => {
+                self.pick("HTTP client initialization failed", "HTTP 客户端初始化失败")
+            }
         }
     }
 
@@ -364,14 +403,13 @@ impl UiText {
     ) -> &'static str {
         use crate::response_format::FormatNote;
         match note {
-            FormatNote::Original => self.pick("Original text (format preserved)", "保留原文格式"),
-            FormatNote::Limited => self.pick(
-                "Formatting limit reached · showing Raw",
-                "超出格式化限制 · 显示 Raw",
-            ),
+            FormatNote::Original => self.pick("Original text", "原文"),
+            FormatNote::Limited => {
+                self.pick("Formatting limit reached · Raw", "超出格式化限制 · Raw")
+            }
             FormatNote::Invalid => self.pick(
-                "Invalid or unsupported structure · showing Raw",
-                "结构无效或不支持 · 显示 Raw",
+                "Invalid or unsupported structure · Raw",
+                "结构无效或不支持 · Raw",
             ),
         }
     }
@@ -390,17 +428,15 @@ impl UiText {
 
     pub(crate) fn binary_response_download(self) -> &'static str {
         self.pick(
-            "Binary response cannot be copied as text; download it instead",
-            "二进制响应无法按文本复制，请改用下载",
+            "Binary response cannot be copied as text",
+            "二进制响应无法按文本复制",
         )
     }
 
     pub(crate) fn binary_response_summary(self, bytes: usize) -> String {
         match self.language {
-            Language::English => {
-                format!("Binary response · {bytes} bytes · use Actions → Download")
-            }
-            Language::Chinese => format!("二进制响应 · {bytes} 字节 · 请使用 操作 → 下载"),
+            Language::English => format!("Binary response · {bytes} bytes"),
+            Language::Chinese => format!("二进制响应 · {bytes} 字节"),
         }
     }
 
@@ -444,12 +480,8 @@ impl UiText {
 
     pub(crate) fn response_body_limited(self, shown: usize, total: usize) -> String {
         match self.language {
-            Language::English => {
-                format!("Large response: showing {shown} of {total} bytes; use Actions → Download")
-            }
-            Language::Chinese => {
-                format!("响应过大：仅显示 {shown} / {total} 字节，可在操作中下载")
-            }
+            Language::English => format!("Response: {shown} of {total} bytes displayed"),
+            Language::Chinese => format!("响应：显示 {shown} / {total} 字节"),
         }
     }
 }

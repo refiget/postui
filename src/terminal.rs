@@ -34,10 +34,10 @@ pub(crate) fn run_app(app: &mut App) -> Result<()> {
     result
 }
 
-struct TerminalSession;
+pub(crate) struct TerminalSession;
 
 impl TerminalSession {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         enable_raw_mode().context("启用终端 raw 模式失败")?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {

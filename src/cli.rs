@@ -6,6 +6,7 @@ pub(crate) enum CliCommand {
     Help,
     Version,
     Init,
+    Uninstall,
     Run(CliOptions),
 }
 
@@ -28,6 +29,7 @@ pub(crate) fn parse_args() -> Result<CliCommand> {
     let mut perf = false;
     let mut log_file = None;
     let mut init = false;
+    let mut uninstall = false;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -38,6 +40,12 @@ pub(crate) fn parse_args() -> Result<CliCommand> {
                     bail!("postui init may be specified only once")
                 }
                 init = true;
+            }
+            "uninstall" => {
+                if uninstall {
+                    bail!("postui uninstall may be specified only once")
+                }
+                uninstall = true;
             }
             "--debug" => debug = true,
             "--perf" => {
@@ -75,20 +83,28 @@ pub(crate) fn parse_args() -> Result<CliCommand> {
         bail!("--log-file requires --debug")
     }
 
-    if init {
+    if init || uninstall {
+        let command = if init { "init" } else { "uninstall" };
+        if init && uninstall {
+            bail!("postui init and postui uninstall cannot be used together")
+        }
         if config_path.is_some() || scenario.is_some() {
-            bail!("postui init does not accept --config or --scenario")
+            bail!("postui {command} does not accept --config or --scenario")
         }
         if project.is_some() {
-            bail!("postui init does not accept a project path")
+            bail!("postui {command} does not accept a project path")
         }
         if debug {
-            bail!("postui init does not accept --debug")
+            bail!("postui {command} does not accept --debug")
         }
         if log_file.is_some() {
-            bail!("postui init does not accept --log-file")
+            bail!("postui {command} does not accept --log-file")
         }
-        return Ok(CliCommand::Init);
+        return Ok(if init {
+            CliCommand::Init
+        } else {
+            CliCommand::Uninstall
+        });
     }
 
     Ok(CliCommand::Run(CliOptions {
@@ -114,8 +130,9 @@ pub(crate) fn print_help() {
         "用法:\n\
   postui [项目目录或 .postui 目录] [--config <路径>] [--scenario <名称>] [--debug | --perf] [--log-file <路径>]\n\
   postui init\n\
+  postui uninstall\n\
   postui --version\n\n\
-不传目录时，从当前目录向上查找最近的 .postui；未找到或无法访问时退出，不自动创建工作区。\n\
+不传目录时，从当前目录向上查找最近的 .postui；未找到时显示最近工作区；无法访问时显示错误，不自动创建工作区。\n\
 公共请求位于 .postui/requests，场景差异位于 .postui/scenarios。\n\
 个人语言和主题配置使用各平台标准配置目录，详见配置文档；可用 --config 指定。\n\
 --config 指定个人界面配置；--scenario 指定启动场景，不修改项目默认配置。\n\

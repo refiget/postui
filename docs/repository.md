@@ -25,7 +25,6 @@ Tracked examples use `example.test`, `127.0.0.1`, and template variables. The
 | Path | Contents |
 | --- | --- |
 | `.postui/` | Root local workspace and requests |
-| `**/.postui/cache/` | Derived cache in any workspace |
 | `config.yaml` | Local user settings |
 | `example-api/test_files/` | Upload data for manual checks |
 | `example-api/temp/` | Download output from manual checks |
@@ -43,7 +42,7 @@ Tracked examples use `example.test`, `127.0.0.1`, and template variables. The
 ```bash
 git status --short
 git diff --check
-git check-ignore -v .postui example-api/.postui/cache config.yaml
+git check-ignore -v .postui config.yaml
 ```
 
 Personal URLs, requests, accounts, tokens, upload files, personal workspace

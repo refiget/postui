@@ -1,7 +1,9 @@
 #[cfg(not(windows))]
 use std::io;
 #[cfg(windows)]
-use std::process::Command;
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use std::{
     env,
     ffi::OsStr,
@@ -66,6 +68,38 @@ pub(crate) fn init_shell_integration() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+pub(crate) fn uninstall() -> Result<()> {
+    let executable = env::current_exe().context("无法确定当前运行程序的位置")?;
+    let executable = fs::canonicalize(&executable).unwrap_or(executable);
+    let install_directory = executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("当前 PostUI 安装路径无效"))?;
+    let wrapper = install_directory.join("postui");
+    if executable.file_name().and_then(OsStr::to_str) != Some("postui.bin") || !wrapper.is_file() {
+        bail!("当前 PostUI 不是安装器管理的版本")
+    }
+
+    remove_shell_integration()?;
+    fs::remove_file(&wrapper)
+        .with_context(|| format!("无法删除 PostUI 启动文件: {}", wrapper.display()))?;
+    fs::remove_file(&executable)
+        .with_context(|| format!("无法删除 PostUI 程序: {}", executable.display()))?;
+    match fs::remove_dir(install_directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("无法删除 PostUI 安装目录: {}", install_directory.display())
+            });
+        }
+    }
+
+    println!("PostUI 已卸载");
+    println!("用户配置和工作区文件未删除");
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn init_shell_integration() -> Result<()> {
     let launch_path = runtime_launch_path()?;
@@ -87,6 +121,31 @@ pub(crate) fn init_shell_integration() -> Result<()> {
         );
     }
     println!("请关闭并重新打开 PowerShell，使新的 PATH 生效。无需管理员权限。\n");
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn uninstall() -> Result<()> {
+    let executable = env::current_exe().context("无法确定当前运行程序的位置")?;
+    if executable.file_name().and_then(OsStr::to_str) != Some("postui.exe")
+        || is_cargo_build_path(&executable)
+    {
+        bail!("当前 PostUI 不是安装器管理的版本")
+    }
+    let install_directory = executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("当前 PostUI 安装路径无效"))?;
+
+    let path_removed = remove_user_path(install_directory)?;
+    if let Err(error) = schedule_windows_removal(&executable, install_directory) {
+        if path_removed {
+            let _ = add_user_path(install_directory);
+        }
+        return Err(error);
+    }
+
+    println!("PostUI 卸载已安排，程序将在当前进程退出后删除");
+    println!("用户配置和工作区文件未删除");
     Ok(())
 }
 
@@ -124,6 +183,91 @@ fn add_user_path(directory: &Path) -> Result<bool> {
         bail!("更新当前用户 PATH 失败: {}", command_error(&output));
     }
     Ok(true)
+}
+
+#[cfg(windows)]
+fn remove_user_path(directory: &Path) -> Result<bool> {
+    let directory = directory.to_string_lossy();
+    let current = read_user_path()?;
+    let entries: Vec<_> = current
+        .split(';')
+        .filter(|entry| !same_windows_path(entry, &directory))
+        .collect();
+    if entries.len() == current.split(';').count() {
+        return Ok(false);
+    }
+
+    write_user_path(&entries.join(";"))?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn write_user_path(value: &str) -> Result<()> {
+    let output = Command::new(reg_executable())
+        .args([
+            "ADD",
+            r"HKCU\Environment",
+            "/v",
+            "Path",
+            "/t",
+            "REG_EXPAND_SZ",
+            "/d",
+        ])
+        .arg(value)
+        .arg("/f")
+        .output()
+        .context("无法启动 Windows reg.exe 更新用户 PATH")?;
+    if !output.status.success() {
+        bail!("更新当前用户 PATH 失败: {}", command_error(&output));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_cargo_build_path(executable: &Path) -> bool {
+    executable.ancestors().any(|path| {
+        matches!(
+            path.file_name().and_then(OsStr::to_str),
+            Some("debug" | "release")
+        ) && path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(OsStr::to_str)
+            == Some("target")
+    })
+}
+
+#[cfg(windows)]
+fn schedule_windows_removal(executable: &Path, install_directory: &Path) -> Result<()> {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let command = concat!(
+        "$targetPid = [int]$args[0]; ",
+        "$binary = $args[1]; ",
+        "$directory = $args[2]; ",
+        "Wait-Process -Id $targetPid; ",
+        "Remove-Item -LiteralPath $binary -Force; ",
+        "Remove-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue"
+    );
+    Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            command,
+        ])
+        .arg(std::process::id().to_string())
+        .arg(executable)
+        .arg(install_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .context("无法安排 PostUI 程序删除")?;
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -252,6 +396,69 @@ fn shell_init_block(launch_path: &Path) -> String {
 #[cfg(not(windows))]
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+#[cfg(not(windows))]
+fn remove_shell_integration() -> Result<()> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("无法确定用户 Home 目录，请设置 HOME 后重试"))?;
+    let mut updates = Vec::new();
+
+    for rc_name in [".bashrc", ".zshrc"] {
+        let path = home.join(rc_name);
+        let current = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("无法读取 shell 配置文件: {}", path.display()));
+            }
+        };
+        let updated = remove_shell_init_block(&current)?;
+        if updated != current {
+            updates.push((path, updated));
+        }
+    }
+
+    for (path, contents) in updates {
+        fs::write(&path, contents)
+            .with_context(|| format!("无法写入 shell 配置文件: {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn remove_shell_init_block(current: &str) -> Result<String> {
+    let start_count = current.matches(INIT_BLOCK_START).count();
+    let end_count = current.matches(INIT_BLOCK_END).count();
+    match (start_count, end_count) {
+        (0, 0) => Ok(current.to_string()),
+        (1, 1) => {
+            let start = current
+                .find(INIT_BLOCK_START)
+                .expect("marker count guarantees a start marker");
+            let end = current
+                .find(INIT_BLOCK_END)
+                .expect("marker count guarantees an end marker")
+                + INIT_BLOCK_END.len();
+            if start > end {
+                bail!("shell 配置中的 PostUI 初始化标记顺序无效")
+            }
+
+            let prefix_end = if current[..start].ends_with("\n\n") {
+                start - 1
+            } else {
+                start
+            };
+            let suffix = current[end..].strip_prefix('\n').unwrap_or(&current[end..]);
+            let mut updated = String::with_capacity(current.len());
+            updated.push_str(&current[..prefix_end]);
+            updated.push_str(suffix);
+            Ok(updated)
+        }
+        _ => bail!("shell 配置中的 PostUI 初始化标记不完整或重复，请手动整理后重试"),
+    }
 }
 
 #[cfg(not(windows))]

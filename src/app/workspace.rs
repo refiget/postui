@@ -163,7 +163,7 @@ impl App {
         self.workspace_reload = Some(receiver);
         self.view.notice = None;
         std::thread::spawn(move || {
-            let loaded = match crate::config::reload(&path) {
+            let loaded = match crate::config::load(&path) {
                 Ok(config) => config,
                 Err(error) => {
                     let _ =

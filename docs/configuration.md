@@ -15,8 +15,23 @@ Unknown fields are rejected.
 
 Without a path, PostUI searches the current directory and each parent for the
 nearest `.postui` directory. An explicit project or `.postui` path disables the
-parent search. Missing, unreadable, or invalid workspaces produce an error.
-PostUI does not create a workspace automatically.
+parent search. Without a discovered workspace, PostUI displays the recent
+workspace picker. Explicit paths that are missing, unreadable workspaces, and
+invalid configuration produce an error. PostUI does not create a workspace
+automatically.
+
+The picker uses the language and theme from user settings, including `--config`.
+Arrow keys select an entry, Enter opens it, `/` filters the list, `o` opens a
+directory input, `d` removes a recent entry, and `q` exits. Directory input accepts
+absolute paths, paths relative to the launch directory, and `~/` paths.
+
+Successful workspace loads update `recent-workspaces.json` in the platform user
+local data directory. On Linux this is
+`${XDG_DATA_HOME:-$HOME/.local/share}/postui/recent-workspaces.json`.
+The list contains up to 30 workspace names and absolute paths, most recent first.
+Removing an entry leaves its workspace files intact. The picker does not create
+request collections or send requests. Debug logging starts after workspace
+selection; the default log remains `.postui/logs/postui-debug.log`.
 
 ## Workspace defaults
 
@@ -158,5 +173,4 @@ configured size.
 - Request, parameter, header, and variable edits remain in the current process.
 - Deleting a request from the request list requires confirmation and removes
   the request file.
-- `.postui/cache/` stores derived parse data. Cache failures do not replace
-  source parsing errors.
+- Workspace configuration remains in memory while PostUI is running.

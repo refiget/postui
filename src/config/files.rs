@@ -128,39 +128,6 @@ fn is_yaml_file(path: &Path) -> bool {
         .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "yaml" | "yml"))
 }
 
-pub(super) fn workspace_fingerprint(
-    workspace_path: &Path,
-    workspace_config: Option<&str>,
-    configuration_files: &[ConfigurationFile],
-    request_files: &[RequestFile],
-) -> blake3::Hash {
-    let mut fingerprint = blake3::Hasher::new();
-    append_fingerprint_part(&mut fingerprint, b"postui.yaml");
-    append_fingerprint_part(
-        &mut fingerprint,
-        workspace_config.unwrap_or("<missing-config>").as_bytes(),
-    );
-    for (path, text) in configuration_files
-        .iter()
-        .map(|file| (&file.path, &file.text))
-        .chain(request_files.iter().map(|file| (&file.path, &file.text)))
-    {
-        let relative = path
-            .strip_prefix(workspace_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        append_fingerprint_part(&mut fingerprint, relative.as_bytes());
-        append_fingerprint_part(&mut fingerprint, text.as_bytes());
-    }
-    fingerprint.finalize()
-}
-
-fn append_fingerprint_part(fingerprint: &mut blake3::Hasher, part: &[u8]) {
-    fingerprint.update(&(part.len() as u64).to_le_bytes());
-    fingerprint.update(part);
-}
-
 pub(super) fn parse_request_file(
     file: &RequestFile,
     workspace_path: &Path,

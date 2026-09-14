@@ -18,7 +18,7 @@ pub use documents::{
 };
 use documents::{default_download_directory, default_timeout_seconds, default_upload_directory};
 use files::normalize_path;
-pub use loading::{load, reload};
+pub use loading::load;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestConfig {

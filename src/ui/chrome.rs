@@ -82,11 +82,14 @@ pub(super) fn draw_request_send_button(frame: &mut Frame<'_>, area: Rect, app: &
     };
     let request_status = app.request_status(&request.id);
     let loading = request_status == RequestStatus::Sending;
-    let label = if loading {
-        format!("■ {}", app.text().cancel_request())
-    } else {
-        format!("▶ {}", app.text().send_button(false))
-    };
+    let send_label = format!("▶ {}", app.text().send_button(false));
+    let cancel_label = format!("■ {}", app.text().cancel_request());
+    let label_width = Line::from(send_label.as_str())
+        .width()
+        .max(Line::from(cancel_label.as_str()).width());
+    let mut label = if loading { cancel_label } else { send_label };
+    let padding = label_width.saturating_sub(Line::from(label.as_str()).width());
+    label.extend(std::iter::repeat_n(' ', padding));
     draw_send_button_aligned(
         frame,
         area,

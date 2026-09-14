@@ -4,7 +4,7 @@ use super::{
     files::{
         ConfigurationFile, RequestFile, normalize_configuration_name, normalize_request_id,
         parse_request_file, read_configuration_files, read_optional_file, read_request_files,
-        resolve_directory, workspace_fingerprint,
+        resolve_directory,
     },
     validation::{
         normalize_headers, normalize_override, normalize_request, normalize_variables,
@@ -19,14 +19,6 @@ use std::{
 };
 
 pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
-    load_internal(workspace_path, true)
-}
-
-pub fn reload(workspace_path: &Path) -> Result<RequestConfig> {
-    load_internal(workspace_path, false)
-}
-
-fn load_internal(workspace_path: &Path, use_cache: bool) -> Result<RequestConfig> {
     if !workspace_path.is_dir() {
         return Err(diagnostics::invalid(
             workspace_path,
@@ -47,12 +39,6 @@ fn load_internal(workspace_path: &Path, use_cache: bool) -> Result<RequestConfig
         &workspace_path.join("requests"),
         "requests",
     )?;
-    let fingerprint = workspace_fingerprint(
-        workspace_path,
-        workspace_config.as_deref(),
-        &configuration_files,
-        &request_files,
-    );
     tracing::debug!(
         path = %workspace_path.display(),
         config_path = %workspace_config_path.display(),
@@ -62,28 +48,13 @@ fn load_internal(workspace_path: &Path, use_cache: bool) -> Result<RequestConfig
         "读取工作区"
     );
 
-    let cached = use_cache
-        .then(|| crate::cache::load(workspace_path, &fingerprint))
-        .flatten();
-    let cache_hit = cached.is_some();
-    let config = match cached {
-        Some(config) => config,
-        None => parse_workspace_config(
-            &workspace_config_path,
-            workspace_config.as_deref(),
-            workspace_path,
-            &configuration_files,
-            &request_files,
-        )?,
-    };
-
-    if !cache_hit && let Err(error) = crate::cache::store(workspace_path, &fingerprint, &config) {
-        tracing::debug!(
-            path = %workspace_path.display(),
-            error = ?error,
-            "工作区缓存写入失败，继续使用解析结果"
-        );
-    }
+    let config = parse_workspace_config(
+        &workspace_config_path,
+        workspace_config.as_deref(),
+        workspace_path,
+        &configuration_files,
+        &request_files,
+    )?;
 
     tracing::debug!(
         name = %config.name,
@@ -94,7 +65,6 @@ fn load_internal(workspace_path: &Path, use_cache: bool) -> Result<RequestConfig
         timeout_seconds = config.timeout_seconds,
         file_directory = %config.file_directory.display(),
         download_directory = %config.download_directory.display(),
-        cache_hit,
         "配置文件加载完成"
     );
     Ok(config)
