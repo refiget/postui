@@ -1,108 +1,76 @@
-# PostUI 架构与维护边界
+# Architecture Boundaries
 
-本文描述当前代码边界和状态所有权。开发操作见[开发指南](development.md)，对外配置契约见[配置规范](configuration.md)。
-
-## 状态所有权
+## Ownership
 
 ```text
-App（主线程编排）
+App
 ├── WorkspaceSession
-│   ├── 当前场景、场景变量、选中请求
-│   └── RequestSession[]
-│       ├── source：进程内请求源
-│       ├── draft：当前场景草稿
-│       └── RequestRuntimeState：阶段与反馈
+│   ├── active scenario and variables
+│   ├── selected request
+│   └── RequestSession
+│       ├── source request
+│       ├── session draft
+│       └── runtime phase and response
 ├── ViewState
-│   ├── requests：搜索输入、过滤条件、原选择
-│   ├── preview：页签、滚动、临时输入
-│   ├── response：页签、滚动、搜索、操作菜单
-│   └── 全局焦点、页面模式、变量页、弹窗、提示
-├── RequestExecutor：网络任务、操作 ID、取消、完成消息
-├── ResponseActionExecutor：复制/下载任务、忙碌状态、完成消息
-├── 响应搜索任务：一个扫描及最新待执行搜索
-└── 工作区重载任务：后台准备、主线程整体替换
+│   ├── request list state
+│   ├── request preview state
+│   ├── response state
+│   └── focus, dialogs, prompts, and notices
+├── RequestExecutor
+├── ResponseActionExecutor
+└── background reload, search, and highlight work
 ```
 
-变量页和弹窗属于全局视图；Header、发送按钮和响应操作按钮是焦点目标，不是独立业务容器。
+`App` applies state changes on the terminal thread. Background tasks return
+messages. They do not mutate `App` directly.
 
-`source` 不是永远不变的磁盘镜像：默认场景草稿提交时会修改它。App 的 `baseline_config` 和 `baseline_requests` 保存加载时基线，供 Modified 判断和恢复使用。
+## Request lifecycle
 
-### 请求生命周期
-
-`RequestRuntimeState` 内部使用互斥的 `RequestPhase`：
-
-- Idle：没有活动请求或响应；取消后仍可保留取消提示。
-- Sending：仅持有当前操作 ID。
-- Received：同时持有 `ResponseData` 与 `ResponseDocument`；成功或失败由 HTTP 状态码推导。
-- Failed：持有传输/构造失败状态和错误详情，超时保留独立显示状态。
-
-转换方法一次替换阶段。UI 读取状态和内容，不直接构造阶段。
-
-发送前由 `app/execution.rs` 展开变量、准备有效请求和操作 ID，再交给执行器。未定义变量展开为空字符串，不触发变量页。完成消息必须同时匹配请求 ID 与活动操作 ID 才能应用；取消后到达的旧消息不会重新覆盖界面。
-
-### 草稿和场景
-
-`RequestDraft` 只保存可临时修改的请求字段。Header 输出统一经过 `enabled_headers`：保留顺序与重复值，去掉禁用项和空名称，名称去除首尾空白。继承 Header 的同名覆盖判断仍单独保留，因为禁用的请求 Header 也要屏蔽同名继承项。
-
-`WorkspaceSession::commit_configuration` 将草稿和变量提交到进程内场景状态；切换场景时提交旧场景，再生成目标草稿并清空请求运行结果。它不是文件保存接口。
-
-完整 Header 行状态由 `RequestSession` 按场景保留：当前场景只存于 `draft.headers`，非当前场景存于 `inactive_headers`，切换时转移所有权。禁用项和删除屏蔽标记不通过发送用 Header 列表还原，也不写入 YAML。重置覆盖当前草稿，重载丢弃全部会话状态；退出确认同时检查非当前场景的 Header 修改。
-
-重载绕过解析缓存读取，后台重新扫描和校验请求、场景并建立会话。成功后按 ID 尽量保留选择和仍存在的当前场景，整体替换配置、基线及视图；失败保留旧状态。重载期间可以浏览，但不能发送或切换场景。
-
-## 执行与资源边界
-
-| 所有者 | 执行位置和限制 |
+| Phase | Data |
 | --- | --- |
-| `terminal.rs` | 主线程轮询消息和输入；一次最多处理 32 个终端事件，再回到结果轮询与绘制 |
-| `RequestExecutor` | 一个 Tokio runtime，2 个工作线程、最多 4 个阻塞线程，8 个并发槽位 |
-| `HttpClient` | 复用代理/无代理与安全/跳过证书校验的四个异步 Client，选择后复用连接池 |
-| 响应提取和索引 | `spawn_blocking`；计算期间继续占用执行槽位 |
-| 响应搜索 | 后台扫描，最多一个活动任务和一个最新待执行请求，过期结果丢弃 |
-| 复制和下载 | 后台线程；`ResponseActionExecutor` 自己控制一次一个操作，App 只查询忙碌状态 |
-| 配置重载 | 单个后台线程准备完整结果，主线程应用 |
-| Debug 日志 | 有界队列、后台写盘；允许丢失，不作为审计日志 |
+| Idle | Optional feedback |
+| Sending | Active operation ID |
+| Received | `ResponseData` and `ResponseDocument` |
+| Failed | Status, error detail, and feedback |
 
-请求序列号由主线程上的执行器独占；跨线程取消搜索的标志仍使用原子变量。
+HTTP status determines success or HTTP failure after a response is received.
+Transport and request-construction errors use the failed phase. Cancellation
+returns the request to idle and invalidates the active operation ID.
 
-取消网络任务会中止等待、上传和响应读取；已经开始的阻塞提取与索引可能继续运行。退出使用后台关闭运行时，不等待这些计算全部结束。
+## Drafts and scenarios
 
-## 渲染与输入
+`RequestDraft` contains session-editable request fields. `RequestSession`
+retains header row state per scenario. `WorkspaceSession` switches scenario
+ownership, resets runtime results, and derives effective requests from workspace,
+scenario, source, and draft values.
 
-`ui.rs` 组合页面，`ui/mouse.rs` 分发鼠标事件；`ui/layout.rs` 定义区域和共用滚动区域，`ui/focus.rs` 映射焦点到所属边框。变量页、行内编辑器、响应工具栏分别放在 `ui/variables.rs`、`ui/inline_editor.rs`、`ui/response_toolbar.rs`。各页面持有自己的布局类型，业务动作由 `app/` 处理。
+Baseline workspace and request values are retained for modified indicators and
+restore operations. Restore operations affect in-process state. Request file
+deletion is a separate confirmed disk operation.
 
-`shortcuts.rs` 定义按键、修饰键、作用域和语义动作，同时提供底栏与帮助的键位文案。`app/input.rs` 根据确认框、搜索、菜单、变量页、编辑态和焦点选择作用域；主界面区域继承全局键位，弹层与编辑器隔离普通全局键位。输入组件只执行解析后的动作，文本编辑保留字符输入。终端的 Shift 编码在入口归一化；Release 不执行，Repeat 仅允许移动和编辑删除等可重复动作。终端未区分长按与连续 Press 时按普通按键处理。
+## Focus and scrolling
 
-鼠标按钮直接调用业务动作，不通过伪造键盘事件触发。修改键位时同步调整作用域及动作处理；显示标签、帮助和按键匹配保存在同一条绑定中。
+The home screen focus model uses main containers. `Tab` and `Shift+Tab` move
+between containers. `j` and `k` move within a container. `h` and `l` move among
+fields or tabs where the focused container exposes a horizontal axis.
 
-Header 和参数的键盘删除返回行删除动作，与鼠标共用 `App::remove_preview_row`，统一同步草稿和屏蔽继承 Header。帮助页以可选滚动位置表示开关状态；配置错误页持有自身的编辑器请求，关闭页面同时丢弃请求。滚动拖动在鼠标按下或松开、键盘输入、窗口缩放时统一清理。
+Selection and scroll offset are separate state. Moving a request selection does
+not rewrite the scroll offset unless the user performs a scroll operation.
+Keyboard, mouse wheel, scrollbar track, and scrollbar drag use the same bounded
+scroll state.
 
-`app/preview.rs` 协调请求编辑动作，`app/preview/draft.rs` 负责编辑行与草稿的转换。转换按所需字段读取草稿，不克隆整份请求体。变量页操作归入 `app/variables.rs`，配置错误页与编辑器请求归入 `app/error_page.rs`。
+## Response documents
 
-`ViewState` 统一编辑态判断和取消未确认输入，不改已确认草稿、请求过滤或后台任务。普通模式和响应放大模式各有固定焦点顺序，正反导航共用；放大模式不包含隐藏的发送按钮，仍可用 `r` 发送或取消。
+`ResponseData` retains original bytes and response metadata.
+`ResponseDocument` provides raw and formatted views within the display limit.
+JSON and markup documents build sparse indexes. Other highlighted formats use a
+paged cache. Search reads document content without constructing render styles.
 
-JSON 保留原有共享字节、稀疏索引、按视口格式化和即时 token 高亮，独立于其他格式的扩展链路。Raw 不重排原文；非 JSON 的 Formatted 使用 quick-xml、form_urlencoded，并只保留配置允许显示的输出前缀。Syntect 只负责非 JSON 的后台分页高亮。两种视图共用滚动和搜索控制；`ResponseScrollState` 统一键盘、滚轮和拖拽边界。搜索不构造样式，切换文档、页签或查询后校验任务有效性。具体格式与预算见[开发指南](development.md#性能边界)。
+Switching request, response tab, or document invalidates obsolete search and
+highlight results. Copy and download use `ResponseData`, not formatted text.
 
-## 依赖与文件边界
+## Reloading
 
-- `config.rs` 保留配置领域模型及公开导出；`config/documents.rs` 定义 YAML 文档与序列化转换，`config/files.rs` 负责文件扫描、路径和源指纹，`config/loading.rs` 编排加载与场景组装，`config/validation.rs` 校验请求字段。对外类型路径和 YAML 格式保持一致。
-- `highlight.rs` 负责文本及模板着色；`highlight/response.rs` 管理响应分页缓存、队列和失效，`highlight/response/scanner.rs` 持有 Syntect 解析器和检查点。解析器仍在使用它的线程中创建，不在线程间传递。
-- `http_method.rs` 统一配置、界面和发送层的方法解析，使用 reqwest 校验；`http.rs` 负责传输及上传，`http/logging.rs` 负责日志脱敏和长度限制。
-- URL、query 与表单编码使用 `url`、`form_urlencoded`。包含变量的原始模板可能不是合法 URL，展开前保留文本回退路径。
-- YAML 使用固定版本的 `serde-saphyr`。配置结构负责未知字段和类型校验。
-- 配置诊断统一封装 YAML 解析，行列号读取解析库的结构化位置；默认主题与主题切换共用一份配色定义，颜色解析使用 Ratatui。
-- Header 和参数在内部是有序条目，不能压回 map 丢失重复值。YAML Header 的公开格式仍是映射，重复值使用字符串列表。
-- 单行输入共用 `EditInput`，字符边界由 `unicode-segmentation` 处理；Header 与 Params 对话框保留各自业务规则，不泛化为表格框架。
-- 解析缓存由 `cache.rs` 管理，源指纹使用流式 BLAKE3。当前调用 cacache 的同步 API，热重载读盘和缓存写入发生在后台。
-- `RequestFileStore` 只负责工作区定位和请求文件删除；没有 save 接口。下载命名和写盘属于 `response_output.rs`，不与配置文件操作混用。
-- 剪贴板使用 `arboard`，无可用图形后端时尝试平台命令。
-
-## 已知限制
-
-- 单个响应有接收上限，但多个请求保留的响应没有总内存预算；大 JSON 提取也可能放大内存。
-- 请求过滤仍扫描列表并转换大小写；Modified 判断会重建基线草稿，大请求预览仍可能克隆数据。视口渲染不等于所有输入规模下恒定耗时。
-- 后台线程创建失败和 panic 没有统一恢复机制；响应操作没有取消或超时控制。当前复制任务临时创建剪贴板服务，需在真实桌面环境核对任务结束后的剪贴板托管。
-- 相对上传路径会做越界检查，但路径校验与打开之间的文件系统竞态尚未完全消除。
-- 运行时变量不写回 YAML；解析缓存仍可能包含 YAML 内声明的变量默认值。不要在公共配置中写入真实秘密，也不要把 secret 标记理解成缓存加密。
-- `Cargo.toml` 的最低 Rust 版本声明与源码语法存在待核对项；当前平台构建通过不能代表最低版本、musl 或 Windows 都已验证。
-- 自定义 CA、配置化代理、重定向和分离连接超时尚未实现。
+Workspace reload scans and validates files in background work. Sending requests
+and scenario switching are disabled while reload is active. A successful reload
+replaces session edits. A failed reload retains the current workspace state.

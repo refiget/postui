@@ -1,0 +1,6 @@
+name: Redirect
+description: 307 to Health.
+url: http://{{host}}/v1/redirect
+extracts:
+  - variable: redirect_service
+    path: service

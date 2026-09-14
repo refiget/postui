@@ -17,16 +17,24 @@ name = "postui"
 path = "src/main.rs"
 
 [[example]]
+name = "button_gallery"
+path = "design-lab/button_gallery.rs"
+
+[[example]]
+name = "config_error_gallery"
+path = "design-lab/config_error_gallery.rs"
+
+[[example]]
 name = "button_showcase"
-path = "examples/ui-studies/button_showcase.rs"
+path = "design-lab/ui-studies/button_showcase.rs"
 
 [[example]]
 name = "add_entry_gallery"
-path = "examples/ui-studies/add_entry_gallery.rs"
+path = "design-lab/ui-studies/add_entry_gallery.rs"
 
 [[example]]
 name = "delete_icon_gallery"
-path = "examples/ui-studies/delete_icon_gallery.rs"
+path = "design-lab/ui-studies/delete_icon_gallery.rs"
 
 [dependencies]
 anyhow = "1.0"

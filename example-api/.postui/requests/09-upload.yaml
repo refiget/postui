@@ -1,0 +1,20 @@
+name: Upload files
+description: Multipart fields and two files.
+method: POST
+url: http://{{host}}/v1/upload
+form:
+  - name: note
+    value: "{{note}}"
+  - name: user
+    value: "{{user}}"
+files:
+  - field: file
+    path: "{{upload_file}}"
+    filename: "{{upload_filename}}"
+    content_type: text/plain
+  - field: second
+    path: "{{second_upload_file}}"
+    content_type: text/plain
+extracts:
+  - variable: upload_size
+    path: data.files[0].size

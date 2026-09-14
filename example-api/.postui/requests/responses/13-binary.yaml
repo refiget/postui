@@ -1,0 +1,3 @@
+name: Binary
+description: Summary, copy, and download behavior.
+url: http://{{host}}/v1/responses/binary

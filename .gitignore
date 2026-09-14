@@ -1,7 +1,7 @@
-# Rust 构建产物
+# Rust build output
 /target/
 
-# Python 环境与缓存
+# Python environments and caches
 /.venv/
 venv/
 __pycache__/
@@ -12,35 +12,41 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# 本地日志与运行时文件
+# The local API example is versioned; keep its generated data ignored.
+!/example-api/**/*.py
+!/example-api/**/requirements*.txt
+
+# Local logs and runtime files
 *.log
 logs/
 *.pid
 /temp/
 **/.postui/cache/
 
-# 本地接口服务与示例集合
-/example-api/
+# Local API upload data
+/example-api/test_files/
+/example-api/temp/
+/example-api/test-bin/
 
-# 本地环境变量；示例文件可以提交
+# Local environment variables
 .env
 .env.*
 !.env.example
 
-# 用户上传文件，只保留目录说明文件；真实文件不得提交
+# User upload files
 /test_files/*
-!/test_files/请将待审查文件放入此目录.txt
+!/test_files/PLACE_UPLOAD_FILES_HERE.txt
 
-# 个人项目配置，仅保留在本机；公开模板使用 config.example.yaml
+# Local project and user configuration
 /config.yaml
 /.postui/
 /themes/
 
-# 本地发布包与辅助工具数据，不纳入源代码仓库
+# Local release packages and tool data
 /打包区/
 /.codegraph/
 
-# 编辑器与操作系统文件
+# Editor and operating system files
 .DS_Store
 Thumbs.db
 .idea/

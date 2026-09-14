@@ -1,0 +1,11 @@
+name: Large HTML · 64 MiB
+description: Streamed markup with comments and whitespace.
+url: http://{{host}}/v1/large-response
+timeout: 120
+params:
+  - name: format
+    value: html
+  - name: size_kb
+    value: "65536"
+  - name: delay_ms
+    value: "0"

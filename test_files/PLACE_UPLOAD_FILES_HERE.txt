@@ -1,0 +1,3 @@
+Place files used by upload requests in this directory.
+
+Uploaded files are excluded from Git by default.

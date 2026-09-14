@@ -1,0 +1,13 @@
+name: Search
+description: Encoded query parameters.
+url: http://{{host}}/v1/search
+headers:
+  X-Debug-Token: "{{token}}"
+params:
+  - name: q
+    value: "{{search_term}}"
+  - name: page
+    value: "{{page}}"
+extracts:
+  - variable: search_echo
+    path: data.query.q

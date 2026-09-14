@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-set -eu
+set -Eeuo pipefail
 
 usage() {
     cat <<'EOF'
@@ -31,7 +31,7 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "找不到命令: $1"
 }
 
-project_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 default_output_dir=$project_root/打包区
 output_dir=$default_output_dir
 target=
@@ -75,6 +75,7 @@ require_command cargo
 require_command tar
 require_command mktemp
 require_command install
+require_command cp
 
 printf '%s\n' "构建 macOS release: $target"
 cargo build --locked --manifest-path "$project_root/Cargo.toml" --release --target "$target"
@@ -92,10 +93,10 @@ install -m 755 "$project_root/install.sh" "$package_dir/install.sh"
 install -m 644 "$project_root/README.md" "$package_dir/README.md"
 
 cat >"$package_dir/postui" <<'EOF'
-#!/bin/sh
+#!/usr/bin/env bash
 
-set -eu
-package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+set -Eeuo pipefail
+package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 exec "$package_dir/postui.bin" "$@"
 EOF
 chmod 755 "$package_dir/postui"
@@ -105,7 +106,7 @@ if [ -d "$project_root/docs" ]; then
 fi
 
 mkdir -p "$output_dir"
-output_dir=$(CDPATH= cd -- "$output_dir" && pwd)
+output_dir=$(CDPATH='' cd -- "$output_dir" && pwd -P)
 managed_marker=$output_dir/.postui-package-output
 if [ ! -f "$managed_marker" ] && [ "$output_dir" != "$default_output_dir" ]; then
     first_entry=$(find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit)
@@ -117,7 +118,7 @@ install -m 755 "$package_dir/postui" "$output_dir/postui"
 install -m 755 "$package_dir/postui.bin" "$output_dir/postui.bin"
 install -m 755 "$package_dir/install.sh" "$output_dir/install.sh"
 install -m 644 "$package_dir/README.md" "$output_dir/README.md"
-rm -rf "$output_dir/docs"
+rm -rf -- "${output_dir:?}/docs"
 if [ -d "$package_dir/docs" ]; then
     cp -R "$package_dir/docs" "$output_dir/docs"
 fi

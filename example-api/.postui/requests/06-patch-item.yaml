@@ -1,0 +1,7 @@
+name: Update item
+description: PATCH with a JSON body.
+method: PATCH
+url: http://{{host}}/v1/items/{{item_id}}
+headers:
+  Content-Type: application/json
+body: '{"value":"{{item_value}}"}'

@@ -1,21 +1,24 @@
-# PostUI 开发约束
+# PostUI Development Constraints
 
-## 开发方式
+## Implementation
 
-- 以需求、代码结构和真实运行行为为依据直接实现，不采用 TDD（测试驱动开发）。
-- 不为实现先编写测试，不以测试用例反向塑造生产代码接口。
-- 优先保持实现简单、边界清楚，避免为了可测试性增加仅供测试使用的公开接口、状态或抽象层。
+- Implement from requirements, code structure, and observed runtime behavior.
+- Do not use test-driven development.
+- Do not add public interfaces, state, or abstractions solely for testability.
+- Keep responsibilities and boundaries explicit.
+- 所有文档的编写,前端提示,展示的撰写都只要说明当前状态,描述事实;禁止任何描述原因,背景
 
-## 测试限制
+## Tests
 
-- 禁止新增函数级自动化测试，包括 Rust `#[test]`、`#[tokio::test]`、`#[cfg(test)]` 测试模块。
-- 禁止新增独立测试文件、测试目录、测试 runner、快照、随机测试、Mock 测试框架或测试结果报告。
-- 修复缺陷时直接修复生产逻辑，不要求先复现为测试用例，也不补回归测试。
-- `mock/` 仅作为可手工运行的公共 API 示例，不作为自动化测试基础设施。
+- Do not add function-level automated tests, including Rust `#[test]`,
+  `#[tokio::test]`, or `#[cfg(test)]` modules.
+- Do not add test files, test directories, test runners, snapshots, property
+  tests, mock frameworks, or test reports.
+- Fix production behavior directly. Regression tests are not required.
 
-## 验证方式
+## Verification
 
-代码变更完成后按风险选择最少的验证：
+Run the minimum checks required by the change:
 
 ```bash
 cargo fmt --all -- --check
@@ -23,10 +26,15 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-涉及交互、请求发送、文件上传下载或跨平台行为时，使用临时配置进行一次真实人工流程验证。验证结束后不提交日志、缓存、截图、临时文件或个人配置。
+For interaction, request, upload, download, or cross-platform changes, exercise
+one real flow with a temporary configuration. Remove logs, caches, screenshots,
+temporary files, and personal configuration after verification.
 
-## 提交边界
+## Repository boundaries
 
-- 不提交个人项目地址、请求、账号、令牌、上传文件或工作区配置。
-- 不提交 `target/`、`.venv/`、`.postui/`、`打包区/`、日志、缓存和下载产物。
-- 修改前检查现有工作区变更，不覆盖或清理与当前任务无关的用户内容。
+- Do not commit personal project URLs, requests, accounts, tokens, upload files,
+  or workspace configuration.
+- Do not commit `target/`, `.venv/`, `.postui/`, `打包区/`, logs, caches, or
+  downloaded files.
+- Inspect existing worktree changes before editing. Do not overwrite or remove
+  unrelated user changes.

@@ -1,8 +1,8 @@
-# 可选的用户界面配置。
+# Optional user interface configuration.
 # Linux: ${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml
 # Windows: %APPDATA%\postui\config.yaml
-# 或通过 postui --config <路径> 加载，所有字段都可省略。
+# Load another file with postui --config <path>. All fields are optional.
 language: en
 theme: gruvbox-dark
-# 响应体最多交给格式化和界面展示的字节数，默认 16777216（16 MiB）。
+# Maximum response bytes available to formatting and display. Default: 16 MiB.
 # max_response_display_bytes: 16777216

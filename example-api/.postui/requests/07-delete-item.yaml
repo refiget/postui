@@ -1,0 +1,7 @@
+name: Delete item
+description: DELETE and boolean extraction.
+method: DELETE
+url: http://{{host}}/v1/items/{{item_id}}
+extracts:
+  - variable: deleted_item
+    path: data.deleted

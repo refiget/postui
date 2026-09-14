@@ -1,0 +1,3 @@
+name: Plain text
+description: Non-JSON response body.
+url: http://{{host}}/v1/plain

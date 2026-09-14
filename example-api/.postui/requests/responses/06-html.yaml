@@ -1,0 +1,3 @@
+name: HTML
+description: Comments and preformatted whitespace.
+url: http://{{host}}/v1/responses/html

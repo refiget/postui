@@ -1,0 +1,3 @@
+name: CSS
+description: Source syntax highlighting.
+url: http://{{host}}/v1/responses/css

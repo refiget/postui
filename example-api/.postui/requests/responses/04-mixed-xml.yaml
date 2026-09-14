@@ -1,0 +1,3 @@
+name: Mixed XML
+description: Mixed text remains in source order.
+url: http://{{host}}/v1/responses/mixed-xml

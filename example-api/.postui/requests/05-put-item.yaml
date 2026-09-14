@@ -1,0 +1,11 @@
+name: Replace item
+description: PUT with a JSON body.
+method: PUT
+url: http://{{host}}/v1/items/{{item_id}}
+headers:
+  Content-Type: application/json
+  X-Debug-Token: "{{token}}"
+body: '{"name":"{{item_name}}","value":"{{item_value}}"}'
+extracts:
+  - variable: updated_method
+    path: data.method

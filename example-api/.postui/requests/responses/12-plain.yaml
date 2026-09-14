@@ -1,0 +1,3 @@
+name: Plain text
+description: Leading spaces and JSON-like text.
+url: http://{{host}}/v1/responses/plain

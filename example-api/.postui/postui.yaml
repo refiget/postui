@@ -1,0 +1,30 @@
+name: Example API
+timeout: 1
+
+directories:
+  uploads: test_files
+  downloads: temp
+
+headers:
+  Accept: application/json
+  X-PostUI-Client: "{{client_name}}"
+
+variables:
+  client_name: postui-example
+  token: local-example-token
+  search_term: "terminal client"
+  page: "2"
+  task_id: task-local-001
+  item_id: item-042
+  item_name: Example item
+  item_value: value with spaces & symbols
+  note: multipart note
+  user: local-user
+  upload_file: sample.txt
+  upload_filename: sample-upload.txt
+  second_upload_file: second.txt
+  missing_file: does-not-exist.txt
+  empty_file: sample.txt
+  session_id: local-session-001
+
+default_scenario: local

@@ -1,0 +1,7 @@
+name: Missing upload
+description: Upload path does not exist.
+method: POST
+url: http://{{host}}/v1/upload
+files:
+  - field: file
+    path: "{{missing_file}}"

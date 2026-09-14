@@ -1,0 +1,11 @@
+name: Echo headers
+description: Cookie and standard request headers.
+url: http://{{host}}/v1/headers
+headers:
+  Cookie: "session={{session_id}}"
+  User-Agent: postui-example/1.0
+  Referer: http://example.test/source
+  X-Debug-Token: "{{token}}"
+extracts:
+  - variable: header_echo
+    path: data.token

@@ -36,7 +36,7 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl
 
       - name: Build package
-        run: sh ./package-linux.sh --output-dir "$GITHUB_WORKSPACE/dist"
+        run: bash ./package-linux.sh --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload Linux package
         uses: actions/upload-artifact@v6
@@ -82,7 +82,7 @@ jobs:
         run: rustup target add x86_64-apple-darwin
 
       - name: Build package
-        run: sh ./package-macos.sh --target x86_64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
+        run: bash ./package-macos.sh --target x86_64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload macOS Intel package
         uses: actions/upload-artifact@v6
@@ -104,7 +104,7 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Build package
-        run: sh ./package-macos.sh --target aarch64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
+        run: bash ./package-macos.sh --target aarch64-apple-darwin --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Upload macOS Apple Silicon package
         uses: actions/upload-artifact@v6

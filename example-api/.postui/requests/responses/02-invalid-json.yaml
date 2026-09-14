@@ -1,0 +1,3 @@
+name: Invalid JSON
+description: Malformed body for Raw fallback.
+url: http://{{host}}/v1/responses/invalid-json

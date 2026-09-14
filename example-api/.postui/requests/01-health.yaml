@@ -1,0 +1,6 @@
+name: Health
+description: Service readiness and request metadata.
+url: http://{{host}}/v1/health
+extracts:
+  - variable: health_service
+    path: service

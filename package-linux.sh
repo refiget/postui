@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-set -eu
+set -Eeuo pipefail
 
 usage() {
     cat <<'EOF'
@@ -22,7 +22,7 @@ require_file() {
     [ -f "$1" ] || die "找不到$2: $1"
 }
 
-project_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 default_output_dir=$project_root/打包区
 output_dir=$default_output_dir
 
@@ -45,6 +45,7 @@ require_file "$project_root/install.sh" "安装脚本"
 command -v cargo >/dev/null 2>&1 || die "找不到 cargo"
 command -v tar >/dev/null 2>&1 || die "找不到 tar"
 command -v mktemp >/dev/null 2>&1 || die "找不到 mktemp"
+command -v cp >/dev/null 2>&1 || die "找不到 cp"
 
 target=x86_64-unknown-linux-musl
 printf '%s\n' "构建 Linux amd64 release: $target"
@@ -63,22 +64,20 @@ install -m 755 "$project_root/install.sh" "$package_dir/install.sh"
 install -m 644 "$project_root/README.md" "$package_dir/README.md"
 
 cat >"$package_dir/postui" <<'EOF'
-#!/bin/sh
+#!/usr/bin/env bash
 
-set -eu
-package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+set -Eeuo pipefail
+package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 exec "$package_dir/postui.bin" "$@"
 EOF
 chmod 755 "$package_dir/postui"
 
-for optional_directory in docs; do
-    if [ -d "$project_root/$optional_directory" ]; then
-        cp -R "$project_root/$optional_directory" "$package_dir/$optional_directory"
-    fi
-done
+if [ -d "$project_root/docs" ]; then
+    cp -R "$project_root/docs" "$package_dir/docs"
+fi
 
 mkdir -p "$output_dir"
-output_dir=$(CDPATH= cd -- "$output_dir" && pwd)
+output_dir=$(CDPATH='' cd -- "$output_dir" && pwd -P)
 managed_marker=$output_dir/.postui-package-output
 if [ ! -f "$managed_marker" ] && [ "$output_dir" != "$default_output_dir" ]; then
     first_entry=$(find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit)
@@ -89,12 +88,10 @@ install -m 755 "$package_dir/postui" "$output_dir/postui"
 install -m 755 "$package_dir/postui.bin" "$output_dir/postui.bin"
 install -m 755 "$package_dir/install.sh" "$output_dir/install.sh"
 install -m 644 "$package_dir/README.md" "$output_dir/README.md"
-for optional_directory in docs; do
-    rm -rf "$output_dir/$optional_directory"
-    if [ -d "$package_dir/$optional_directory" ]; then
-        cp -R "$package_dir/$optional_directory" "$output_dir/$optional_directory"
-    fi
-done
+rm -rf -- "${output_dir:?}/docs"
+if [ -d "$package_dir/docs" ]; then
+    cp -R "$package_dir/docs" "$output_dir/docs"
+fi
 
 archive_path=$output_dir/postui-linux-amd64.tar.gz
 tar -czf "$archive_path" -C "$package_dir" .

@@ -1,0 +1,3 @@
+name: Timeout · 2s
+description: Exceeds the one-second client timeout.
+url: http://{{host}}/v1/delay/2

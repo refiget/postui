@@ -1,0 +1,11 @@
+name: Large JSON · 100K
+description: Streamed records with stable markers.
+url: http://{{host}}/v1/large-response
+timeout: 30
+params:
+  - name: count
+    value: "100000"
+  - name: format
+    value: json
+  - name: delay_ms
+    value: "0"

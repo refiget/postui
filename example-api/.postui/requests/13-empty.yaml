@@ -1,0 +1,3 @@
+name: Empty 204
+description: Response without a body.
+url: http://{{host}}/v1/empty

@@ -1,0 +1,3 @@
+name: JSON
+description: Nested values and number precision.
+url: http://{{host}}/v1/responses/json

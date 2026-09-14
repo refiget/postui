@@ -1,0 +1,11 @@
+name: Large XML · 64 MiB
+description: Complete streamed records with stable markers.
+url: http://{{host}}/v1/large-response
+timeout: 120
+params:
+  - name: format
+    value: xml
+  - name: size_kb
+    value: "65536"
+  - name: delay_ms
+    value: "0"

@@ -1,0 +1,3 @@
+name: XML
+description: Indentation and syntax highlighting.
+url: http://{{host}}/v1/responses/xml

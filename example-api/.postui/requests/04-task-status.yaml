@@ -1,0 +1,8 @@
+name: Task status
+description: Path variables and nested extraction.
+url: http://{{host}}/v1/tasks/{{task_id}}
+extracts:
+  - variable: task_status
+    path: data.status
+  - variable: first_item_id
+    path: data.items[0].id

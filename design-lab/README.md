@@ -1,4 +1,4 @@
-# Examples
+# Design Lab
 
 ## Button gallery
 
@@ -15,7 +15,7 @@ supported. Press `q` or `Esc` to exit.
 
 ## UI studies
 
-The following examples are stored in `examples/ui-studies/`:
+The following examples are stored in `design-lab/ui-studies/`:
 
 - `button_showcase`: button states and interaction behavior
 - `add_entry_gallery`: add-entry controls in table context

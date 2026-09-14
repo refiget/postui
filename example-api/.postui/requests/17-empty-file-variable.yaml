@@ -1,0 +1,7 @@
+name: Variable upload
+description: Upload path supplied by a workspace variable.
+method: POST
+url: http://{{host}}/v1/upload
+files:
+  - field: file
+    path: "{{empty_file}}"

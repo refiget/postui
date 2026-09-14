@@ -1,0 +1,7 @@
+variables:
+  host: 127.0.0.1:18080
+
+overrides:
+  03-create-task.yaml:
+    headers:
+      X-PostUI-Mode: debug
