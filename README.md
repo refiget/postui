@@ -1,60 +1,42 @@
 # PostUI
 
-## 多主题
+## 第一章
 
-![多主题](assets/themes-switches.gif)
-
-## 可编辑
-
-![可编辑](assets/editable.gif)
-
-## 高性能
-
-![高性能](assets/perf.gif)
-
-PostUI 是一个支持 Linux、Windows 和 macOS 的终端 HTTP 客户端。请求、场景和变量由 YAML 文件定义；界面内的请求编辑默认只在当前会话生效。
+PostUI 是一个跨平台的接口测试软件, 开发的原因是我操蛋的开发环境和测试环境. 这个软件是配置优先的,所以的接口都依赖配置文件, tui 界面只能做简单的编辑.
 
 ![PostUI 终端界面](assets/screenshot.png)
 
+## 第二章：特性
+
+### 多主题
+
+![多主题](assets/themes-switches.gif)
+
+### 可编辑
+
+![可编辑](assets/editable.gif)
+
+### 高性能
+
+![高性能](assets/perf.gif)
+
 ## 安装
 
-### macOS 和 Linux（Bash）
-
-安装脚本支持 Intel 与 Apple Silicon macOS，以及 Linux amd64。默认下载最新 Release，显示下载进度、bin 路径和 PATH 状态；重复执行可更新版本。
+### macOS 和 Linuxj
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | bash
 ```
 
-默认安装目录为 `${XDG_DATA_HOME:-$HOME/.local/share}/postui`。安装完成后按提示执行 `source ~/.bashrc` 或 `source ~/.zshrc`。
+**注意**: 该操作不会 append `path` 到 `zsh` 或者 `bash`. 如有需要,留意安装后的提示手动 append 即可.
 
 ### Windows
-
-在 PowerShell 5.1 或更高版本中运行，默认下载最新 Windows amd64 Release，安装到当前用户目录并更新用户 PATH：
 
 ```powershell
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content))
 ```
 
-默认安装目录为 `%LOCALAPPDATA%\Programs\PostUI`。重复执行会更新已有安装，不需要管理员权限。
-
-使用代理：
-
-```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content)) -Proxy "http://proxy.example:7890"
-```
-
 安装完成后重新打开 PowerShell，或执行脚本输出的 PATH 命令，再运行 `postui --version`。
-
-指定版本、安装目录或跳过命令路径初始化：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | bash -s -- --version 0.1.2 --prefix "$HOME/.local/share/postui" --skip-init
-```
-
-```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content)) -Version 0.1.2 -InstallDir "$env:LOCALAPPDATA\Programs\PostUI" -SkipInit
-```
 
 ## 构建
 
@@ -77,7 +59,7 @@ cargo build --release
 .\package-windows.ps1
 ```
 
-## 工作区
+## 配置
 
 最小工作区只需要一个请求文件：
 
@@ -174,16 +156,4 @@ Linux 默认路径为 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`，W
 cargo run -- example-api --scenario local
 ```
 
-其中的缓存、日志、Python 字节码和上传测试文件仍由 Git 忽略。
-
-界面素材和交互研究位于 [design-lab](design-lab/README.md)。
-
-## 开发检查
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo build
-```
-
-开发约束见 [AGENTS.md](AGENTS.md)，模块职责见[架构边界](docs/code-architecture-audit.md)，仓库边界见[仓库说明](docs/repository.md)。
+界面素材和交互位于 [design-lab](design-lab/README.md)。
