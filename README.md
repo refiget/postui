@@ -2,7 +2,6 @@
 
 PostUI 是一个跨平台的接口测试软件, 开发的原因是我操蛋的开发环境和测试环境. 这个软件是配置优先的,所以的接口都依赖配置文件, tui 界面只能做简单的编辑.
 
-![PostUI 终端界面](assets/screenshot.png)
 
 ## 特性
 
@@ -20,7 +19,7 @@ PostUI 是一个跨平台的接口测试软件, 开发的原因是我操蛋的�
 
 ## 安装
 
-### macOS 和 Linuxj
+### macOS 和 Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | bash
