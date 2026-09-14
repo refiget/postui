@@ -24,6 +24,7 @@ pub(super) struct UiLayout {
     pub(super) requests: Rect,
     pub(super) workspace_selector: Rect,
     pub(super) variables_button: Rect,
+    pub(super) request_search: Rect,
     pub(super) request_list: Rect,
     pub(super) request_scrollbar: Rect,
     pub(super) preview: Rect,
@@ -70,6 +71,7 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
         requests: Rect::default(),
         workspace_selector: Rect::default(),
         variables_button: Rect::default(),
+        request_search: Rect::default(),
         request_list: Rect::default(),
         request_scrollbar: Rect::default(),
         preview: Rect::default(),
@@ -147,6 +149,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         requests: columns[0],
         workspace_selector: sidebar.workspace_selector,
         variables_button: sidebar.variables_button,
+        request_search: sidebar.request_search,
         request_list: sidebar.request_list.content,
         request_scrollbar: sidebar.request_list.scrollbar,
         preview: main[0],
@@ -210,6 +213,7 @@ fn sidebar_width(width: u16) -> u16 {
 struct SidebarLayout {
     workspace_selector: Rect,
     variables_button: Rect,
+    request_search: Rect,
     request_list: ScrollAreas,
 }
 
@@ -219,6 +223,7 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
         return SidebarLayout {
             workspace_selector: Rect::default(),
             variables_button: Rect::default(),
+            request_search: Rect::default(),
             request_list: panel_scroll_areas(area),
         };
     }
@@ -239,18 +244,20 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Length(1),
                 Constraint::Min(0),
             ])
             .split(inner)
     };
-    let (variables_button, request_list) = if inner.height >= 7 {
-        (parts[2], parts[4])
+    let (variables_button, request_search, request_list) = if inner.height >= 7 {
+        (parts[2], parts[3], parts[4])
     } else {
-        (parts[1], parts[2])
+        (parts[1], parts[2], parts[3])
     };
     SidebarLayout {
         workspace_selector: parts[0],
         variables_button,
+        request_search,
         request_list: inner_scroll_areas(request_list),
     }
 }

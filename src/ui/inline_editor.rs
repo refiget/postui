@@ -137,6 +137,71 @@ fn set_inline_scroll(
     }
 }
 
+pub(super) fn place_inline_editor_cursor(app: &mut App, column: u16, row: u16, area: Rect) -> bool {
+    let (row_count, selected, field, scroll, editor) = match app.view.dialog.as_mut() {
+        Some(Dialog::Headers(dialog)) => (
+            dialog.rows.len(),
+            dialog.selected,
+            dialog.field,
+            &dialog.scroll,
+            dialog.editor.as_mut(),
+        ),
+        Some(Dialog::Params(dialog)) => (
+            dialog.rows.len(),
+            dialog.selected,
+            dialog.field,
+            &dialog.scroll,
+            dialog.editor.as_mut(),
+        ),
+        _ => return false,
+    };
+    let Some(editor) = editor else {
+        return false;
+    };
+    let layout = inline_dialog_layout(area, row_count);
+    if !contains(layout.rows.content, column, row) {
+        return false;
+    }
+    let offset = scroll.offset(row_count, usize::from(layout.rows.content.height));
+    if offset.saturating_add(usize::from(row - layout.rows.content.y)) != selected {
+        return false;
+    }
+    let widths = inline_table_widths(layout.rows.content.width);
+    let name_start = layout.rows.content.x.saturating_add(TABLE_HIGHLIGHT_WIDTH);
+    let (start, width) = match field {
+        KeyValueField::Name => (name_start, constraint_length(widths[0])),
+        KeyValueField::Value => (
+            name_start
+                .saturating_add(constraint_length(widths[0]))
+                .saturating_add(TABLE_COLUMN_SPACING),
+            constraint_length(widths[1]),
+        ),
+    };
+    if !(start..start.saturating_add(width)).contains(&column) {
+        return false;
+    }
+    let mut column = usize::from(column - start);
+    if editor.mode() == crate::editor::EditMode::Insert {
+        let available = usize::from(width).saturating_sub(1);
+        let before = &editor.value()[..editor.cursor_byte()];
+        let after = &editor.value()[editor.cursor_byte()..];
+        let before_width =
+            available.saturating_sub(crate::editor::terminal_width(after).min(available / 2));
+        let mut visible_before = 0;
+        for character in before.chars().rev() {
+            let width = crate::editor::terminal_width(&character.to_string());
+            if visible_before + width > before_width {
+                break;
+            }
+            visible_before += width;
+        }
+        column = editor.cursor_width().saturating_sub(visible_before)
+            + column.saturating_sub(usize::from(column > visible_before));
+    }
+    editor.place_cursor(column);
+    true
+}
+
 pub(super) fn handle_inline_editor_click(
     app: &mut App,
     column: u16,

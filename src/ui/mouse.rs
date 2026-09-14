@@ -199,6 +199,20 @@ fn contains_curl_field(area: Rect, stacked: bool, column: u16, row: u16) -> bool
 }
 
 fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double: bool) {
+    if contains(areas.preview_content, column, row) {
+        let editing = if app.view.preview.active_tab == PreviewTab::Body {
+            let line = usize::from(row - areas.preview_content.y)
+                .saturating_add(usize::from(app.view.preview.scroll.offset()));
+            let column = usize::from(column - areas.preview_content.x);
+            app.place_body_editor_cursor(line, column)
+        } else {
+            place_inline_editor_cursor(app, column, row, areas.preview_content)
+        };
+        if editing {
+            app.view.focus = Focus::Preview;
+            return;
+        }
+    }
     if !is_double {
         app.view.cancel_active_editors();
     }
@@ -230,6 +244,8 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
     } else if contains(areas.variables_button, column, row) {
         app.view.focus = Focus::Variables;
         app.open_variables();
+    } else if contains(areas.request_search, column, row) {
+        app.open_request_search();
     } else if contains(areas.request_scrollbar, column, row) {
         app.view.focus = Focus::Requests;
         click_request_list_scrollbar(app, row, areas);
@@ -338,14 +354,12 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect, is_doubl
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
-    focus_panel_at(app, column, row, areas);
     let response_menu = response_menu_area(areas.response, areas.response_menu_button);
     if app.view.response.menu.is_open() && contains(response_menu, column, row) {
         app.move_response_menu_selection(direction);
     } else if contains(areas.request_scrollbar, column, row)
         || contains(areas.request_list, column, row)
     {
-        app.view.focus = Focus::Requests;
         tracing::trace!(column, row, direction, "滚动左侧接口列表");
         let count = app.visible_request_indices().len();
         app.view
@@ -353,17 +367,17 @@ fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, directio
             .scroll
             .move_by(direction, count, usize::from(areas.request_list.height));
     } else if contains(areas.response, column, row) {
-        app.view.focus = Focus::Response;
         tracing::trace!(column, row, direction, "滚动响应内容");
         app.scroll_response(direction);
     } else if contains(areas.preview_content, column, row) {
-        app.view.focus = Focus::Preview;
         if app.view.preview.active_tab == PreviewTab::Body {
             app.view.preview.scroll.move_by(direction);
         } else {
             let tab = app.view.preview.active_tab;
             if app.editing_preview_tab() != Some(tab) {
+                let focus = app.view.focus;
                 app.handle_preview_action(PreviewAction::Edit(tab));
+                app.view.focus = focus;
             }
             if app.editing_preview_tab() == Some(tab) {
                 scroll_inline_editor(app, direction, areas.preview_content);

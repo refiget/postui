@@ -145,6 +145,7 @@ impl App {
             let handle_as_global = inline_table
                 && !editing_inline_cell
                 && (self.view.focus != Focus::Preview
+                    || matches!(command, Some(Command::PreviousTab | Command::NextTab))
                     || command.is_some_and(|command| {
                         shortcuts::resolve(Context::Global, key, self.debug_mode) == Some(command)
                             && !matches!(command, Command::Activate | Command::Back)
@@ -197,16 +198,23 @@ impl App {
             Some(Command::ResetRequest) => self.restore_current_request(),
             Some(Command::ResetScenario) => self.restore_configuration_requests(),
             Some(Command::Delete) => self.request_delete(),
-            Some(Command::Left) if self.view.focus.container() == Focus::Preview => {
+            Some(Command::Left | Command::PreviousTab)
+                if self.view.focus.container() == Focus::Preview =>
+            {
                 self.move_preview_tab(-1)
             }
-            Some(Command::Right) if self.view.focus.container() == Focus::Preview => {
+            Some(Command::Right | Command::NextTab)
+                if self.view.focus.container() == Focus::Preview =>
+            {
                 self.move_preview_tab(1)
             }
-            Some(Command::Left | Command::Right)
+            Some(Command::Left | Command::Right | Command::PreviousTab | Command::NextTab)
                 if self.view.focus.container() == Focus::Response =>
             {
-                self.move_response_tab(command == Some(Command::Left))
+                self.move_response_tab(matches!(
+                    command,
+                    Some(Command::Left | Command::PreviousTab)
+                ))
             }
             Some(Command::Up) => self.move_focused(-1),
             Some(Command::Down) => self.move_focused(1),

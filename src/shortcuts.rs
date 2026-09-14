@@ -48,6 +48,8 @@ pub(crate) enum Command {
     Delete,
     Left,
     Right,
+    PreviousTab,
+    NextTab,
     Up,
     Down,
     Activate,
@@ -74,6 +76,8 @@ impl Command {
                 | Self::Down
                 | Self::Left
                 | Self::Right
+                | Self::PreviousTab
+                | Self::NextTab
                 | Self::WordLeft
                 | Self::WordRight
                 | Self::DeleteWordLeft
@@ -401,8 +405,7 @@ const TABS: &[Binding] = &[
         "Previous tab",
         "上一页签",
         plain(Char('h')),
-        plain(Left),
-        (Left, KeyModifiers::ALT)
+        plain(Left)
     ),
     binding!(
         Right,
@@ -410,7 +413,20 @@ const TABS: &[Binding] = &[
         "Next tab",
         "下一页签",
         plain(Char('l')),
-        plain(Right),
+        plain(Right)
+    ),
+    binding!(
+        PreviousTab,
+        "Alt+←",
+        "Previous tab",
+        "上一页签",
+        (Left, KeyModifiers::ALT)
+    ),
+    binding!(
+        NextTab,
+        "Alt+→",
+        "Next tab",
+        "下一页签",
         (Right, KeyModifiers::ALT)
     ),
 ];

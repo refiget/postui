@@ -142,23 +142,26 @@ pub(super) fn draw_preview_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
             PreviewTab::Params => theme.variable,
             PreviewTab::Headers => theme.secondary,
         };
-        let fill = if active { theme.text } else { color };
-        let edge = blend_rgb(color, theme.surface, 65);
+        let fill = if active { color } else { theme.surface };
         let label = preview_tab_label(tab, app);
         let body = if let Some(body) = label.strip_prefix(' ') {
             body.to_string()
         } else {
             label
         };
-        line.push(Span::styled("▌", Style::default().fg(edge).bg(fill)));
         line.push(Span::styled(
-            body,
+            if active { "▌" } else { " " },
+            Style::default().fg(theme.accent).bg(fill),
+        ));
+        let style = if active {
             Style::default()
                 .fg(theme.background)
                 .bg(fill)
-                .underline_color(edge)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ));
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted).bg(fill)
+        };
+        line.push(Span::styled(body, style));
     }
     frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
@@ -401,7 +404,7 @@ pub(super) fn preview_tab_at(area: Rect, column: u16, app: &App) -> Option<Previ
     let mut start = 0;
     for (index, tab) in PreviewTab::all().into_iter().enumerate() {
         if index > 0 {
-            start += 2;
+            start += 1;
         }
         let end = start + crate::editor::terminal_width(&preview_tab_label(tab, app));
         if (start..end).contains(&relative) {

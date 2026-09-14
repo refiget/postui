@@ -22,3 +22,26 @@ pub mod response_format;
 pub mod response_output;
 pub mod settings;
 pub mod template;
+
+mod app;
+mod cli;
+mod clipboard;
+mod editor;
+mod i18n;
+mod launch;
+mod logging;
+mod paths;
+mod recent_workspaces;
+mod response_action;
+mod shell;
+mod shortcuts;
+mod terminal;
+mod ui;
+mod workspace_picker;
+
+#[path = "../design-lab/preview/mod.rs"]
+pub mod preview;
+
+pub fn run() -> anyhow::Result<()> {
+    launch::run()
+}

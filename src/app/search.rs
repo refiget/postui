@@ -29,13 +29,13 @@ impl App {
                     || request.name.to_lowercase().contains(&query)
                     || request.id.to_lowercase().contains(&query)
                     || request.url.to_lowercase().contains(&query)
-                    || request.method.to_lowercase().contains(&query))
+                    || session.draft.method.to_lowercase().contains(&query))
                 .then_some(index)
             })
             .collect()
     }
 
-    pub(super) fn open_request_search(&mut self) {
+    pub(crate) fn open_request_search(&mut self) {
         if self.view.requests.filter_origin.is_none() {
             self.view.requests.filter_origin =
                 self.current_request().map(|request| request.id.clone());
@@ -68,7 +68,18 @@ impl App {
             None => return,
         };
         match action {
-            EditAction::Cancel => self.clear_request_search(),
+            EditAction::Cancel => {
+                self.view.requests.search = None;
+                if self.view.requests.filter.is_empty() {
+                    self.clear_request_search();
+                } else if self
+                    .workspace_state
+                    .selected_request
+                    .is_none_or(|selected| !self.visible_request_indices().contains(&selected))
+                {
+                    self.select_first_search_result();
+                }
+            }
             EditAction::Confirm => {
                 if let Some(search) = self.view.requests.search.take() {
                     self.view.requests.filter = search.confirmed_value();

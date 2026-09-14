@@ -76,23 +76,8 @@ impl App {
 
     pub(crate) fn start_body_edit_at(&mut self, line: usize, column: usize, place_cursor: bool) {
         if place_cursor {
-            if let Some(editor) = self.view.preview.file_editor.as_mut()
-                && editor.line == line
-            {
-                editor
-                    .input
-                    .place_cursor(column.saturating_sub(editor.column));
+            if self.place_body_editor_cursor(line, column) {
                 return;
-            }
-            if let Some(editor) = self.view.preview.editor.as_mut() {
-                let (editor_line, editor_column) = editor.position();
-                let offset = text_position(&editor.document, line, column);
-                if editor_line == line && editor.span.contains(&offset) {
-                    editor
-                        .input
-                        .place_cursor(column.saturating_sub(editor_column));
-                    return;
-                }
             }
             self.view.preview.cancel_editor();
         }
@@ -134,6 +119,27 @@ impl App {
             input: EditInput::new(input),
         });
         self.view.focus = Focus::Preview;
+    }
+
+    pub(crate) fn place_body_editor_cursor(&mut self, line: usize, column: usize) -> bool {
+        if let Some(editor) = self.view.preview.file_editor.as_mut()
+            && editor.line == line
+            && column >= editor.column
+        {
+            editor.input.place_cursor(column - editor.column);
+            return true;
+        }
+        if let Some(editor) = self.view.preview.editor.as_mut() {
+            let (editor_line, editor_column) = editor.position();
+            let width = terminal_width(editor.input.value()).max(1);
+            if editor_line == line
+                && (editor_column..=editor_column.saturating_add(width)).contains(&column)
+            {
+                editor.input.place_cursor(column - editor_column);
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn body_editor(&self) -> Option<&BodyValueEditor> {

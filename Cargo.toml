@@ -1,6 +1,6 @@
 [package]
 name = "postui"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 rust-version = "1.85"
 description = "Terminal client for sending configured HTTP requests"
@@ -15,6 +15,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "postui"
 path = "src/main.rs"
+
+[[example]]
+name = "frontend_preview"
+path = "design-lab/frontend_preview.rs"
 
 [[example]]
 name = "button_gallery"

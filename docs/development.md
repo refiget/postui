@@ -4,12 +4,19 @@
 
 | Target | Entry point | Responsibility |
 | --- | --- | --- |
-| `postui-core` | `src/lib.rs` | Configuration, templates, HTTP execution, response documents |
-| `postui` | `src/main.rs` | CLI, application state, terminal events, rendering |
+| `postui_core` | `src/lib.rs` | Configuration, HTTP execution, application state, terminal events, rendering |
+| `postui` | `src/main.rs`, `src/launch.rs` | CLI and workspace startup |
+| `frontend_preview` | `design-lab/frontend_preview.rs`, `design-lab/preview/` | Shared TUI, temporary workspace, local example API |
 
 ```bash
 cargo check --lib
 cargo check --bin postui
+```
+
+The complete TUI preview runs with a temporary workspace and an embedded local API:
+
+```bash
+cargo run --example frontend_preview
 ```
 
 ## Source map

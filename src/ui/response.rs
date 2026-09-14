@@ -288,8 +288,6 @@ pub(super) fn draw_response(
             } else {
                 format!("   / {search}")
             };
-        let tabs = response_tab_labels(app).map(|(_, label)| label).join("  ");
-        let tabs = format!("{tabs}  ←/→{search_suffix}   ·   {}", response.final_url);
         if let Some(input) = app.view.response.search.as_ref() {
             frame.render_widget(
                 Paragraph::new(format!(
@@ -300,10 +298,26 @@ pub(super) fn draw_response(
                 metadata,
             );
         } else {
-            frame.render_widget(
-                Paragraph::new(tabs).style(Style::default().fg(theme.muted)),
-                metadata,
-            );
+            let mut tabs = Vec::new();
+            for (index, (tab, label)) in response_tab_labels(app).into_iter().enumerate() {
+                if index > 0 {
+                    tabs.push(Span::raw("  "));
+                }
+                let style = if app.view.response.active_tab == tab {
+                    Style::default()
+                        .fg(theme.accent)
+                        .bg(theme.selection)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    label_style(theme)
+                };
+                tabs.push(Span::styled(label, style));
+            }
+            tabs.push(Span::styled(
+                format!("  ←/→{search_suffix}   ·   {}", response.final_url),
+                label_style(theme),
+            ));
+            frame.render_widget(Paragraph::new(Line::from(tabs)), metadata);
         }
     }
 
@@ -434,16 +448,7 @@ fn response_tab_labels(app: &App) -> [(ResponseTab, String); 3] {
         (ResponseTab::Formatted, "Formatted"),
         (ResponseTab::Headers, app.text().response_headers_tab()),
     ]
-    .map(|(tab, label)| {
-        (
-            tab,
-            if app.view.response.active_tab == tab {
-                format!("[{label}]")
-            } else {
-                label.to_string()
-            },
-        )
-    })
+    .map(|(tab, label)| (tab, format!(" {label} ")))
 }
 
 pub(super) fn response_tab_at(

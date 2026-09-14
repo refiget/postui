@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    postui_core::run()
+    postui_core::preview::run()
 }

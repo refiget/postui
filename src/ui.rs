@@ -20,7 +20,7 @@ use ratatui::{
 };
 use tui_assets_rust::{
     Button as AssetButton, ButtonState as FlatButtonState, Dropdown as AssetDropdown,
-    DropdownItem as AssetDropdownItem, Theme as AssetTheme, blend_rgb,
+    DropdownItem as AssetDropdownItem, Theme as AssetTheme,
 };
 
 mod chrome;

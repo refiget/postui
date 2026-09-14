@@ -266,6 +266,14 @@ impl UiText {
         self.pick("Requests", "接口")
     }
 
+    pub(crate) fn new_request(self) -> &'static str {
+        self.pick("+ New", "+ 新建")
+    }
+
+    pub(crate) fn request_filter(self) -> &'static str {
+        self.pick("Filter requests", "筛选接口")
+    }
+
     pub(crate) fn theme_load_failed(self, error: &str) -> String {
         match self.language {
             Language::English => format!("Could not load theme: {error}"),
@@ -281,8 +289,8 @@ impl UiText {
             Context::Help => &[Up, Down, Back],
             Context::Menu => &[Up, Down, Activate, Back, Help],
             Context::Variables => &[Up, Down, Activate, Back, Help],
-            Context::Headers => &[Activate, Add, Delete, Toggle, FocusNext, Help],
-            Context::Params => &[Activate, Add, Delete, FocusNext, Help],
+            Context::Headers => &[Activate, Add, Delete, Toggle, NextTab, FocusNext, Help],
+            Context::Params => &[Activate, Add, Delete, NextTab, FocusNext, Help],
             Context::Response => &[
                 Up,
                 Down,

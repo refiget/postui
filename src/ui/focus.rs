@@ -52,16 +52,25 @@ impl<'a> FocusStyles<'a> {
                 .fg(self.theme.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(self.theme.muted)
+            Style::default().fg(tui_assets_rust::blend_rgb(
+                self.theme.muted,
+                self.theme.surface,
+                60,
+            ))
         }
     }
 }
 
 pub(super) fn selection_style(theme: &UiTheme, focused: bool) -> Style {
-    let style = Style::default().bg(theme.selection);
     if focused {
-        style.add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(theme.selection)
+            .add_modifier(Modifier::BOLD)
     } else {
-        style
+        Style::default().bg(tui_assets_rust::blend_rgb(
+            theme.selection,
+            theme.surface,
+            45,
+        ))
     }
 }

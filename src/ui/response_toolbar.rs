@@ -10,7 +10,8 @@ pub(super) fn draw_response_format_button(frame: &mut Frame<'_>, area: Rect, app
         ResponseTab::Formatted => ("↔", app.text().response_show_raw()),
         ResponseTab::Headers => ("↔", app.text().response_show_formatted()),
     };
-    let focused = app.view.response.active_tab != ResponseTab::Headers;
+    let focused =
+        app.view.focus == Focus::Response && app.view.response.active_tab != ResponseTab::Headers;
     draw_response_toolbar_button(
         frame,
         area,
