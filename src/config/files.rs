@@ -34,7 +34,11 @@ pub(super) fn read_optional_file(path: &Path) -> Result<Option<String>> {
     }
 }
 
-pub(super) fn read_request_files(requests_directory: &Path) -> Result<Vec<RequestFile>> {
+pub(super) fn read_request_files(
+    requests_directory: &Path,
+    tolerant: bool,
+    warnings: &mut Vec<diagnostics::ConfigDiagnostic>,
+) -> Result<Vec<RequestFile>> {
     if !optional_directory_exists(requests_directory)? {
         return Ok(Vec::new());
     }
@@ -45,7 +49,14 @@ pub(super) fn read_request_files(requests_directory: &Path) -> Result<Vec<Reques
 
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {
-        let text = fs::read_to_string(&path).map_err(|error| diagnostics::read(&path, &error))?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if tolerant => {
+                warnings.push(diagnostics::ConfigDiagnostic::read(&path, &error));
+                continue;
+            }
+            Err(error) => return Err(diagnostics::read(&path, &error)),
+        };
         tracing::debug!(path = %path.display(), bytes = text.len(), "读取请求文件");
         files.push(RequestFile { path, text });
     }
@@ -54,6 +65,8 @@ pub(super) fn read_request_files(requests_directory: &Path) -> Result<Vec<Reques
 
 pub(super) fn read_configuration_files(
     configurations_directory: &Path,
+    tolerant: bool,
+    warnings: &mut Vec<diagnostics::ConfigDiagnostic>,
 ) -> Result<Vec<ConfigurationFile>> {
     if !optional_directory_exists(configurations_directory)? {
         return Ok(Vec::new());
@@ -79,9 +92,28 @@ pub(super) fn read_configuration_files(
             .and_then(|value| value.to_str())
             .unwrap_or_default();
         let Some(name) = normalize_configuration_name(stem) else {
-            bail!("Configuration file name is invalid: {}", path.display())
+            let error = diagnostics::invalid(
+                &path,
+                "name",
+                format!("Configuration file name is invalid: {}", path.display()),
+            );
+            if tolerant {
+                warnings.push(
+                    diagnostics::from_error(&error)
+                        .expect("diagnostics::invalid must return ConfigDiagnostic"),
+                );
+                continue;
+            }
+            return Err(error);
         };
-        let text = fs::read_to_string(&path).map_err(|error| diagnostics::read(&path, &error))?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if tolerant => {
+                warnings.push(diagnostics::ConfigDiagnostic::read(&path, &error));
+                continue;
+            }
+            Err(error) => return Err(diagnostics::read(&path, &error)),
+        };
         tracing::debug!(path = %path.display(), name = %name, bytes = text.len(), "读取 workspace 配置");
         files.push(ConfigurationFile { path, name, text });
     }

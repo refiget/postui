@@ -18,7 +18,20 @@ use std::{
     path::Path,
 };
 
+pub(crate) struct LoadOutcome {
+    pub(crate) config: RequestConfig,
+    pub(crate) warnings: Vec<crate::diagnostics::ConfigDiagnostic>,
+}
+
 pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
+    load_workspace(workspace_path, false).map(|outcome| outcome.config)
+}
+
+pub(crate) fn load_tolerant(workspace_path: &Path) -> Result<LoadOutcome> {
+    load_workspace(workspace_path, true)
+}
+
+fn load_workspace(workspace_path: &Path, tolerant: bool) -> Result<LoadOutcome> {
     if !workspace_path.is_dir() {
         return Err(diagnostics::invalid(
             workspace_path,
@@ -27,15 +40,23 @@ pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
         ));
     }
 
+    let mut warnings = Vec::new();
     let workspace_config_path = workspace_path.join("postui.yaml");
-    let workspace_config = read_optional_file(&workspace_config_path)?;
+    let workspace_config = match read_optional_file(&workspace_config_path) {
+        Ok(text) => text,
+        Err(error) if tolerant => {
+            record_warning(&mut warnings, config_diagnostic(&error)?);
+            None
+        }
+        Err(error) => return Err(error),
+    };
     let configuration_files = diagnostics::standardize(
-        read_configuration_files(&workspace_path.join("scenarios")),
+        read_configuration_files(&workspace_path.join("scenarios"), tolerant, &mut warnings),
         &workspace_path.join("scenarios"),
         "scenarios",
     )?;
     let request_files = diagnostics::standardize(
-        read_request_files(&workspace_path.join("requests")),
+        read_request_files(&workspace_path.join("requests"), tolerant, &mut warnings),
         &workspace_path.join("requests"),
         "requests",
     )?;
@@ -54,6 +75,8 @@ pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
         workspace_path,
         &configuration_files,
         &request_files,
+        tolerant,
+        &mut warnings,
     )?;
 
     tracing::debug!(
@@ -67,7 +90,7 @@ pub fn load(workspace_path: &Path) -> Result<RequestConfig> {
         download_directory = %config.download_directory.display(),
         "配置文件加载完成"
     );
-    Ok(config)
+    Ok(LoadOutcome { config, warnings })
 }
 
 fn parse_workspace_config(
@@ -76,22 +99,49 @@ fn parse_workspace_config(
     workspace_path: &Path,
     configuration_files: &[ConfigurationFile],
     request_files: &[RequestFile],
+    tolerant: bool,
+    warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
 ) -> Result<RequestConfig> {
     let raw = match text {
-        Some(text) => diagnostics::parse_yaml(path, "postui.yaml", text)?,
+        Some(text) => match diagnostics::parse_yaml(path, "postui.yaml", text) {
+            Ok(raw) => raw,
+            Err(error) if tolerant => {
+                record_warning(warnings, config_diagnostic(&error)?);
+                RawWorkspaceConfig::default()
+            }
+            Err(error) => return Err(error),
+        },
         None => RawWorkspaceConfig::default(),
     };
-    diagnostics::standardize(
+    let normalized = diagnostics::standardize(
         normalize_config(
             path,
             raw,
             workspace_path,
             configuration_files,
             request_files,
+            tolerant,
+            warnings,
         ),
         path,
         "workspace",
-    )
+    );
+    match normalized {
+        Ok(config) => Ok(config),
+        Err(error) if tolerant => {
+            record_warning(warnings, config_diagnostic(&error)?);
+            normalize_config(
+                path,
+                RawWorkspaceConfig::default(),
+                workspace_path,
+                configuration_files,
+                request_files,
+                tolerant,
+                warnings,
+            )
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn normalize_config(
@@ -100,6 +150,8 @@ fn normalize_config(
     workspace_path: &Path,
     configuration_files: &[ConfigurationFile],
     request_files: &[RequestFile],
+    tolerant: bool,
+    warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
 ) -> Result<RequestConfig> {
     let RawWorkspaceConfig {
         name,
@@ -133,18 +185,33 @@ fn normalize_config(
     let mut request_ids = BTreeSet::new();
     let mut requests = Vec::with_capacity(request_files.len());
     for file in request_files {
-        let raw_request = parse_request_file(file, workspace_path)?;
-        let request = diagnostics::standardize(
-            normalize_request(raw_request, timeout_seconds, skip_ssl_verification),
-            &file.path,
-            "request",
-        )?;
+        let request = (|| {
+            let raw_request = parse_request_file(file, workspace_path)?;
+            diagnostics::standardize(
+                normalize_request(raw_request, timeout_seconds, skip_ssl_verification),
+                &file.path,
+                "request",
+            )
+        })();
+        let request = match request {
+            Ok(request) => request,
+            Err(error) if tolerant => {
+                record_warning(warnings, config_diagnostic(&error)?);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if !request_ids.insert(request.id.clone()) {
-            return Err(diagnostics::invalid(
+            let error = diagnostics::invalid(
                 &file.path,
                 "id",
                 format!("Request id is duplicated: {}", request.id),
-            ));
+            );
+            if tolerant {
+                record_warning(warnings, config_diagnostic(&error)?);
+                continue;
+            }
+            return Err(error);
         }
         tracing::debug!(
             request_id = %request.id,
@@ -163,7 +230,7 @@ fn normalize_config(
     }
 
     let configurations = diagnostics::standardize(
-        normalize_configurations(configuration_files, &request_ids),
+        normalize_configurations(configuration_files, &request_ids, tolerant, warnings),
         path,
         "scenarios",
     )?;
@@ -230,6 +297,8 @@ fn normalize_config(
 fn normalize_configurations(
     configuration_files: &[ConfigurationFile],
     request_ids: &BTreeSet<String>,
+    tolerant: bool,
+    warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
 ) -> Result<BTreeMap<String, WorkspaceConfiguration>> {
     if configuration_files.is_empty() {
         return Ok(BTreeMap::from([(
@@ -247,74 +316,110 @@ fn normalize_configurations(
 
     let mut configurations = BTreeMap::new();
     for file in configuration_files {
-        let raw = diagnostics::parse_yaml::<Option<ConfigurationDocument>>(
-            &file.path, &file.name, &file.text,
-        )?
-        .unwrap_or_default();
-        let variables =
-            diagnostics::standardize(normalize_variables(raw.variables), &file.path, "variables")?;
-        let headers =
-            diagnostics::standardize(normalize_headers(raw.headers), &file.path, "headers")?;
-        let timeout_seconds = diagnostics::standardize(
-            raw.timeout.map(validate_timeout).transpose(),
+        let configuration = normalize_configuration(file, request_ids);
+        let configuration = match configuration {
+            Ok(configuration) => configuration,
+            Err(error) if tolerant => {
+                record_warning(warnings, config_diagnostic(&error)?);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let (name, configuration) = configuration;
+        if configurations.insert(name, configuration).is_some() {
+            unreachable!("scenario filenames are unique within one directory");
+        }
+    }
+    if configurations.is_empty() {
+        configurations.insert(
+            "default".to_string(),
+            WorkspaceConfiguration {
+                path: None,
+                variables: BTreeMap::new(),
+                headers: Vec::new(),
+                timeout_seconds: None,
+                skip_ssl_verification: None,
+                request_overrides: BTreeMap::new(),
+            },
+        );
+    }
+    Ok(configurations)
+}
+
+fn normalize_configuration(
+    file: &ConfigurationFile,
+    request_ids: &BTreeSet<String>,
+) -> Result<(String, WorkspaceConfiguration)> {
+    let raw = diagnostics::parse_yaml::<Option<ConfigurationDocument>>(
+        &file.path, &file.name, &file.text,
+    )?
+    .unwrap_or_default();
+    let variables =
+        diagnostics::standardize(normalize_variables(raw.variables), &file.path, "variables")?;
+    let headers = diagnostics::standardize(normalize_headers(raw.headers), &file.path, "headers")?;
+    let timeout_seconds = diagnostics::standardize(
+        raw.timeout.map(validate_timeout).transpose(),
+        &file.path,
+        "timeout",
+    )?;
+    let mut request_overrides = BTreeMap::new();
+    for (raw_request_id, raw_override) in raw.overrides {
+        let request_id = diagnostics::standardize(
+            normalize_request_id(&raw_request_id),
             &file.path,
-            "timeout",
+            "overrides",
         )?;
-        let mut request_overrides = BTreeMap::new();
-        for (raw_request_id, raw_override) in raw.overrides {
-            let request_id = diagnostics::standardize(
-                normalize_request_id(&raw_request_id),
+        if !request_ids.contains(&request_id) {
+            return Err(diagnostics::invalid(
                 &file.path,
                 "overrides",
-            )?;
-            if !request_ids.contains(&request_id) {
-                return Err(diagnostics::invalid(
-                    &file.path,
-                    "overrides",
-                    format!("Referenced request does not exist: {raw_request_id}"),
-                ));
-            }
-            let request_override = diagnostics::standardize(
-                normalize_override(raw_override, &request_id, &file.name),
-                &file.path,
-                format!("overrides.{request_id}"),
-            )?;
-            if request_overrides
-                .insert(request_id.clone(), request_override)
-                .is_some()
-            {
-                return Err(diagnostics::invalid(
-                    &file.path,
-                    "overrides",
-                    format!("Request override is declared more than once: {request_id}"),
-                ));
-            }
+                format!("Referenced request does not exist: {raw_request_id}"),
+            ));
         }
-        if configurations
-            .insert(
-                file.name.clone(),
-                WorkspaceConfiguration {
-                    path: Some(file.path.clone()),
-                    variables,
-                    headers,
-                    timeout_seconds,
-                    skip_ssl_verification: raw.skip_ssl_verification,
-                    request_overrides,
-                },
-            )
+        let request_override = diagnostics::standardize(
+            normalize_override(raw_override, &request_id, &file.name),
+            &file.path,
+            format!("overrides.{request_id}"),
+        )?;
+        if request_overrides
+            .insert(request_id.clone(), request_override)
             .is_some()
         {
             return Err(diagnostics::invalid(
                 &file.path,
-                "name",
-                format!(
-                    "Configuration name is declared more than once: {}",
-                    file.name
-                ),
+                "overrides",
+                format!("Request override is declared more than once: {request_id}"),
             ));
         }
     }
-    Ok(configurations)
+    Ok((
+        file.name.clone(),
+        WorkspaceConfiguration {
+            path: Some(file.path.clone()),
+            variables,
+            headers,
+            timeout_seconds,
+            skip_ssl_verification: raw.skip_ssl_verification,
+            request_overrides,
+        },
+    ))
+}
+
+fn config_diagnostic(error: &anyhow::Error) -> Result<crate::diagnostics::ConfigDiagnostic> {
+    diagnostics::from_error(error).ok_or_else(|| anyhow::anyhow!("{error:#}"))
+}
+
+fn record_warning(
+    warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
+    warning: crate::diagnostics::ConfigDiagnostic,
+) {
+    let message = warning.to_string();
+    if !warnings
+        .iter()
+        .any(|existing| existing.to_string() == message)
+    {
+        warnings.push(warning);
+    }
 }
 
 fn normalize_default_configuration(

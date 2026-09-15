@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, time::Duration};
+use std::{error::Error, fmt, iter::Peekable, str::Chars, time::Duration};
 
 use crate::config::{DataPart, FileUpload, NameValue, RequestParam};
 
@@ -41,7 +41,7 @@ impl Error for ParseError {}
 #[derive(Debug, Default)]
 struct ParsedArguments {
     method: Option<String>,
-    url: Option<String>,
+    urls: Vec<String>,
     headers: Vec<NameValue>,
     data: Vec<DataArgument>,
     forms: Vec<FormArgument>,
@@ -66,9 +66,29 @@ pub fn parse(command: &str) -> Result<ImportedRequest, ParseError> {
     if command.len() > MAX_COMMAND_BYTES {
         return Err(ParseError::new("cURL 命令超过 4 MiB"));
     }
-    let tokens = tokenize(command)?;
+    let tokens = repair_option_markers(tokenize(command)?);
     let arguments = parse_arguments(&tokens[1..])?;
     build_request(arguments)
+}
+
+fn repair_option_markers(tokens: Vec<String>) -> Vec<String> {
+    let mut repaired = Vec::with_capacity(tokens.len());
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        if token == "-"
+            && let Some(option) = tokens.peek()
+            && matches!(
+                option.as_str(),
+                "X" | "H" | "d" | "F" | "u" | "A" | "e" | "b" | "m"
+            )
+        {
+            repaired.push(format!("-{option}"));
+            tokens.next();
+        } else {
+            repaired.push(token);
+        }
+    }
+    repaired
 }
 
 fn tokenize(command: &str) -> Result<Vec<String>, ParseError> {
@@ -89,16 +109,8 @@ fn tokenize(command: &str) -> Result<Vec<String>, ParseError> {
             }
             Some('"') => match character {
                 '"' => quote = None,
+                '\\' if consume_line_continuation(&mut chars) => {}
                 '\\' => match chars.peek().copied() {
-                    Some('\n') => {
-                        chars.next();
-                    }
-                    Some('\r') => {
-                        chars.next();
-                        if chars.peek() == Some(&'\n') {
-                            chars.next();
-                        }
-                    }
                     Some('"' | '\\' | '$' | '`') => token.push(chars.next().unwrap()),
                     _ => token.push('\\'),
                 },
@@ -109,19 +121,25 @@ fn tokenize(command: &str) -> Result<Vec<String>, ParseError> {
                     quote = Some(character);
                     started = true;
                 }
-                '\\' => match chars.next() {
-                    Some('\n') => {}
-                    Some('\r') => {
-                        if chars.peek() == Some(&'\n') {
-                            chars.next();
-                        }
+                '\\' if consume_line_continuation(&mut chars) => {
+                    if started && (token.eq_ignore_ascii_case("curl") || token.starts_with('-')) {
+                        tokens.push(std::mem::take(&mut token));
+                        started = false;
                     }
+                }
+                '\\' => match chars.next() {
                     Some(escaped) => {
                         token.push(escaped);
                         started = true;
                     }
                     None => return Err(ParseError::new("cURL 命令末尾存在未完成的转义")),
                 },
+                '^' | '`' if consume_line_continuation(&mut chars) => {
+                    if started && (token.eq_ignore_ascii_case("curl") || token.starts_with('-')) {
+                        tokens.push(std::mem::take(&mut token));
+                        started = false;
+                    }
+                }
                 value if value.is_whitespace() => {
                     if started {
                         tokens.push(std::mem::take(&mut token));
@@ -143,13 +161,52 @@ fn tokenize(command: &str) -> Result<Vec<String>, ParseError> {
     if started {
         tokens.push(token);
     }
-    if !tokens.first().is_some_and(|value| value == "curl") {
+    let curl_index = tokens
+        .iter()
+        .position(|value| value.eq_ignore_ascii_case("curl"));
+    if curl_index.is_some_and(|index| index > 1) {
+        return Err(ParseError::new("命令必须以 curl 开头"));
+    }
+    if curl_index == Some(1) && !is_shell_prompt(&tokens[0]) {
+        return Err(ParseError::new("命令必须以 curl 开头"));
+    }
+    if curl_index == Some(1) {
+        tokens.remove(0);
+    }
+    if curl_index.is_none() {
         return Err(ParseError::new("命令必须以 curl 开头"));
     }
     if tokens.len() == 1 {
         return Err(ParseError::new("cURL 命令中没有请求地址"));
     }
     Ok(tokens)
+}
+
+fn is_shell_prompt(value: &str) -> bool {
+    matches!(value, "$" | ">" | "#") || value.ends_with('>')
+}
+
+fn consume_line_continuation(chars: &mut Peekable<Chars<'_>>) -> bool {
+    let mut lookahead = chars.clone();
+    let mut consumed = 0;
+    while matches!(lookahead.peek(), Some(' ' | '\t')) {
+        lookahead.next();
+        consumed += 1;
+    }
+    match lookahead.next() {
+        Some('\n') => consumed += 1,
+        Some('\r') => {
+            consumed += 1;
+            if lookahead.next() == Some('\n') {
+                consumed += 1;
+            }
+        }
+        _ => return false,
+    }
+    for _ in 0..consumed {
+        chars.next();
+    }
+    true
 }
 
 fn parse_arguments(tokens: &[String]) -> Result<ParsedArguments, ParseError> {
@@ -165,13 +222,13 @@ fn parse_arguments(tokens: &[String]) -> Result<ParsedArguments, ParseError> {
             continue;
         }
         if options && token.starts_with('-') && token != "-" {
-            let (option, inline_value) = split_long_option(token);
+            let (option, inline_value) = split_option(token);
             match option {
                 "-X" | "--request" => {
                     parsed.method = Some(option_value(tokens, &mut index, option, inline_value)?);
                 }
                 "-H" | "--header" => {
-                    let value = option_value(tokens, &mut index, option, inline_value)?;
+                    let value = header_value(tokens, &mut index, option, inline_value)?;
                     parse_header(&value, &mut parsed.headers)?;
                 }
                 "-d" | "--data" | "--data-raw" | "--data-binary" => {
@@ -233,10 +290,9 @@ fn parse_arguments(tokens: &[String]) -> Result<ParsedArguments, ParseError> {
                     );
                 }
                 "--url" => {
-                    set_url(
-                        &mut parsed.url,
-                        option_value(tokens, &mut index, option, inline_value)?,
-                    )?;
+                    parsed
+                        .urls
+                        .push(option_value(tokens, &mut index, option, inline_value)?);
                 }
                 "-k" | "--insecure" => parsed.skip_ssl_verification = true,
                 "-G" | "--get" => parsed.use_get = true,
@@ -246,7 +302,7 @@ fn parse_arguments(tokens: &[String]) -> Result<ParsedArguments, ParseError> {
                 _ => return Err(ParseError::new(format!("不支持的 cURL 参数: {option}"))),
             }
         } else {
-            set_url(&mut parsed.url, token.clone())?;
+            parsed.urls.push(token.clone());
         }
         index += 1;
     }
@@ -254,14 +310,47 @@ fn parse_arguments(tokens: &[String]) -> Result<ParsedArguments, ParseError> {
     Ok(parsed)
 }
 
-fn split_long_option(token: &str) -> (&str, Option<&str>) {
+fn split_option(token: &str) -> (&str, Option<&str>) {
     if token.starts_with("--") {
         token
             .split_once('=')
             .map_or((token, None), |(option, value)| (option, Some(value)))
+    } else if token.len() > 2
+        && let Some(option @ ("-X" | "-H" | "-d" | "-F" | "-u" | "-A" | "-e" | "-b" | "-m")) =
+            token.get(..2)
+    {
+        (option, Some(&token[2..]))
     } else {
         (token, None)
     }
+}
+
+fn header_value(
+    tokens: &[String],
+    index: &mut usize,
+    option: &str,
+    inline_value: Option<&str>,
+) -> Result<String, ParseError> {
+    let mut value = option_value(tokens, index, option, inline_value)?;
+    while !value.contains(':') {
+        let Some(next) = tokens.get(*index + 1) else {
+            break;
+        };
+        if next.starts_with('-') || looks_like_url_start(next) {
+            break;
+        }
+        *index += 1;
+        value.push_str(next);
+    }
+    if value.ends_with(':')
+        && let Some(next) = tokens.get(*index + 1)
+        && !next.starts_with('-')
+        && !looks_like_url_start(next)
+    {
+        *index += 1;
+        value.push_str(next);
+    }
+    Ok(value)
 }
 
 fn option_value(
@@ -332,18 +421,34 @@ fn append_cookie(headers: &mut Vec<NameValue>, value: String) {
     }
 }
 
-fn set_url(target: &mut Option<String>, value: String) -> Result<(), ParseError> {
-    if target.replace(value).is_some() {
+fn merge_url_fragments(fragments: Vec<String>) -> Result<String, ParseError> {
+    if fragments.is_empty() {
+        return Err(ParseError::new("cURL 命令中没有请求地址"));
+    }
+    if fragments
+        .iter()
+        .filter(|fragment| looks_like_url_start(fragment))
+        .count()
+        > 1
+    {
         return Err(ParseError::new("一条 cURL 命令只能包含一个请求地址"));
     }
-    Ok(())
+    Ok(fragments.concat())
+}
+
+fn looks_like_url_start(value: &str) -> bool {
+    value.contains("://")
+        || value.starts_with("{{")
+        || value
+            .split_once(':')
+            .map_or(value, |(host, _)| host)
+            .parse::<std::net::IpAddr>()
+            .is_ok()
 }
 
 fn build_request(arguments: ParsedArguments) -> Result<ImportedRequest, ParseError> {
     let has_body = !arguments.data.is_empty() || !arguments.forms.is_empty();
-    let source_url = arguments
-        .url
-        .ok_or_else(|| ParseError::new("cURL 命令中没有请求地址"))?;
+    let source_url = merge_url_fragments(arguments.urls)?;
     let (url, mut query_parts) = split_url(&source_url)?;
     let content_type = arguments
         .headers

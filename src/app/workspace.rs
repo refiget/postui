@@ -8,6 +8,7 @@ pub(super) struct ReloadedWorkspace {
     baseline_config: crate::config::WorkspaceConfig,
     baseline_requests: std::collections::BTreeMap<String, crate::config::ApiRequest>,
     session: WorkspaceSession,
+    warning: Option<ErrorPage>,
 }
 
 impl App {
@@ -167,15 +168,16 @@ impl App {
         self.workspace_reload = Some(receiver);
         self.view.notice = None;
         std::thread::spawn(move || {
-            let loaded = match crate::config::load(&path) {
-                Ok(config) => config,
+            let loaded = match crate::config::load_tolerant(&path) {
+                Ok(loaded) => loaded,
                 Err(error) => {
                     let _ =
                         sender.send(Err(ErrorPage::from_error(&error, path.join("postui.yaml"))));
                     return;
                 }
             };
-            let (mut config, requests) = loaded.into_workspace();
+            let warning = ErrorPage::from_diagnostics(&loaded.warnings);
+            let (mut config, requests) = loaded.config.into_workspace();
             if config.configurations.contains_key(&active_configuration) {
                 config.default_configuration = active_configuration;
             }
@@ -191,6 +193,7 @@ impl App {
                 baseline_config,
                 baseline_requests,
                 session,
+                warning,
             }));
         });
     }
@@ -233,7 +236,7 @@ impl App {
         self.baseline_config = loaded.baseline_config;
         self.baseline_requests = loaded.baseline_requests;
         self.workspace_state = workspace_state;
-        self.error_page = None;
+        self.error_page = loaded.warning;
         self.view = super::ViewState::default();
         self.view.notice = Some(Feedback::Success(
             self.text().workspace_reloaded().to_string(),

@@ -10,6 +10,33 @@ pub(crate) struct ErrorPage {
 }
 
 impl ErrorPage {
+    pub(crate) fn from_diagnostics(
+        diagnostics: &[crate::diagnostics::ConfigDiagnostic],
+    ) -> Option<Self> {
+        let first = diagnostics.first()?;
+        let mut message = format!("Configuration errors: {}", diagnostics.len());
+        for diagnostic in diagnostics {
+            message.push_str("\n\n");
+            message.push_str(&diagnostic.to_string());
+        }
+        Some(Self {
+            message,
+            path: first.path().to_path_buf(),
+            editor_error: None,
+            editor_requested: false,
+        })
+    }
+
+    pub(crate) fn append_diagnostics(
+        &mut self,
+        diagnostics: &[crate::diagnostics::ConfigDiagnostic],
+    ) {
+        for diagnostic in diagnostics {
+            self.message.push_str("\n\n");
+            self.message.push_str(&diagnostic.to_string());
+        }
+    }
+
     pub(crate) fn from_error(error: &anyhow::Error, fallback_path: PathBuf) -> Self {
         if let Some(diagnostic) = crate::diagnostics::from_error(error) {
             let path = if diagnostic.field() == "workspace" || diagnostic.path().is_dir() {
@@ -48,7 +75,7 @@ impl App {
 
     pub(crate) fn dismiss_error_page(&mut self) {
         self.error_page = None;
-        tracing::debug!("关闭配置错误页面，继续使用默认配置");
+        tracing::debug!("关闭配置错误页面，继续使用已加载配置");
     }
 
     pub(crate) fn request_error_editor(&mut self) {

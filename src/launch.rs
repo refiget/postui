@@ -1,8 +1,7 @@
 use crate::{
     app::{App, ErrorPage},
     cli::{CliCommand, CliOptions, parse_args, print_help},
-    config::{self, load as load_request_config},
-    diagnostics,
+    config, diagnostics,
     http::HttpClient,
     logging, paths,
     paths::{discover_user_config_path, discover_workspace, resolve_cli_path, resolve_workspace},
@@ -79,8 +78,15 @@ fn run_app(options: CliOptions) -> Result<()> {
         "启动 PostUI"
     );
 
-    let mut request_config = match load_request_config(&workspace_path) {
-        Ok(config) => config,
+    let mut request_config = match config::load_tolerant(&workspace_path) {
+        Ok(loaded) => {
+            if let Some(error_page) = error_page.as_mut() {
+                error_page.append_diagnostics(&loaded.warnings);
+            } else {
+                error_page = ErrorPage::from_diagnostics(&loaded.warnings);
+            }
+            loaded.config
+        }
         Err(error) => {
             tracing::error!(
                 path = %workspace_path.display(),

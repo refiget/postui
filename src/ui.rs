@@ -300,7 +300,7 @@ fn draw_error_page(frame: &mut Frame<'_>, app: &App) {
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Continue with defaults    "),
+            Span::raw("  Continue with valid files    "),
             Span::styled(
                 "E",
                 Style::default()
