@@ -35,6 +35,28 @@ curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | ba
 
 安装完成后重新打开 PowerShell，或执行脚本输出的 PATH 命令，再运行 `postui --version`。
 
+## 卸载
+
+### macOS 和 Linux
+
+```bash
+postui uninstall
+```
+
+该命令删除安装器管理的 PostUI 启动文件和程序，并从 `~/.bashrc`、`~/.zshrc`
+删除 PostUI 初始化区块。工作区 `.postui` 和个人配置文件保留。
+
+### Windows
+
+在 PowerShell 中运行：
+
+```powershell
+postui uninstall
+```
+
+该命令从当前用户的 PATH 删除 PostUI 安装目录，并在当前进程退出后删除程序目录。
+工作区 `.postui` 和个人配置文件保留。
+
 ## 构建
 
 项目使用 Rust 2024 edition，`Cargo.toml` 声明 `rust-version = "1.85"`。

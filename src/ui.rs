@@ -332,7 +332,7 @@ fn error_wrapped_line_count(text: &str, width: u16) -> u16 {
                 .unwrap_or(u16::MAX)
                 .max(1)
         })
-        .sum::<u16>()
+        .fold(0, u16::saturating_add)
         .max(1)
 }
 

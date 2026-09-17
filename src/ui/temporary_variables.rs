@@ -20,6 +20,14 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
     let table_area = sections[1];
     let body_area = sections[3];
     let name_width = table_area.width.saturating_sub(8).min(24);
+    let value_width = usize::from(
+        table_area
+            .width
+            .saturating_sub(name_width)
+            .saturating_sub(TABLE_COLUMN_SPACING)
+            .saturating_sub(2)
+            .max(1),
+    );
     let widths = [Constraint::Length(name_width), Constraint::Min(1)];
     let header = Row::new(vec![
         Cell::from(text.variables()).style(highlight::variable_style(Style::default(), theme)),
@@ -31,7 +39,7 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
         let editing = editor.is_some_and(|editor| editor.name == row.name);
         let raw_value = editor.filter(|editor| editor.name == row.name).map_or_else(
             || row.value.clone(),
-            |editor| editor.input.value().to_string(),
+            |editor| editor_view(&editor.input, value_width),
         );
         let value = if row.secret && !editing && !raw_value.is_empty() {
             "••••••".to_string()
@@ -56,8 +64,17 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
                 .add_modifier(Modifier::UNDERLINED)
         };
         Row::new(vec![
-            Cell::from(row.name.clone()).style(highlight::variable_style(Style::default(), theme)),
-            Cell::from(highlight::template_line(display_value, value_style, theme)),
+            Cell::from(truncate_line(
+                Line::styled(
+                    row.name.clone(),
+                    highlight::variable_style(Style::default(), theme),
+                ),
+                usize::from(name_width),
+            )),
+            Cell::from(truncate_line(
+                highlight::template_line(display_value, value_style, theme),
+                value_width,
+            )),
         ])
     });
     let table = Table::new(table_rows, widths)
@@ -105,8 +122,10 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
     )
     .intersection(table_area);
     if !input_area.is_empty() {
+        let (value, cursor_width) =
+            editor_view_with_cursor(&editor.input, usize::from(input_area.width));
         frame.render_widget(
-            Paragraph::new(editor.input.value()).style(edit_input_style(
+            Paragraph::new(value).style(edit_input_style(
                 &editor.input,
                 theme,
                 theme.accent,
@@ -114,11 +133,11 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
             )),
             input_area,
         );
-        if editor.input.mode() == crate::editor::EditMode::Insert {
+        if let Some(cursor_width) = cursor_width {
             frame.set_cursor_position((
                 input_area
                     .x
-                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX))
+                    .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
                     .min(input_area.right().saturating_sub(1)),
                 input_area.y,
             ));

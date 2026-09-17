@@ -120,7 +120,7 @@ fn create_yaml_file<T: serde::Serialize>(
     value: &T,
 ) -> Result<PathBuf> {
     let contents = serde_saphyr::to_string(value).context("Could not serialize configuration")?;
-    for suffix in 1_u32.. {
+    for suffix in 1_u32..=u32::MAX {
         let file_name = if suffix == 1 {
             format!("{stem}.yaml")
         } else {
@@ -148,7 +148,7 @@ fn create_yaml_file<T: serde::Serialize>(
             }
         }
     }
-    unreachable!()
+    anyhow::bail!("Could not choose a unique request file name")
 }
 
 fn write_yaml_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {

@@ -227,6 +227,7 @@ pub fn blend_rgb(foreground: Color, background: Color, foreground_percent: u16) 
     let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (foreground, background) else {
         return foreground;
     };
+    let foreground_percent = foreground_percent.min(100);
     let background_percent = 100 - foreground_percent;
     let blend = |front: u8, back: u8| {
         ((u16::from(front) * foreground_percent + u16::from(back) * background_percent) / 100) as u8

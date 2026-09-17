@@ -326,9 +326,19 @@ fn normalize_configurations(
             Err(error) => return Err(error),
         };
         let (name, configuration) = configuration;
-        if configurations.insert(name, configuration).is_some() {
-            unreachable!("scenario filenames are unique within one directory");
+        if configurations.contains_key(&name) {
+            let error = diagnostics::invalid(
+                &file.path,
+                "name",
+                format!("Configuration name is duplicated: {name}"),
+            );
+            if tolerant {
+                record_warning(warnings, config_diagnostic(&error)?);
+                continue;
+            }
+            return Err(error);
         }
+        configurations.insert(name, configuration);
     }
     if configurations.is_empty() {
         configurations.insert(

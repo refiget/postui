@@ -53,21 +53,18 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
     if area.is_empty() {
         return;
     }
-    let lines = request_summary_lines(app);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    let lines = request_summary_lines(app)
+        .into_iter()
+        .map(|line| truncate_line(line, usize::from(area.width)))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
-pub(super) fn preview_summary_height(app: &App, width: u16) -> u16 {
+pub(super) fn preview_summary_height(_app: &App, width: u16) -> u16 {
     if width == 0 {
         return 0;
     }
-    let available_width = usize::from(width);
-    request_summary_lines(app)
-        .iter()
-        .map(|line| {
-            u16::try_from(line.width().max(1).div_ceil(available_width)).unwrap_or(u16::MAX)
-        })
-        .fold(0, u16::saturating_add)
+    2
 }
 
 fn request_summary_lines(app: &App) -> Vec<Line<'static>> {
@@ -230,8 +227,10 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )
             .intersection(area);
             if !input_area.is_empty() {
+                let (value, cursor_width) =
+                    editor_view_with_cursor(&editor.input, usize::from(input_area.width));
                 frame.render_widget(
-                    Paragraph::new(editor.input.value()).style(edit_input_style(
+                    Paragraph::new(value).style(edit_input_style(
                         &editor.input,
                         theme,
                         theme.text,
@@ -239,13 +238,11 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     )),
                     input_area,
                 );
-                if editor.input.mode() == crate::editor::EditMode::Insert {
+                if let Some(cursor_width) = cursor_width {
                     frame.set_cursor_position((
                         input_area
                             .x
-                            .saturating_add(
-                                u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
-                            )
+                            .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
                             .min(input_area.right().saturating_sub(1)),
                         input_area.y,
                     ));
@@ -265,8 +262,10 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )
             .intersection(area);
             if !input_area.is_empty() {
+                let (value, cursor_width) =
+                    editor_view_with_cursor(&editor.input, usize::from(input_area.width));
                 frame.render_widget(
-                    Paragraph::new(editor.input.value()).style(edit_input_style(
+                    Paragraph::new(value).style(edit_input_style(
                         &editor.input,
                         theme,
                         theme.text,
@@ -274,13 +273,11 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     )),
                     input_area,
                 );
-                if editor.input.mode() == crate::editor::EditMode::Insert {
+                if let Some(cursor_width) = cursor_width {
                     frame.set_cursor_position((
                         input_area
                             .x
-                            .saturating_add(
-                                u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
-                            )
+                            .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
                             .min(input_area.right().saturating_sub(1)),
                         input_area.y,
                     ));

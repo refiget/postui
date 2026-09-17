@@ -98,16 +98,26 @@ fn draw_variables_table(
                 };
                 let name_style = highlight::variable_style(Style::default(), theme);
                 let default_style = Style::default().fg(theme.secondary);
-                let mut value_cell =
-                    Cell::from(highlight::template_line(&value, value_style, theme));
+                let value_width = usize::from(constraint_length(widths[1]));
+                let default_width = usize::from(constraint_length(widths[2]));
+                let mut value_cell = Cell::from(truncate_line(
+                    highlight::template_line(&value, value_style, theme),
+                    value_width,
+                ));
                 if editing {
                     value_cell = value_cell.style(edit_input_text_style(theme.accent));
                 }
                 let default = app.variable_default_value(&row.name);
                 Row::new(vec![
-                    Cell::from(row.name.clone()).style(name_style),
+                    Cell::from(truncate_line(
+                        Line::styled(row.name.clone(), name_style),
+                        usize::from(constraint_length(widths[0])),
+                    )),
                     value_cell,
-                    Cell::from(default).style(default_style),
+                    Cell::from(truncate_line(
+                        Line::styled(default, default_style),
+                        default_width,
+                    )),
                 ])
                 .style(Style::default().fg(theme.text))
             })

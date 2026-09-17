@@ -323,12 +323,61 @@ pub(super) fn truncate(value: &str, width: usize) -> String {
     result
 }
 
-pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> String {
+pub(super) fn truncate_line(line: Line<'static>, width: usize) -> Line<'static> {
     if width == 0 {
-        return String::new();
+        return Line::default();
+    }
+    if line.width() <= width {
+        return line;
+    }
+
+    let content_width = width.saturating_sub(1);
+    let mut used = 0_usize;
+    let mut spans = Vec::new();
+    let mut ellipsis_style = line
+        .spans
+        .first()
+        .map_or_else(Style::default, |span| span.style);
+
+    for span in line.spans {
+        ellipsis_style = span.style;
+        let mut content = String::new();
+        let mut fits = true;
+        for grapheme in
+            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
+        {
+            let grapheme_width = Line::from(grapheme).width();
+            if used.saturating_add(grapheme_width) > content_width {
+                fits = false;
+                break;
+            }
+            content.push_str(grapheme);
+            used = used.saturating_add(grapheme_width);
+        }
+        if !content.is_empty() {
+            spans.push(Span::styled(content, span.style));
+        }
+        if !fits || used >= content_width {
+            break;
+        }
+    }
+    spans.push(Span::styled("…", ellipsis_style));
+    Line::from(spans)
+}
+
+pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> String {
+    editor_view_with_cursor(editor, width).0
+}
+
+pub(super) fn editor_view_with_cursor(
+    editor: &crate::editor::EditInput,
+    width: usize,
+) -> (String, Option<usize>) {
+    if width == 0 {
+        return (String::new(), None);
     }
     if editor.mode() == crate::editor::EditMode::Replace {
-        return truncate(editor.value(), width);
+        return (truncate(editor.value(), width), None);
     }
     let cursor = editor.cursor_byte();
     let before = &editor.value()[..cursor];
@@ -352,6 +401,7 @@ pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> St
     before_chars.reverse();
 
     let mut result = before_chars.into_iter().collect::<String>();
+    let cursor_width = used;
     result.push_str(marker);
     used = 0;
     for character in after.chars() {
@@ -362,7 +412,7 @@ pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> St
         result.push(character);
         used = used.saturating_add(character_width);
     }
-    result
+    (result, Some(cursor_width))
 }
 
 pub(super) fn edit_input_style(
