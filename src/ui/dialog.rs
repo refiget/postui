@@ -297,7 +297,9 @@ pub(super) fn inline_table_widths(width: u16) -> [Constraint; 3] {
     let width = width.saturating_sub(
         TABLE_HIGHLIGHT_WIDTH + TABLE_COLUMN_SPACING.saturating_mul(2) + INLINE_DELETE_WIDTH,
     );
-    let name = (width * 2 / 5).max(u16::from(width > 1));
+    let name = u16::try_from(u32::from(width) * 2 / 5)
+        .unwrap_or(u16::MAX)
+        .max(u16::from(width > 1));
     let value = width.saturating_sub(name);
     [
         Constraint::Length(name),

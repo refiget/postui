@@ -433,7 +433,11 @@ fn visit_json_scalars(document: &str, mut visit: impl FnMut(Range<usize>, JsonSc
                     }
                 }
                 let span = start..index;
-                if document[index..].trim_start().starts_with(':') {
+                let mut next = index;
+                while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                    next += 1;
+                }
+                if bytes.get(next) == Some(&b':') {
                     continue;
                 }
                 (span, JsonScalarKind::String)
@@ -448,15 +452,15 @@ fn visit_json_scalars(document: &str, mut visit: impl FnMut(Range<usize>, JsonSc
                 }
                 (start..index, JsonScalarKind::Number)
             }
-            _ if document[index..].starts_with("true") => {
+            _ if bytes[index..].starts_with(b"true") => {
                 index += 4;
                 (index - 4..index, JsonScalarKind::Boolean)
             }
-            _ if document[index..].starts_with("false") => {
+            _ if bytes[index..].starts_with(b"false") => {
                 index += 5;
                 (index - 5..index, JsonScalarKind::Boolean)
             }
-            _ if document[index..].starts_with("null") => {
+            _ if bytes[index..].starts_with(b"null") => {
                 index += 4;
                 (index - 4..index, JsonScalarKind::Null)
             }

@@ -221,56 +221,70 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let scroll = usize::from(app.view.preview.scroll.offset());
         if editor_line >= scroll && editor_line < scroll + usize::from(area.height) {
             let input_area = Rect::new(
-                area.x.saturating_add(editor_column as u16),
+                area.x
+                    .saturating_add(u16::try_from(editor_column).unwrap_or(u16::MAX)),
                 area.y.saturating_add((editor_line - scroll) as u16),
                 u16::try_from(crate::editor::terminal_width(editor.input.value()).max(1))
                     .unwrap_or(u16::MAX),
                 1,
-            );
-            frame.render_widget(
-                Paragraph::new(editor.input.value()).style(edit_input_style(
-                    &editor.input,
-                    theme,
-                    theme.text,
-                    theme.background,
-                )),
-                input_area,
-            );
-            if editor.input.mode() == crate::editor::EditMode::Insert {
-                frame.set_cursor_position((
-                    input_area.x.saturating_add(
-                        u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
-                    ),
-                    input_area.y,
-                ));
+            )
+            .intersection(area);
+            if !input_area.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(editor.input.value()).style(edit_input_style(
+                        &editor.input,
+                        theme,
+                        theme.text,
+                        theme.background,
+                    )),
+                    input_area,
+                );
+                if editor.input.mode() == crate::editor::EditMode::Insert {
+                    frame.set_cursor_position((
+                        input_area
+                            .x
+                            .saturating_add(
+                                u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
+                            )
+                            .min(input_area.right().saturating_sub(1)),
+                        input_area.y,
+                    ));
+                }
             }
         }
     }
     if let Some(editor) = app.file_editor() {
         let scroll = usize::from(app.view.preview.scroll.offset());
         if editor.line >= scroll && editor.line < scroll + usize::from(area.height) {
+            let editor_column = u16::try_from(editor.column).unwrap_or(u16::MAX);
             let input_area = Rect::new(
-                area.x.saturating_add(editor.column as u16),
+                area.x.saturating_add(editor_column),
                 area.y.saturating_add((editor.line - scroll) as u16),
-                area.width.saturating_sub(editor.column as u16).max(1),
+                area.width.saturating_sub(editor_column).max(1),
                 1,
-            );
-            frame.render_widget(
-                Paragraph::new(editor.input.value()).style(edit_input_style(
-                    &editor.input,
-                    theme,
-                    theme.text,
-                    theme.background,
-                )),
-                input_area,
-            );
-            if editor.input.mode() == crate::editor::EditMode::Insert {
-                frame.set_cursor_position((
-                    input_area.x.saturating_add(
-                        u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
-                    ),
-                    input_area.y,
-                ));
+            )
+            .intersection(area);
+            if !input_area.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(editor.input.value()).style(edit_input_style(
+                        &editor.input,
+                        theme,
+                        theme.text,
+                        theme.background,
+                    )),
+                    input_area,
+                );
+                if editor.input.mode() == crate::editor::EditMode::Insert {
+                    frame.set_cursor_position((
+                        input_area
+                            .x
+                            .saturating_add(
+                                u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX),
+                            )
+                            .min(input_area.right().saturating_sub(1)),
+                        input_area.y,
+                    ));
+                }
             }
         }
     }

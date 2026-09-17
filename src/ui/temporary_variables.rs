@@ -102,22 +102,26 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
             .saturating_sub(2)
             .max(1),
         1,
-    );
-    frame.render_widget(
-        Paragraph::new(editor.input.value()).style(edit_input_style(
-            &editor.input,
-            theme,
-            theme.accent,
-            theme.background,
-        )),
-        input_area,
-    );
-    if editor.input.mode() == crate::editor::EditMode::Insert {
-        frame.set_cursor_position((
-            input_area
-                .x
-                .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX)),
-            input_area.y,
-        ));
+    )
+    .intersection(table_area);
+    if !input_area.is_empty() {
+        frame.render_widget(
+            Paragraph::new(editor.input.value()).style(edit_input_style(
+                &editor.input,
+                theme,
+                theme.accent,
+                theme.background,
+            )),
+            input_area,
+        );
+        if editor.input.mode() == crate::editor::EditMode::Insert {
+            frame.set_cursor_position((
+                input_area
+                    .x
+                    .saturating_add(u16::try_from(editor.input.cursor_width()).unwrap_or(u16::MAX))
+                    .min(input_area.right().saturating_sub(1)),
+                input_area.y,
+            ));
+        }
     }
 }

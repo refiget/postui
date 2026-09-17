@@ -247,8 +247,12 @@ fn draw(frame: &mut Frame<'_>, picker: &Picker, theme: &UiTheme, text: UiText, d
     );
     let width = outer[1].width.min(76);
     let card = ratatui::layout::Rect::new(
-        outer[1].x + (outer[1].width - width) / 2,
-        outer[1].y + outer[1].height.saturating_sub(18) / 2,
+        outer[1]
+            .x
+            .saturating_add(outer[1].width.saturating_sub(width) / 2),
+        outer[1]
+            .y
+            .saturating_add(outer[1].height.saturating_sub(18) / 2),
         width,
         outer[1].height.min(18),
     );
@@ -334,11 +338,13 @@ fn draw(frame: &mut Frame<'_>, picker: &Picker, theme: &UiTheme, text: UiText, d
             .style(Style::default().fg(theme.muted)),
             content[1],
         );
-        ratatui::layout::Rect {
-            y: content[1].y + 2,
-            height: content[1].height.saturating_sub(2),
-            ..content[1]
-        }
+        ratatui::layout::Rect::new(
+            content[1].x,
+            content[1].y.saturating_add(2),
+            content[1].width,
+            content[1].height.saturating_sub(2),
+        )
+        .intersection(content[1])
     } else {
         content[1]
     };
