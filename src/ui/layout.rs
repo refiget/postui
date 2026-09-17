@@ -8,6 +8,8 @@ pub(super) const SEND_BUTTON_HEIGHT: u16 = 1;
 // Keep the primary action visually detached from the preview panel frame.
 const SEND_BUTTON_BORDER_GAP: u16 = 1;
 const SEND_BUTTON_RESERVED_HEIGHT: u16 = SEND_BUTTON_HEIGHT + SEND_BUTTON_BORDER_GAP;
+// Keep the request and response panes side by side while both remain usable.
+const MAIN_HORIZONTAL_MIN_WIDTH: u16 = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ScrollAreas {
@@ -113,7 +115,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
         ])
         .split(sections[1]);
     let main = Layout::default()
-        .direction(if area.width < 110 {
+        .direction(if columns[1].width < MAIN_HORIZONTAL_MIN_WIDTH {
             Direction::Vertical
         } else {
             Direction::Horizontal
