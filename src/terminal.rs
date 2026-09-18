@@ -224,10 +224,7 @@ fn handle_terminal_event(
                     | crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left)
                     | crossterm::event::MouseEventKind::ScrollUp
                     | crossterm::event::MouseEventKind::ScrollDown
-            ) || matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
-                && (app.view.curl_import.is_some()
-                    || app.view.response.menu.is_open()
-                    || matches!(app.view.dialog, Some(app::Dialog::Configurations(_))));
+            ) || matches!(mouse.kind, crossterm::event::MouseEventKind::Moved);
             ui::handle_mouse(app, mouse, area);
             redraw
         }

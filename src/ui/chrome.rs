@@ -1,4 +1,25 @@
-use super::*;
+use super::{
+    TABLE_HIGHLIGHT_WIDTH,
+    focus::FocusStyles,
+    layout::UiLayout,
+    response_toolbar::draw_response_toolbar_button_left,
+    widgets::{
+        draw_flat_button_colored, draw_scrollbar, edit_input_style, editor_view, label_style,
+        method_style, panel_block, request_status_style, request_status_symbol,
+        scrollbar_offset_from_drag, scrollbar_offset_from_track, scrollbar_track_state, truncate,
+    },
+};
+use crate::{
+    app::{App, Focus, MainButton, PreviewAction, RequestStatus, ScrollDragTarget},
+    config::ApiRequest,
+};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, HighlightSpacing, List, ListItem, ListState, Paragraph},
+};
 
 pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.is_empty() {
@@ -185,7 +206,11 @@ pub(super) fn draw_header(
         action_area,
         app.text().new_request(),
         "+",
-        FlatButtonState::new(true, app.view.focus == Focus::Header),
+        app.view.main_buttons.visual_state(
+            MainButton::NewRequest,
+            MainButton::NewRequest.enabled(app),
+            app.view.focus == Focus::Header,
+        ),
         theme.primary,
         theme,
     );
@@ -208,12 +233,16 @@ pub(super) fn draw_request_send_button(frame: &mut Frame<'_>, area: Rect, app: &
     let mut label = if loading { cancel_label } else { send_label };
     let padding = label_width.saturating_sub(Line::from(label.as_str()).width());
     label.extend(std::iter::repeat_n(' ', padding));
-    draw_send_button_aligned(
+    draw_flat_button_colored(
         frame,
         area,
         &label,
-        app.can_execute_preview_action(PreviewAction::Send),
-        app.focused_preview_action() == Some(PreviewAction::Send),
+        app.view.main_buttons.visual_state(
+            MainButton::Send,
+            MainButton::Send.enabled(app),
+            app.focused_preview_action() == Some(PreviewAction::Send),
+        ),
+        app.global_config.theme.accent,
         &app.global_config.theme,
         Alignment::Right,
     );
@@ -271,7 +300,11 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
             frame,
             workspace_selector_area,
             &configuration,
-            FlatButtonState::new(true, focus.workspace_focused()),
+            app.view.main_buttons.visual_state(
+                MainButton::Workspace,
+                MainButton::Workspace.enabled(app),
+                focus.workspace_focused(),
+            ),
             theme.secondary,
             theme,
             Alignment::Center,
@@ -279,12 +312,18 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
     }
     if !variables_button_area.is_empty() {
         let label = format!("{} ({})", text.variables(), app.variable_count());
-        draw_primary_button(
+        draw_flat_button_colored(
             frame,
             variables_button_area,
             &label,
-            focus.variables_focused(),
+            app.view.main_buttons.visual_state(
+                MainButton::Variables,
+                MainButton::Variables.enabled(app),
+                focus.variables_focused(),
+            ),
+            theme.accent,
             theme,
+            Alignment::Center,
         );
     }
 
@@ -406,6 +445,7 @@ pub(super) fn click_request_list_scrollbar(app: &mut App, row: u16, areas: UiLay
         .scroll
         .set_offset(target, visible_count, visible_height);
     app.view.requests.scroll.drag_anchor = Some((row, target));
+    app.view.scroll_drag_target = Some(ScrollDragTarget::Requests);
 }
 
 pub(super) fn drag_request_list_scrollbar(app: &mut App, row: u16, areas: UiLayout) {

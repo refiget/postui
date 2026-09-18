@@ -5,19 +5,17 @@ const SIDEBAR_MEDIUM: u16 = 22;
 const SIDEBAR_NARROW: u16 = 22;
 pub(super) const PREVIEW_ACTION_WIDTH: u16 = 14;
 pub(super) const SEND_BUTTON_HEIGHT: u16 = 1;
-// Keep the primary action visually detached from the preview panel frame.
 const SEND_BUTTON_BORDER_GAP: u16 = 1;
 const SEND_BUTTON_RESERVED_HEIGHT: u16 = SEND_BUTTON_HEIGHT + SEND_BUTTON_BORDER_GAP;
-// Keep the request and response panes side by side while both remain usable.
 const MAIN_HORIZONTAL_MIN_WIDTH: u16 = 64;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ScrollAreas {
     pub(super) content: Rect,
     pub(super) scrollbar: Rect,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct UiLayout {
     pub(super) header: Rect,
     pub(super) footer: Rect,
@@ -41,7 +39,7 @@ pub(super) struct UiLayout {
     pub(super) response_zoom_button: Rect,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct PreviewSections {
     pub(super) summary: Rect,
     pub(super) tabs: Rect,
@@ -69,27 +67,15 @@ pub(super) fn response_zoom(area: Rect) -> UiLayout {
         header: sections[0],
         footer: sections[2],
         header_content,
-        header_action: Rect::default(),
-        requests: Rect::default(),
-        workspace_selector: Rect::default(),
-        variables_button: Rect::default(),
-        request_search: Rect::default(),
-        request_list: Rect::default(),
-        request_scrollbar: Rect::default(),
-        preview: Rect::default(),
-        preview_details: Rect::default(),
-        preview_summary: Rect::default(),
-        preview_tabs: Rect::default(),
-        preview_content: Rect::default(),
-        send_button: Rect::default(),
         response,
         response_format_button,
         response_menu_button,
         response_zoom_button,
+        ..UiLayout::default()
     }
 }
 
-pub(super) fn variables_page(area: Rect) -> UiLayout {
+pub(super) fn single_panel(area: Rect) -> UiLayout {
     let mut layout = response_zoom(area);
     layout.send_button = Rect::default();
     layout.response_format_button = Rect::default();
@@ -169,11 +155,7 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
 
 pub(super) fn preview_sections(area: Rect, requested_summary_height: u16) -> PreviewSections {
     if area.is_empty() {
-        return PreviewSections {
-            summary: Rect::default(),
-            tabs: Rect::default(),
-            content: Rect::default(),
-        };
+        return PreviewSections::default();
     }
     let summary_height = requested_summary_height.min(area.height.saturating_sub(1));
     let sections = Layout::default()
@@ -211,7 +193,7 @@ fn sidebar_width(width: u16) -> u16 {
     preferred.min(width)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct SidebarLayout {
     workspace_selector: Rect,
     variables_button: Rect,
@@ -223,10 +205,8 @@ fn sidebar_parts(area: Rect) -> SidebarLayout {
     let inner = area.inner(Margin::new(1, 1));
     if inner.height < 4 {
         return SidebarLayout {
-            workspace_selector: Rect::default(),
-            variables_button: Rect::default(),
-            request_search: Rect::default(),
             request_list: panel_scroll_areas(area),
+            ..SidebarLayout::default()
         };
     }
     let parts = if inner.height >= 7 {

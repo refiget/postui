@@ -1,26 +1,10 @@
-use crate::{
-    app::{
-        App, AppPrompt, Dialog, Focus, HeaderSource, KeyValueField, PreviewAction, PreviewTab,
-        RequestStatus, ResponseMenuAction, ResponseTab,
-    },
-    config::ApiRequest,
-    highlight, http_method,
-};
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crate::app::{App, AppPrompt, Dialog};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
-    symbols::{border, scrollbar::VERTICAL},
+    layout::{Margin, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
-        Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
-    },
-};
-use tui_assets_rust::{
-    Button as AssetButton, ButtonState as FlatButtonState, Dropdown as AssetDropdown,
-    DropdownItem as AssetDropdownItem, Theme as AssetTheme,
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 mod chrome;
@@ -37,23 +21,17 @@ mod temporary_variables;
 mod variables;
 mod widgets;
 
-use chrome::*;
-use curl_import::{curl_import_layout, draw_curl_import_page};
-use dialog::*;
-use inline_editor::*;
+use chrome::{draw_footer, draw_header, draw_request_list, draw_request_send_button};
+use curl_import::draw_curl_import_page;
+use dialog::draw_configuration_dropdown;
 pub(crate) use mouse::handle_mouse;
-use preview::*;
-use response::*;
-use response_toolbar::*;
-use temporary_variables::draw_temporary_variables;
-use variables::{draw_variables_page, handle_variables_mouse};
-use widgets::*;
+use preview::{draw_preview, preview_summary_height};
+use response::{draw_response, sync_response_scroll};
+use response_toolbar::{draw_response_menu, response_menu_area};
+use variables::draw_variables_page;
+use widgets::asset_theme;
 
-use focus::FocusStyles;
-use layout::{
-    ScrollAreas, UiLayout, inner_scroll_areas, response_zoom, screen as screen_layout,
-    screen_with_summary, variables_page,
-};
+use layout::{UiLayout, response_zoom, screen as screen_layout, screen_with_summary, single_panel};
 
 const TABLE_HIGHLIGHT_WIDTH: u16 = 2;
 const TABLE_COLUMN_SPACING: u16 = 1;
@@ -137,11 +115,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
-    if app.view.curl_import.is_some() {
-        return variables_page(area);
-    }
-    if app.view.variables.is_some() {
-        return variables_page(area);
+    if app.view.curl_import.is_some() || app.view.variables.is_some() {
+        return single_panel(area);
     }
     if app.response_zoomed() {
         return response_zoom(area);
@@ -160,25 +135,13 @@ fn draw_help(frame: &mut Frame<'_>, app: &mut App) {
     };
     let theme = &app.global_config.theme;
     let content = app.text().help_content(app.key_context(), app.debug_mode);
-    let width = frame.area().width.saturating_sub(4).min(72);
-    let height = frame.area().height.saturating_sub(2).min(
-        u16::try_from(content.lines().count())
-            .unwrap_or(u16::MAX)
-            .saturating_add(4),
-    );
-    let area = Rect::new(
-        frame.area().x + frame.area().width.saturating_sub(width) / 2,
-        frame.area().y + frame.area().height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let (area, inner) = help_layout(frame.area(), &content);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent))
         .style(Style::default().bg(theme.surface).fg(theme.text))
         .title(app.text().help_title());
-    let inner = block.inner(area).inner(Margin::new(2, 1));
     frame.render_widget(block, area);
     let max_scroll = content
         .lines()
@@ -194,6 +157,22 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
         && column < area.x.saturating_add(area.width)
         && row >= area.y
         && row < area.y.saturating_add(area.height)
+}
+
+fn help_layout(frame_area: Rect, content: &str) -> (Rect, Rect) {
+    let width = frame_area.width.saturating_sub(4).min(72);
+    let height = frame_area.height.saturating_sub(2).min(
+        u16::try_from(content.lines().count())
+            .unwrap_or(u16::MAX)
+            .saturating_add(4),
+    );
+    let area = Rect::new(
+        frame_area.x + frame_area.width.saturating_sub(width) / 2,
+        frame_area.y + frame_area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    (area, area.inner(Margin::new(3, 2)))
 }
 
 fn draw_app_prompt(frame: &mut Frame<'_>, app: &App) {

@@ -1,6 +1,6 @@
 use super::{App, Dialog, Feedback, Focus, PreviewAction, key_kind};
 use crate::shortcuts::{self, Command, Context};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 impl App {
     pub(crate) fn handle_paste(&mut self, value: &str) {
@@ -221,6 +221,10 @@ impl App {
             Some(Command::Activate) => self.handle_enter(),
             _ => {}
         }
+    }
+
+    pub(crate) fn confirm_active_input(&mut self) {
+        self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     pub(crate) fn key_context(&self) -> Context {

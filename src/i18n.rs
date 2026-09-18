@@ -42,6 +42,10 @@ impl UiText {
         self.pick("Open another directory…", "打开其他目录…")
     }
 
+    pub(crate) fn workspace_filter(self) -> &'static str {
+        self.pick("Filter workspaces", "筛选工作区")
+    }
+
     pub(crate) fn workspace_no_recent(self) -> &'static str {
         self.pick("No recent workspaces", "无最近工作区")
     }

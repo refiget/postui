@@ -1,6 +1,27 @@
-use super::*;
+use super::{
+    contains,
+    focus::FocusStyles,
+    layout::{ScrollAreas, UiLayout, inner_scroll_areas},
+    response_toolbar::{
+        draw_response_format_button, draw_response_menu_button, draw_response_zoom_button,
+    },
+    widgets::{
+        ScrollbarTrackState, draw_scrollbar, edit_input_style, editor_view, label_style,
+        panel_block, request_status_style, request_status_symbol, scroll_offset,
+        scrollbar_offset_from_drag, scrollbar_offset_from_track, scrollbar_track_state,
+        section_style, wrapped_line_count,
+    },
+};
+use crate::app::{App, RequestStatus, ResponseTab, ScrollDragTarget};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Margin, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
+};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ResponseLayout {
     pub(super) status: Rect,
     pub(super) body: ScrollAreas,
@@ -130,6 +151,7 @@ pub(super) fn click_response_scrollbar(app: &mut App, column: u16, row: u16, are
     let offset = scrollbar_offset_from_track(&bar, row);
     app.view.response.scroll.set_offset(offset);
     app.view.response.scroll.drag_anchor = Some((row, offset));
+    app.view.scroll_drag_target = Some(ScrollDragTarget::Response);
 }
 
 pub(super) fn drag_response_scrollbar(app: &mut App, row: u16, areas: UiLayout) {
@@ -147,16 +169,9 @@ pub(super) fn drag_response_scrollbar(app: &mut App, row: u16, areas: UiLayout) 
 pub(super) fn response_sections(area: Rect) -> ResponseLayout {
     let inner = area.inner(Margin::new(1, 1));
     if inner.is_empty() {
-        return ResponseLayout {
-            status: Rect::default(),
-            body: ScrollAreas {
-                content: Rect::default(),
-                scrollbar: Rect::default(),
-            },
-        };
+        return ResponseLayout::default();
     }
     ResponseLayout {
-        // The first inner row belongs exclusively to the action buttons.
         status: Rect::new(
             inner.x,
             inner.y.saturating_add(1),
@@ -170,6 +185,12 @@ pub(super) fn response_sections(area: Rect) -> ResponseLayout {
             inner.height.saturating_sub(3),
         )),
     }
+}
+
+pub(super) fn response_search_area(area: Rect) -> Rect {
+    let status = response_sections(area).status;
+    Rect::new(status.x, status.y.saturating_add(1), status.width, 1)
+        .intersection(area.inner(Margin::new(1, 1)))
 }
 
 pub(super) fn draw_response(
@@ -274,20 +295,7 @@ pub(super) fn draw_response(
     frame.render_widget(Paragraph::new(status), sections.status);
 
     if let Some(response) = response {
-        let metadata = Rect::new(
-            sections.status.x,
-            sections.status.y.saturating_add(1),
-            sections.status.width,
-            1,
-        )
-        .intersection(area.inner(Margin::new(1, 1)));
-        let search = &app.view.response.search_query;
-        let search_suffix =
-            if search.is_empty() || app.view.response.active_tab == ResponseTab::Headers {
-                String::new()
-            } else {
-                format!("   / {search}")
-            };
+        let metadata = response_search_area(area);
         if let Some(input) = app.view.response.search.as_ref() {
             frame.render_widget(
                 Paragraph::new(format!(
@@ -298,6 +306,13 @@ pub(super) fn draw_response(
                 metadata,
             );
         } else {
+            let search = &app.view.response.search_query;
+            let search_suffix =
+                if search.is_empty() || app.view.response.active_tab == ResponseTab::Headers {
+                    String::new()
+                } else {
+                    format!("   / {search}")
+                };
             let mut tabs = Vec::new();
             for (index, (tab, label)) in response_tab_labels(app).into_iter().enumerate() {
                 if index > 0 {

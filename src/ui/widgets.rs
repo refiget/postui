@@ -1,4 +1,13 @@
-use super::*;
+use crate::{app::RequestStatus, http_method};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Rect},
+    style::{Color, Modifier, Style},
+    symbols::{border, scrollbar::VERTICAL},
+    text::{Line, Span},
+    widgets::{Block, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
+use tui_assets_rust::{Button as AssetButton, ButtonState as FlatButtonState, Theme as AssetTheme};
 
 pub(super) fn constraint_length(constraint: Constraint) -> u16 {
     match constraint {
@@ -220,41 +229,6 @@ pub(super) fn panel_block(
     } else {
         Block::default()
     }
-}
-
-pub(super) fn draw_send_button_aligned(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    enabled: bool,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-    alignment: Alignment,
-) {
-    draw_flat_button_aligned(frame, area, label, enabled, focused, theme, alignment);
-}
-
-pub(super) fn draw_primary_button(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-) {
-    draw_flat_button_aligned(frame, area, label, true, focused, theme, Alignment::Center);
-}
-
-pub(super) fn draw_flat_button_aligned(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    enabled: bool,
-    focused: bool,
-    theme: &crate::settings::UiTheme,
-    alignment: Alignment,
-) {
-    let state = FlatButtonState::new(enabled, focused);
-    draw_flat_button_colored(frame, area, label, state, theme.accent, theme, alignment);
 }
 
 pub(super) fn draw_flat_button_colored(

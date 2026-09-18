@@ -42,9 +42,10 @@ logs/
 /.postui/
 /themes/
 
-# Local release packages and tool data
+# Local release packages and test tool data
 /打包区/
 /.codegraph/
+/tuibot/
 
 # Editor and operating system files
 .DS_Store

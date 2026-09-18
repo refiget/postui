@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    TABLE_COLUMN_SPACING, TABLE_HIGHLIGHT_WIDTH, contains,
+    dialog::{InlineEditorLayout, draw_headers_dialog, draw_params_dialog, inline_table_widths},
+    layout::inner_scroll_areas,
+    widgets::{
+        constraint_length, scrollbar_offset_from_drag, scrollbar_offset_from_track,
+        scrollbar_track_state,
+    },
+};
+use crate::app::{App, Dialog, HeaderSource, KeyValueField, PreviewTab, ScrollDragTarget};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Paragraph},
+};
 
 pub(super) fn inline_dialog_layout(area: Rect, row_count: usize) -> InlineEditorLayout {
     let sections = Layout::default()
@@ -224,6 +240,7 @@ pub(super) fn handle_inline_editor_click(
         };
         let target = scrollbar_offset_from_track(&bar, row);
         set_inline_scroll(app, target, row_count, visible, Some((row, target)));
+        app.view.scroll_drag_target = Some(ScrollDragTarget::Preview);
         return;
     }
     if contains(layout.add_button, column, row) {

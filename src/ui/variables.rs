@@ -1,5 +1,21 @@
-use super::*;
-
+use super::{
+    TABLE_COLUMN_SPACING, TABLE_HIGHLIGHT_WIDTH, contains,
+    layout::{ScrollAreas, inner_scroll_areas},
+    widgets::{
+        constraint_length, draw_scrollbar, edit_input_text_style, editor_view, label_style,
+        panel_block, scrollbar_offset_from_drag, scrollbar_offset_from_track,
+        scrollbar_track_state, section_style, truncate_line,
+    },
+};
+use crate::{app::App, highlight};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Margin, Rect},
+    style::Style,
+    text::Line,
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
+};
 #[derive(Debug, Clone, Copy)]
 struct VariablesLayout {
     area: Rect,
@@ -172,11 +188,18 @@ pub(super) fn handle_variables_mouse(
     area: Rect,
     is_double: bool,
 ) {
-    let Some(page) = app.view.variables.as_ref() else {
+    let Some((row_count, editing)) = app
+        .view
+        .variables
+        .as_ref()
+        .map(|page| (page.rows.len(), page.editor.is_some()))
+    else {
         return;
     };
-    let row_count = page.rows.len();
     let layout = variables_page_layout(area);
+    if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) && editing {
+        app.confirm_active_input();
+    }
     match event.kind {
         MouseEventKind::Down(MouseButton::Left)
             if contains(layout.rows.scrollbar, event.column, event.row) =>
@@ -184,7 +207,11 @@ pub(super) fn handle_variables_mouse(
             click_variables_scrollbar(app, event.row, layout);
         }
         MouseEventKind::Drag(MouseButton::Left)
-            if contains(layout.rows.scrollbar, event.column, event.row) =>
+            if app
+                .view
+                .variables
+                .as_ref()
+                .is_some_and(|page| page.scroll.drag_anchor.is_some()) =>
         {
             drag_variables_scrollbar(app, event.row, layout);
         }
@@ -195,7 +222,11 @@ pub(super) fn handle_variables_mouse(
             }
 
             let visible = usize::from(layout.rows.content.height);
-            let offset = page.scroll.offset(row_count, visible);
+            let offset = app
+                .view
+                .variables
+                .as_ref()
+                .map_or(0, |page| page.scroll.offset(row_count, visible));
             let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
             if index >= row_count {
                 app.cancel_variable_edit();

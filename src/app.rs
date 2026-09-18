@@ -34,7 +34,8 @@ mod view;
 mod workspace;
 use view::ViewState;
 pub(crate) use view::{
-    AppPrompt, FileValueEditor, Focus, ListScrollState, TemporaryVariableEditor,
+    AppPrompt, FileValueEditor, Focus, ListScrollState, MainButton, ScrollDragTarget,
+    TemporaryVariableEditor,
 };
 use view::{PreviewContentState, ResponseContentState, ViewMode};
 

@@ -1,5 +1,19 @@
-use super::*;
-use crate::app::CurlImportFocus;
+use super::{
+    dialog::draw_configuration_dropdown,
+    widgets::{
+        asset_theme, draw_flat_button_colored, edit_input_text_style, panel_block, section_style,
+    },
+};
+use crate::app::{App, CurlImportFocus, Dialog};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
+    symbols::border,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+use tui_assets_rust::ButtonState as FlatButtonState;
 
 const DETAILS_WIDTH: u16 = 31;
 const IMPORT_WIDTH: u16 = 16;
@@ -332,15 +346,7 @@ fn draw_compact_fields(
     text: crate::i18n::UiText,
     theme: &crate::settings::UiTheme,
 ) {
-    let width = [
-        text.curl_import_name(),
-        text.curl_import_description(),
-        text.curl_import_variables(),
-    ]
-    .into_iter()
-    .map(|label| Line::from(label).width())
-    .max()
-    .unwrap_or_default();
+    let width = compact_field_label_width(text);
     inline_field(
         frame,
         layout.name,
@@ -392,6 +398,18 @@ fn draw_compact_fields(
         width,
         theme,
     );
+}
+
+pub(super) fn compact_field_label_width(text: crate::i18n::UiText) -> usize {
+    [
+        text.curl_import_name(),
+        text.curl_import_description(),
+        text.curl_import_variables(),
+    ]
+    .into_iter()
+    .map(|label| Line::from(label).width())
+    .max()
+    .unwrap_or_default()
 }
 
 fn inline_field(

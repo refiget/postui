@@ -1,10 +1,20 @@
-use super::*;
+use super::widgets::{asset_theme, draw_flat_button_colored};
+use crate::app::{App, Focus, MainButton, ResponseMenuAction, ResponseTab};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    style::{Color, Modifier, Style},
+    text::Line,
+};
+use tui_assets_rust::{
+    ButtonState as FlatButtonState, Dropdown as AssetDropdown, DropdownItem as AssetDropdownItem,
+};
 
 pub(super) fn draw_response_format_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.is_empty() {
         return;
     }
-    let enabled = app.current_response().is_some();
+    let enabled = MainButton::ResponseFormat.enabled(app);
     let (symbol, label) = match app.view.response.active_tab {
         ResponseTab::Raw => ("↔", app.text().response_show_formatted()),
         ResponseTab::Formatted => ("↔", app.text().response_show_raw()),
@@ -17,7 +27,9 @@ pub(super) fn draw_response_format_button(frame: &mut Frame<'_>, area: Rect, app
         area,
         &format!("{symbol} {label}"),
         symbol,
-        FlatButtonState::new(enabled, focused),
+        app.view
+            .main_buttons
+            .visual_state(MainButton::ResponseFormat, enabled, focused),
         app.global_config.theme.primary,
         &app.global_config.theme,
     );
@@ -57,7 +69,11 @@ pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: 
         area,
         &label,
         "▾",
-        FlatButtonState::new(true, app.view.focus == Focus::ResponseActions),
+        app.view.main_buttons.visual_state(
+            MainButton::ResponseMenu,
+            MainButton::ResponseMenu.enabled(app),
+            app.view.focus == Focus::ResponseActions,
+        ),
         app.global_config.theme.accent,
         &app.global_config.theme,
     );
@@ -77,7 +93,11 @@ pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: 
         area,
         &format!("{symbol} {label}"),
         symbol,
-        FlatButtonState::new(true, app.view.focus == Focus::ResponseZoom),
+        app.view.main_buttons.visual_state(
+            MainButton::ResponseZoom,
+            MainButton::ResponseZoom.enabled(app),
+            app.view.focus == Focus::ResponseZoom,
+        ),
         app.global_config.theme.secondary,
         &app.global_config.theme,
     );

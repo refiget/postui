@@ -80,6 +80,10 @@ struct CurlImportField {
 }
 
 impl CurlImportField {
+    fn place_cursor(&mut self, line: usize, column: usize) {
+        self.cursor = crate::editor::text_position(&self.value, line, column);
+    }
+
     fn insert(&mut self, value: &str) {
         self.value.insert_str(self.cursor, value);
         self.cursor += value.len();
@@ -198,6 +202,13 @@ impl CurlImportPage {
 
     pub(crate) fn focused(&self, focus: CurlImportFocus) -> bool {
         self.focus == focus
+    }
+
+    pub(crate) fn place_cursor(&mut self, focus: CurlImportFocus, line: usize, column: usize) {
+        self.focus = focus;
+        if let Some(field) = self.active_field_mut() {
+            field.place_cursor(line, column);
+        }
     }
 
     pub(crate) fn can_confirm(&self) -> bool {
@@ -393,6 +404,17 @@ impl App {
     pub(crate) fn focus_curl_import(&mut self, focus: CurlImportFocus) {
         if let Some(page) = self.view.curl_import.as_mut() {
             page.focus = focus;
+        }
+    }
+
+    pub(crate) fn place_curl_import_cursor(
+        &mut self,
+        focus: CurlImportFocus,
+        line: usize,
+        column: usize,
+    ) {
+        if let Some(page) = self.view.curl_import.as_mut() {
+            page.place_cursor(focus, line, column);
         }
     }
 

@@ -1,5 +1,9 @@
-use super::{CurlImportPage, Dialog, Feedback, PreviewTab, ResponseTab, VariablesPage};
+use super::{
+    App, CurlImportPage, Dialog, Feedback, PreviewAction, PreviewTab, ResponseTab, VariablesPage,
+};
 use crate::editor::{BodyValueEditor, EditInput};
+use crossterm::event::MouseEvent;
+use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +17,85 @@ pub(crate) enum Focus {
     ResponseActions,
     ResponseZoom,
     Response,
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MainButton {
+    NewRequest,
+    Workspace,
+    Variables,
+    Send,
+    ResponseFormat,
+    ResponseMenu,
+    ResponseZoom,
+}
+
+impl MainButton {
+    pub(crate) const COUNT: usize = Self::ResponseZoom as usize + 1;
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn enabled(self, app: &App) -> bool {
+        match self {
+            Self::NewRequest
+            | Self::Workspace
+            | Self::Variables
+            | Self::ResponseMenu
+            | Self::ResponseZoom => true,
+            Self::Send => app.can_execute_preview_action(PreviewAction::Send),
+            Self::ResponseFormat => app.current_response().is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MainButtonStates {
+    interactions: [tui_assets_rust::ButtonInteraction; MainButton::COUNT],
+}
+
+impl MainButtonStates {
+    pub(crate) fn handle_mouse(
+        &mut self,
+        button: MainButton,
+        event: MouseEvent,
+        area: Rect,
+        enabled: bool,
+    ) -> tui_assets_rust::ButtonEvent {
+        let interaction = self.interaction_mut(button);
+        interaction.set_enabled(enabled);
+        interaction.handle_mouse(event, area)
+    }
+
+    pub(crate) fn visual_state(
+        &self,
+        button: MainButton,
+        enabled: bool,
+        focused: bool,
+    ) -> tui_assets_rust::ButtonState {
+        let interaction = self.interaction(button);
+        if !enabled {
+            tui_assets_rust::ButtonState::Disabled
+        } else if interaction.pressed() {
+            tui_assets_rust::ButtonState::Pressed
+        } else if focused {
+            tui_assets_rust::ButtonState::Focused
+        } else if interaction.hovered() {
+            tui_assets_rust::ButtonState::Hovered
+        } else {
+            tui_assets_rust::ButtonState::Idle
+        }
+    }
+
+    fn interaction(&self, button: MainButton) -> &tui_assets_rust::ButtonInteraction {
+        &self.interactions[button.index()]
+    }
+
+    fn interaction_mut(&mut self, button: MainButton) -> &mut tui_assets_rust::ButtonInteraction {
+        &mut self.interactions[button.index()]
+    }
 }
 
 impl Focus {
@@ -209,6 +292,13 @@ pub(crate) struct ListScrollState {
     pub(crate) drag_anchor: Option<(u16, usize)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollDragTarget {
+    Requests,
+    Preview,
+    Response,
+}
+
 impl ListScrollState {
     const STEP: usize = 3;
 
@@ -293,6 +383,8 @@ pub(crate) struct ViewState {
     pub(crate) help_scroll: Option<u16>,
     pub(crate) animation_frame: usize,
     pub(crate) clicks: ClickSequence,
+    pub(crate) scroll_drag_target: Option<ScrollDragTarget>,
+    pub(crate) main_buttons: MainButtonStates,
 }
 
 impl Default for ViewState {
@@ -311,12 +403,15 @@ impl Default for ViewState {
             help_scroll: None,
             animation_frame: 0,
             clicks: ClickSequence::default(),
+            scroll_drag_target: None,
+            main_buttons: MainButtonStates::default(),
         }
     }
 }
 
 impl ViewState {
     pub(crate) fn cancel_scroll_drag(&mut self) {
+        self.scroll_drag_target = None;
         self.response.scroll.drag_anchor = None;
         self.requests.scroll.drag_anchor = None;
         match self.dialog.as_mut() {

@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    TABLE_COLUMN_SPACING,
+    widgets::{
+        edit_input_style, edit_input_text_style, editor_view, editor_view_with_cursor, label_style,
+        section_style, truncate_line,
+    },
+};
+use crate::{app::App, highlight};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
+};
 
 pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.global_config.theme;
