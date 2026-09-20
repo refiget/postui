@@ -196,24 +196,7 @@ pub(super) fn place_inline_editor_cursor(app: &mut App, column: u16, row: u16, a
     if !(start..start.saturating_add(width)).contains(&column) {
         return false;
     }
-    let mut column = usize::from(column - start);
-    if editor.mode() == crate::editor::EditMode::Insert {
-        let available = usize::from(width).saturating_sub(1);
-        let before = &editor.value()[..editor.cursor_byte()];
-        let after = &editor.value()[editor.cursor_byte()..];
-        let before_width =
-            available.saturating_sub(crate::editor::terminal_width(after).min(available / 2));
-        let mut visible_before = 0;
-        for character in before.chars().rev() {
-            let width = crate::editor::terminal_width(&character.to_string());
-            if visible_before + width > before_width {
-                break;
-            }
-            visible_before += width;
-        }
-        column = editor.cursor_width().saturating_sub(visible_before)
-            + column.saturating_sub(usize::from(column > visible_before));
-    }
+    let column = editor.visible_column(usize::from(width), usize::from(column - start));
     editor.place_cursor(column);
     true
 }

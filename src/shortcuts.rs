@@ -11,6 +11,7 @@ pub(crate) enum Context {
     Params,
     Menu,
     Variables,
+    Extracts,
     CurlImport,
     Confirm,
     Editor,
@@ -36,6 +37,9 @@ pub(crate) enum Command {
     Reload,
     Workspace,
     Variables,
+    Extracts,
+    ReorderUp,
+    ReorderDown,
     ImportCurl,
     ResponseMenu,
     Search,
@@ -124,6 +128,7 @@ const GLOBAL: &[Binding] = &[
     binding!(Reload, "r", "Reload", "重载", plain(Char('r'))),
     binding!(Workspace, "c", "Scenario", "场景", plain(Char('c'))),
     binding!(Variables, "v", "Variables", "变量", plain(Char('v'))),
+    binding!(Extracts, "e", "Extract order", "提取顺序", plain(Char('e'))),
     binding!(ImportCurl, "n", "New", "新建", plain(Char('n'))),
     binding!(
         ResponseMenu,
@@ -263,6 +268,11 @@ const VARIABLES: &[Binding] = &[
         plain(Enter),
         plain(Char(' '))
     ),
+    binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
+];
+const EXTRACTS: &[Binding] = &[
+    binding!(ReorderUp, "K", "Move up", "顺序上移", plain(Char('K'))),
+    binding!(ReorderDown, "J", "Move down", "顺序下移", plain(Char('J'))),
     binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
 ];
 const CURL_IMPORT: &[Binding] = &[
@@ -442,6 +452,7 @@ fn bindings(context: Context, debug: bool) -> impl Iterator<Item = &'static Bind
         Context::Params => &[TABLE, MOVEMENT],
         Context::Menu => &[MENU, MOVEMENT],
         Context::Variables => &[VARIABLES, MOVEMENT],
+        Context::Extracts => &[EXTRACTS, MOVEMENT],
         Context::CurlImport => &[CURL_IMPORT],
         Context::Confirm => &[CONFIRM],
         Context::Editor => &[EDITOR],

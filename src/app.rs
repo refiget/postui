@@ -21,6 +21,7 @@ mod dialog;
 mod editing;
 mod error_page;
 mod execution;
+mod extracts;
 mod preview;
 pub(crate) use error_page::ErrorPage;
 mod feedback;
@@ -45,6 +46,7 @@ pub(crate) use dialog::{
     ConfigurationsDialog, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog,
     KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow,
 };
+pub(crate) use extracts::ExtractsPage;
 pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
@@ -69,11 +71,17 @@ pub(crate) enum ResponseMenuAction {
     Download,
     CopyBody,
     CopyHeaders,
+    Extract,
 }
 
 impl ResponseMenuAction {
-    pub(crate) const fn all() -> [Self; 3] {
-        [Self::Download, Self::CopyBody, Self::CopyHeaders]
+    pub(crate) const fn all() -> [Self; 4] {
+        [
+            Self::Download,
+            Self::CopyBody,
+            Self::CopyHeaders,
+            Self::Extract,
+        ]
     }
 
     pub(crate) fn from_index(index: usize) -> Option<Self> {
@@ -395,6 +403,13 @@ impl App {
 
     pub(crate) fn variable_count(&self) -> usize {
         self.config.editable_variables.len()
+    }
+
+    /// 主界面被整页内容覆盖：变量页、提取顺序页或 cURL 导入页。
+    pub(crate) fn full_page_open(&self) -> bool {
+        self.view.variables.is_some()
+            || self.view.extracts.is_some()
+            || self.view.curl_import.is_some()
     }
 
     pub(crate) fn active_configuration(&self) -> &str {

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     config::{
         ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam,
-        WorkspaceConfig, WorkspaceConfiguration, value_to_string,
+        ResponseExtract, WorkspaceConfig, WorkspaceConfiguration, value_to_string,
     },
     http::{HttpError, ResponseData},
     i18n::UiText,
@@ -159,6 +159,7 @@ pub(crate) struct RequestSession {
     pub(crate) draft: RequestDraft,
     pub(crate) temporary_variables: BTreeMap<String, String>,
     pub(super) runtime: RequestRuntimeState,
+    extract_order: Option<Vec<String>>,
     inactive_headers: BTreeMap<String, Vec<HeaderRow>>,
     inactive_temporary_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
@@ -181,6 +182,7 @@ impl RequestSession {
             draft,
             temporary_variables,
             runtime: RequestRuntimeState::default(),
+            extract_order: None,
             inactive_headers: BTreeMap::new(),
             inactive_temporary_variables: BTreeMap::new(),
         }
@@ -208,7 +210,30 @@ impl RequestSession {
         effective.form = self.draft.form.clone();
         effective.files = self.draft.files.clone();
         effective.body_parts = self.draft.body_parts.clone();
+        if let Some(order) = &self.extract_order {
+            effective.extracts = ordered_extracts(effective.extracts, order);
+        }
         effective
+    }
+
+    pub(super) fn has_extract_order(&self) -> bool {
+        self.extract_order.is_some()
+    }
+
+    pub(super) fn set_extract_order(&mut self, order: Option<Vec<String>>) {
+        self.extract_order = order;
+    }
+
+    pub(super) fn configured_extract_names(
+        &self,
+        configuration: &WorkspaceConfiguration,
+    ) -> Vec<String> {
+        self.source
+            .for_configuration(configuration)
+            .extracts
+            .iter()
+            .map(|extract| extract.variable.clone())
+            .collect()
     }
 
     fn activate_configuration(
@@ -480,6 +505,22 @@ impl WorkspaceSession {
             .iter_mut()
             .find(|session| session.source.id == request_id)
     }
+}
+
+/// 按会话顺序排列提取规则；未列出的规则保持原顺序排在后面。
+fn ordered_extracts(extracts: Vec<ResponseExtract>, order: &[String]) -> Vec<ResponseExtract> {
+    let mut remaining = extracts;
+    let mut ordered = Vec::with_capacity(remaining.len());
+    for name in order {
+        if let Some(index) = remaining
+            .iter()
+            .position(|extract| extract.variable == *name)
+        {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
 }
 
 fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<String, String> {

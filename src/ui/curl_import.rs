@@ -1,7 +1,8 @@
 use super::{
     dialog::draw_configuration_dropdown,
     widgets::{
-        asset_theme, draw_flat_button_colored, edit_input_text_style, panel_block, section_style,
+        asset_theme, draw_flat_button_colored, edit_input_text_style, panel_block, place_cursor,
+        section_style,
     },
 };
 use crate::app::{App, CurlImportFocus, Dialog};
@@ -194,14 +195,13 @@ fn draw_wide_fields(
     draw_stacked_field(
         frame,
         layout.name,
-        Field {
-            label: text.curl_import_name(),
-            value: page.name(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::Name),
-            hint: None,
-            color: theme.accent,
-        },
+        field(
+            page,
+            CurlImportFocus::Name,
+            text.curl_import_name(),
+            None,
+            theme.accent,
+        ),
         theme,
     );
     stacked_workspace(
@@ -215,27 +215,25 @@ fn draw_wide_fields(
     draw_stacked_field(
         frame,
         layout.description,
-        Field {
-            label: text.curl_import_description(),
-            value: page.description(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::Description),
-            hint: None,
-            color: theme.secondary,
-        },
+        field(
+            page,
+            CurlImportFocus::Description,
+            text.curl_import_description(),
+            None,
+            theme.secondary,
+        ),
         theme,
     );
     draw_stacked_field(
         frame,
         layout.registered_variables,
-        Field {
-            label: text.curl_import_variables(),
-            value: page.registered_variables(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::RegisteredVariables),
-            hint: Some(text.curl_import_variables_hint()),
-            color: theme.variable,
-        },
+        field(
+            page,
+            CurlImportFocus::RegisteredVariables,
+            text.curl_import_variables(),
+            Some(text.curl_import_variables_hint()),
+            theme.variable,
+        ),
         theme,
     );
 }
@@ -247,6 +245,24 @@ struct Field<'a> {
     focused: bool,
     hint: Option<&'a str>,
     color: Color,
+}
+
+/// 字段的当前值、光标和聚焦状态。
+fn field<'a>(
+    page: &'a crate::app::CurlImportPage,
+    focus: CurlImportFocus,
+    label: &'a str,
+    hint: Option<&'a str>,
+    color: Color,
+) -> Field<'a> {
+    Field {
+        label,
+        value: page.field_value(focus),
+        cursor: page.cursor(focus),
+        focused: page.focused(focus),
+        hint,
+        color,
+    }
 }
 
 fn draw_stacked_field(
@@ -263,10 +279,15 @@ fn draw_stacked_field(
         })),
         Rect::new(area.x, area.y.saturating_sub(1), area.width, 1),
     );
-    let shown = if field.value.is_empty() {
-        field.hint.unwrap_or("_")
+    let (row, column) = crate::editor::cursor_row_column(field.value, field.cursor);
+    let (shown, cursor_column) = if field.value.is_empty() {
+        (field.hint.unwrap_or("_").to_string(), column)
+    } else if field.focused && row == 0 {
+        let width = usize::from(area.width).saturating_sub(2);
+        let window = crate::editor::cursor_window(field.value, field.cursor, width);
+        (format!("  {}", window.text()), window.column())
     } else {
-        field.value
+        (indent_lines(field.value), column)
     };
     let style = Style::default()
         .fg(if field.value.is_empty() && field.hint.is_some() {
@@ -285,29 +306,13 @@ fn draw_stacked_field(
             Modifier::empty()
         });
     frame.render_widget(
-        Paragraph::new(indent_lines(shown))
+        Paragraph::new(shown)
             .style(style)
             .wrap(Wrap { trim: false }),
         area,
     );
     if field.focused {
-        let before = &field.value[..field.cursor];
-        let row = before.bytes().filter(|byte| *byte == b'\n').count();
-        let width = before
-            .rsplit('\n')
-            .next()
-            .map(Line::from)
-            .map_or(0, |line| line.width());
-        let x = area
-            .x
-            .saturating_add(2)
-            .saturating_add(u16::try_from(width).unwrap_or(u16::MAX));
-        let y = area
-            .y
-            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-        if x < area.right() && y < area.bottom() {
-            frame.set_cursor_position((x, y));
-        }
+        place_cursor(frame, area, 2usize.saturating_add(cursor_column), row);
     }
 }
 
@@ -350,14 +355,13 @@ fn draw_compact_fields(
     inline_field(
         frame,
         layout.name,
-        Field {
-            label: text.curl_import_name(),
-            value: page.name(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::Name),
-            hint: None,
-            color: theme.accent,
-        },
+        field(
+            page,
+            CurlImportFocus::Name,
+            text.curl_import_name(),
+            None,
+            theme.accent,
+        ),
         width,
         theme,
     );
@@ -373,28 +377,26 @@ fn draw_compact_fields(
     inline_field(
         frame,
         layout.description,
-        Field {
-            label: text.curl_import_description(),
-            value: page.description(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::Description),
-            hint: None,
-            color: theme.secondary,
-        },
+        field(
+            page,
+            CurlImportFocus::Description,
+            text.curl_import_description(),
+            None,
+            theme.secondary,
+        ),
         width,
         theme,
     );
     inline_field(
         frame,
         layout.registered_variables,
-        Field {
-            label: text.curl_import_variables(),
-            value: page.registered_variables(),
-            cursor: page.cursor(),
-            focused: page.focused(CurlImportFocus::RegisteredVariables),
-            hint: Some(text.curl_import_variables_hint()),
-            color: theme.variable,
-        },
+        field(
+            page,
+            CurlImportFocus::RegisteredVariables,
+            text.curl_import_variables(),
+            Some(text.curl_import_variables_hint()),
+            theme.variable,
+        ),
         width,
         theme,
     );
@@ -419,10 +421,14 @@ fn inline_field(
     label_width: usize,
     theme: &crate::settings::UiTheme,
 ) {
-    let shown = if field.value.is_empty() {
-        field.hint.unwrap_or("_")
+    let value_width = usize::from(area.width).saturating_sub(label_width.saturating_add(2));
+    let (shown, cursor_column) = if field.value.is_empty() {
+        (field.hint.unwrap_or("_").to_string(), 0)
+    } else if field.focused {
+        let window = crate::editor::cursor_window(field.value, field.cursor, value_width);
+        (window.text(), window.column())
     } else {
-        field.value
+        (field.value.to_string(), 0)
     };
     let padding = " ".repeat(label_width.saturating_sub(Line::from(field.label).width()));
     let style = if field.value.is_empty() && field.hint.is_some() {
@@ -438,20 +444,13 @@ fn inline_field(
                 format!("{}{padding}: ", field.label),
                 Style::default().fg(field.color),
             ),
-            Span::styled(shown.to_string(), style),
+            Span::styled(shown, style),
         ])),
         area,
     );
     if field.focused {
-        let width = label_width
-            .saturating_add(2)
-            .saturating_add(Line::from(&field.value[..field.cursor]).width());
-        let x = area
-            .x
-            .saturating_add(u16::try_from(width).unwrap_or(u16::MAX));
-        if x < area.right() {
-            frame.set_cursor_position((x, area.y));
-        }
+        let column = label_width.saturating_add(2).saturating_add(cursor_column);
+        place_cursor(frame, area, column, 0);
     }
 }
 
@@ -527,21 +526,8 @@ fn draw_command(
         inner,
     );
     if focused {
-        let before = &page.command()[..page.cursor()];
-        let row = before.bytes().filter(|byte| *byte == b'\n').count();
-        let column = before
-            .rsplit('\n')
-            .next()
-            .map(Line::from)
-            .map_or(0, |line| line.width());
-        let x = inner
-            .x
-            .saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
-        let y = inner
-            .y
-            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-        if x < inner.right() && y < inner.bottom() {
-            frame.set_cursor_position((x, y));
-        }
+        let (row, column) =
+            crate::editor::cursor_row_column(page.command(), page.cursor(CurlImportFocus::Command));
+        place_cursor(frame, inner, column, row);
     }
 }

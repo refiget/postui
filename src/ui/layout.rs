@@ -309,6 +309,27 @@ pub(super) fn panel_scroll_areas(area: Rect) -> ScrollAreas {
     inner_scroll_areas(area.inner(Margin::new(1, 1)))
 }
 
+/// 列表页布局：面板区域、表头和内容滚动区域。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ListPageLayout {
+    pub(super) area: Rect,
+    pub(super) table_header: Rect,
+    pub(super) rows: ScrollAreas,
+}
+
+pub(super) fn list_page_layout(area: Rect) -> ListPageLayout {
+    let inner = area.inner(Margin::new(u16::from(area.width >= 48) + 1, 1));
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    ListPageLayout {
+        area,
+        table_header: sections[0],
+        rows: inner_scroll_areas(sections[1]),
+    }
+}
+
 pub(super) fn inner_scroll_areas(area: Rect) -> ScrollAreas {
     if area.is_empty() {
         return ScrollAreas {

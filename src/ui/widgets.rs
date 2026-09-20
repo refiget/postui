@@ -1,13 +1,117 @@
-use crate::{app::RequestStatus, http_method};
+use super::{TABLE_COLUMN_SPACING, contains, layout::ListPageLayout};
+use crate::{
+    app::{ListScrollState, RequestStatus},
+    http_method,
+};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
     style::{Color, Modifier, Style},
     symbols::{border, scrollbar::VERTICAL},
     text::{Line, Span},
-    widgets::{Block, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, Borders, HighlightSpacing, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    },
 };
 use tui_assets_rust::{Button as AssetButton, ButtonState as FlatButtonState, Theme as AssetTheme};
+
+const TABLE_HIGHLIGHT_SYMBOL: &str = "▸ ";
+
+/// 列表表格的列间距、选中符号、高亮间距和底色。
+pub(super) fn styled_list_table<'a>(
+    table: Table<'a>,
+    theme: &crate::settings::UiTheme,
+) -> Table<'a> {
+    table
+        .column_spacing(TABLE_COLUMN_SPACING)
+        .highlight_symbol(TABLE_HIGHLIGHT_SYMBOL)
+        .highlight_spacing(HighlightSpacing::Always)
+        .style(Style::default().bg(theme.surface).fg(theme.text))
+}
+
+/// 点击列表滚动条：按轨道位置跳转并记录拖拽锚点。
+pub(super) fn click_list_scrollbar(
+    scroll: &mut ListScrollState,
+    row: u16,
+    layout: ListPageLayout,
+    content_length: usize,
+) {
+    let visible = usize::from(layout.rows.content.height);
+    if content_length == 0 || visible == 0 {
+        return;
+    }
+    let offset = scroll.offset(content_length, visible);
+    let Some(track) = scrollbar_track_state(layout.rows.scrollbar, content_length, visible, offset)
+    else {
+        return;
+    };
+    let target = scrollbar_offset_from_track(&track, row);
+    scroll.set_offset(target, content_length, visible);
+    scroll.drag_anchor = Some((row, target));
+}
+
+/// 拖拽列表滚动条。
+pub(super) fn drag_list_scrollbar(
+    scroll: &mut ListScrollState,
+    row: u16,
+    layout: ListPageLayout,
+    content_length: usize,
+) {
+    let visible = usize::from(layout.rows.content.height);
+    let offset = scroll.offset(content_length, visible);
+    let Some((anchor_row, anchor_offset)) = scroll.drag_anchor else {
+        return;
+    };
+    let Some(track) = scrollbar_track_state(layout.rows.scrollbar, content_length, visible, offset)
+    else {
+        return;
+    };
+    let target = scrollbar_offset_from_drag(&track, anchor_row, anchor_offset, row);
+    scroll.set_offset(target, content_length, visible);
+}
+
+/// 列表页的滚动条与滚轮鼠标处理；返回 true 表示事件已处理。
+pub(super) fn handle_list_scroll_mouse(
+    scroll: &mut ListScrollState,
+    event: MouseEvent,
+    layout: ListPageLayout,
+    content_length: usize,
+) -> bool {
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if contains(layout.rows.scrollbar, event.column, event.row) =>
+        {
+            click_list_scrollbar(scroll, event.row, layout, content_length);
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) if scroll.drag_anchor.is_some() => {
+            drag_list_scrollbar(scroll, event.row, layout, content_length);
+            true
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
+                -1
+            } else {
+                1
+            };
+            if contains(layout.rows.content, event.column, event.row) {
+                scroll.move_by(
+                    direction,
+                    content_length,
+                    usize::from(layout.rows.content.height),
+                );
+                true
+            } else if contains(layout.rows.scrollbar, event.column, event.row) {
+                click_list_scrollbar(scroll, event.row, layout, content_length);
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
 
 pub(super) fn constraint_length(constraint: Constraint) -> u16 {
     match constraint {
@@ -353,40 +457,22 @@ pub(super) fn editor_view_with_cursor(
     if editor.mode() == crate::editor::EditMode::Replace {
         return (truncate(editor.value(), width), None);
     }
-    let cursor = editor.cursor_byte();
-    let before = &editor.value()[..cursor];
-    let after = &editor.value()[cursor..];
-    let marker = "▏";
-    let marker_width = Line::from(marker).width();
-    let available = width.saturating_sub(marker_width);
-    let after_width = Line::from(after).width().min(available / 2);
-    let before_width = available.saturating_sub(after_width);
+    let window = crate::editor::cursor_window(editor.value(), editor.cursor_byte(), width);
+    (window.text(), Some(window.column()))
+}
 
-    let mut before_chars = Vec::new();
-    let mut used = 0_usize;
-    for character in before.chars().rev() {
-        let character_width = Line::from(character.to_string()).width();
-        if used.saturating_add(character_width) > before_width {
-            break;
-        }
-        before_chars.push(character);
-        used = used.saturating_add(character_width);
-    }
-    before_chars.reverse();
+/// 把列数或行数换算成 u16 坐标。
+pub(super) fn coordinate(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
 
-    let mut result = before_chars.into_iter().collect::<String>();
-    let cursor_width = used;
-    result.push_str(marker);
-    used = 0;
-    for character in after.chars() {
-        let character_width = Line::from(character.to_string()).width();
-        if used.saturating_add(character_width) > after_width {
-            break;
-        }
-        result.push(character);
-        used = used.saturating_add(character_width);
+/// 在区域内设置光标；列或行超出区域时不显示光标。
+pub(super) fn place_cursor(frame: &mut Frame<'_>, area: Rect, column: usize, row: usize) {
+    let x = area.x.saturating_add(coordinate(column));
+    let y = area.y.saturating_add(coordinate(row));
+    if x < area.right() && y < area.bottom() {
+        frame.set_cursor_position((x, y));
     }
-    (result, Some(cursor_width))
 }
 
 pub(super) fn edit_input_style(

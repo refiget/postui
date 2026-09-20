@@ -131,9 +131,9 @@ impl App {
         }
         if let Some(editor) = self.view.preview.editor.as_mut() {
             let (editor_line, editor_column) = editor.position();
-            let width = terminal_width(editor.input.value()).max(1);
+            let width = editor.display_width();
             if editor_line == line
-                && (editor_column..=editor_column.saturating_add(width)).contains(&column)
+                && (editor_column..editor_column.saturating_add(width)).contains(&column)
             {
                 editor.input.place_cursor(column - editor_column);
                 return true;

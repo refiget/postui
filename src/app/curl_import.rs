@@ -184,18 +184,6 @@ impl CurlImportPage {
         }
     }
 
-    pub(crate) fn name(&self) -> &str {
-        &self.name.value
-    }
-
-    pub(crate) fn description(&self) -> &str {
-        &self.description.value
-    }
-
-    pub(crate) fn registered_variables(&self) -> &str {
-        &self.registered_variables.value
-    }
-
     pub(crate) fn command(&self) -> &str {
         &self.command.value
     }
@@ -236,23 +224,45 @@ impl CurlImportPage {
         }
     }
 
-    pub(crate) fn cursor(&self) -> usize {
-        match self.focus {
-            CurlImportFocus::Name => self.name.cursor,
-            CurlImportFocus::Description => self.description.cursor,
-            CurlImportFocus::RegisteredVariables => self.registered_variables.cursor,
-            CurlImportFocus::Command => self.command.cursor,
-            CurlImportFocus::Workspace | CurlImportFocus::Confirm | CurlImportFocus::Cancel => 0,
+    /// 聚焦位置对应的输入字段值。
+    pub(crate) fn field_value(&self, focus: CurlImportFocus) -> &str {
+        self.field(focus).map_or("", |field| field.value.as_str())
+    }
+
+    pub(crate) fn cursor(&self, focus: CurlImportFocus) -> usize {
+        self.field(focus).map_or(0, |field| field.cursor)
+    }
+
+    /// 聚焦位置对应的输入字段。
+    fn field(&self, focus: CurlImportFocus) -> Option<&CurlImportField> {
+        match focus {
+            CurlImportFocus::Name => Some(&self.name),
+            CurlImportFocus::Description => Some(&self.description),
+            CurlImportFocus::RegisteredVariables => Some(&self.registered_variables),
+            CurlImportFocus::Command => Some(&self.command),
+            CurlImportFocus::Workspace | CurlImportFocus::Confirm | CurlImportFocus::Cancel => None,
         }
     }
 
-    fn active_field_mut(&mut self) -> Option<&mut CurlImportField> {
-        match self.focus {
+    fn field_mut(&mut self, focus: CurlImportFocus) -> Option<&mut CurlImportField> {
+        match focus {
             CurlImportFocus::Name => Some(&mut self.name),
             CurlImportFocus::Description => Some(&mut self.description),
             CurlImportFocus::RegisteredVariables => Some(&mut self.registered_variables),
             CurlImportFocus::Command => Some(&mut self.command),
             CurlImportFocus::Workspace | CurlImportFocus::Confirm | CurlImportFocus::Cancel => None,
+        }
+    }
+
+    fn active_field_mut(&mut self) -> Option<&mut CurlImportField> {
+        let focus = self.focus;
+        self.field_mut(focus)
+    }
+
+    /// 对当前聚焦的输入字段执行编辑操作。
+    fn edit_active_field(&mut self, edit: impl FnOnce(&mut CurlImportField)) {
+        if let Some(field) = self.active_field_mut() {
+            edit(field);
         }
     }
 
@@ -421,7 +431,7 @@ impl App {
     pub(crate) fn activate_curl_import(&mut self, focus: CurlImportFocus) {
         self.focus_curl_import(focus);
         match focus {
-            CurlImportFocus::Workspace => self.open_configurations(),
+            CurlImportFocus::Workspace => self.toggle_configurations(),
             CurlImportFocus::Confirm => {
                 self.start_curl_import();
             }
@@ -465,9 +475,7 @@ impl App {
             Some(Command::FocusPrevious) => page.focus = page.focus.next(true),
             Some(Command::Clear) => {
                 page.mark_editing();
-                if let Some(field) = page.active_field_mut() {
-                    field.clear();
-                }
+                page.edit_active_field(CurlImportField::clear);
             }
             _ if key.code == KeyCode::Enter && page.focus == CurlImportFocus::Workspace => {
                 self.open_configurations();
@@ -490,44 +498,24 @@ impl App {
             _ if key.code == KeyCode::Enter => page.focus = page.focus.next(false),
             _ if key.code == KeyCode::Backspace => {
                 page.mark_editing();
-                if let Some(field) = page.active_field_mut() {
-                    field.backspace();
-                }
+                page.edit_active_field(CurlImportField::backspace);
             }
             _ if key.code == KeyCode::Delete => {
                 page.mark_editing();
-                if let Some(field) = page.active_field_mut() {
-                    field.delete();
-                }
+                page.edit_active_field(CurlImportField::delete);
             }
-            _ if key.code == KeyCode::Left => {
-                if let Some(field) = page.active_field_mut() {
-                    field.move_left();
-                }
-            }
-            _ if key.code == KeyCode::Right => {
-                if let Some(field) = page.active_field_mut() {
-                    field.move_right();
-                }
-            }
-            _ if key.code == KeyCode::Home => {
-                if let Some(field) = page.active_field_mut() {
-                    field.cursor = 0;
-                }
-            }
+            _ if key.code == KeyCode::Left => page.edit_active_field(CurlImportField::move_left),
+            _ if key.code == KeyCode::Right => page.edit_active_field(CurlImportField::move_right),
+            _ if key.code == KeyCode::Home => page.edit_active_field(|field| field.cursor = 0),
             _ if key.code == KeyCode::End => {
-                if let Some(field) = page.active_field_mut() {
-                    field.cursor = field.value.len();
-                }
+                page.edit_active_field(|field| field.cursor = field.value.len());
             }
             _ if key.modifiers == KeyModifiers::NONE => {
                 let KeyCode::Char(character) = key.code else {
                     return;
                 };
                 page.mark_editing();
-                if let Some(field) = page.active_field_mut() {
-                    field.insert(&character.to_string());
-                }
+                page.edit_active_field(|field| field.insert(&character.to_string()));
             }
             _ => {}
         }
@@ -546,10 +534,7 @@ impl App {
             CurlImportFocus::RegisteredVariables | CurlImportFocus::Command
         );
         let (value, truncated) = sanitize_paste(value, multiline);
-        let Some(field) = page.active_field_mut() else {
-            return;
-        };
-        field.insert(&value);
+        page.edit_active_field(|field| field.insert(&value));
         if truncated {
             self.view.notice = Some(super::Feedback::Warning(
                 self.text().paste_truncated().to_string(),

@@ -62,39 +62,38 @@ impl Picker {
         self.notice.clear();
     }
 
-    fn append_input(&mut self, value: &str) {
+    fn input_mut(&mut self) -> Option<&mut String> {
         match self.input {
-            Some(Input::Search) => {
-                self.query.push_str(value);
-                self.reset_list_position();
-            }
-            Some(Input::Path) => self.path.push_str(value),
-            None => {}
+            Some(Input::Search) => Some(&mut self.query),
+            Some(Input::Path) => Some(&mut self.path),
+            None => None,
         }
+    }
+
+    /// 对当前输入框执行编辑操作；筛选输入会重置列表位置。
+    fn edit_input(&mut self, edit: impl FnOnce(&mut String)) {
+        let searched = self.input == Some(Input::Search);
+        let Some(input) = self.input_mut() else {
+            return;
+        };
+        edit(input);
+        if searched {
+            self.reset_list_position();
+        }
+    }
+
+    fn append_input(&mut self, value: &str) {
+        self.edit_input(|input| input.push_str(value));
     }
 
     fn push_input(&mut self, character: char) {
-        match self.input {
-            Some(Input::Search) => {
-                self.query.push(character);
-                self.reset_list_position();
-            }
-            Some(Input::Path) => self.path.push(character),
-            None => {}
-        }
+        self.edit_input(|input| input.push(character));
     }
 
     fn backspace_input(&mut self) {
-        match self.input {
-            Some(Input::Search) => {
-                self.query.pop();
-                self.reset_list_position();
-            }
-            Some(Input::Path) => {
-                self.path.pop();
-            }
-            None => {}
-        }
+        self.edit_input(|input| {
+            input.pop();
+        });
     }
 
     fn reset_list_position(&mut self) {
@@ -452,18 +451,14 @@ fn draw(frame: &mut Frame<'_>, picker: &mut Picker, theme: &UiTheme, text: UiTex
     let block = panel(format!(" {} ", text.workspace_recent()), theme, true);
     frame.render_widget(block, layout.recent);
     if !layout.search.is_empty() {
+        let width = usize::from(layout.search.width.saturating_sub(2));
+        let query = crate::editor::cursor_window(&picker.query, picker.query.len(), width);
         let value = if picker.query.is_empty() && picker.input.is_none() {
             text.workspace_filter().to_string()
+        } else if matches!(picker.input, Some(Input::Search)) {
+            query.text()
         } else {
-            format!(
-                "{}{}",
-                picker.query,
-                if matches!(picker.input, Some(Input::Search)) {
-                    "▏"
-                } else {
-                    ""
-                }
-            )
+            query.before().to_string()
         };
         frame.render_widget(
             Paragraph::new(format!("/ {value}")).style(Style::default().fg(
@@ -526,8 +521,10 @@ fn draw(frame: &mut Frame<'_>, picker: &mut Picker, theme: &UiTheme, text: UiTex
     );
     picker.list_offset = state.offset();
     if matches!(picker.input, Some(Input::Path)) {
+        let width = usize::from(layout.path.width.saturating_sub(3));
+        let path = crate::editor::cursor_window(&picker.path, picker.path.len(), width);
         frame.render_widget(
-            Paragraph::new(format!(" {}▏", picker.path)).block(panel(
+            Paragraph::new(format!(" {}", path.text())).block(panel(
                 format!(" {} ", text.workspace_directory()),
                 theme,
                 true,

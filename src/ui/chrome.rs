@@ -59,6 +59,8 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             text.help_title()
         } else if app.view.variables.is_some() {
             text.variables()
+        } else if app.view.extracts.is_some() {
+            text.extracts()
         } else if app.view.curl_import.is_some() {
             text.curl_import_title()
         } else {

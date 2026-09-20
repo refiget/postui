@@ -10,6 +10,7 @@ use ratatui::{
 mod chrome;
 mod curl_import;
 mod dialog;
+mod extracts;
 mod focus;
 mod inline_editor;
 mod layout;
@@ -24,6 +25,7 @@ mod widgets;
 use chrome::{draw_footer, draw_header, draw_request_list, draw_request_send_button};
 use curl_import::draw_curl_import_page;
 use dialog::draw_configuration_dropdown;
+use extracts::draw_extracts_page;
 pub(crate) use mouse::handle_mouse;
 use preview::{draw_preview, preview_summary_height};
 use response::{draw_response, sync_response_scroll};
@@ -39,7 +41,7 @@ const INLINE_DELETE_WIDTH: u16 = 3;
 const DELETE_ICON: &str = "−";
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let areas = screen_layout_for_app(frame.area(), app);
-    if app.view.variables.is_none() && app.view.curl_import.is_none() {
+    if !app.full_page_open() {
         sync_response_scroll(app, areas);
     }
     let theme = &app.global_config.theme;
@@ -64,6 +66,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_footer(frame, areas.footer, app);
     if app.view.curl_import.is_some() {
         draw_curl_import_page(frame, areas.response, app);
+    } else if let Some(page) = &app.view.extracts {
+        draw_extracts_page(frame, app, page, areas.response);
     } else if let Some(variables) = &app.view.variables {
         draw_variables_page(frame, app, variables, areas.response);
     } else {
@@ -115,7 +119,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
-    if app.view.curl_import.is_some() || app.view.variables.is_some() {
+    if app.full_page_open() {
         return single_panel(area);
     }
     if app.response_zoomed() {

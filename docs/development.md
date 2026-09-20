@@ -55,6 +55,11 @@ Network execution uses one Tokio runtime and connection pool. At most eight
 requests execute concurrently. Cancellation aborts the async request task.
 Completed work with an obsolete operation ID is discarded.
 
+Response extraction uses one function for the completion path and for the
+response menu `Extract` action. Both read the effective request `extracts` and
+write runtime variables. The effective request applies the session extraction
+order, so extraction follows the order shown on the extraction order page.
+
 ## Verification
 
 ```bash

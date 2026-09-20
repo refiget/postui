@@ -67,6 +67,121 @@ fn run_editor(editor: OsString, arguments: &[&str], path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const CURSOR_MARKER: &str = "▏";
+
+/// 光标处的可见窗口。
+pub(crate) struct CursorWindow<'a> {
+    before: &'a str,
+    after: &'a str,
+    column: usize,
+}
+
+impl CursorWindow<'_> {
+    /// 含光标标记的窗口文本。
+    pub(crate) fn text(&self) -> String {
+        let mut text = String::with_capacity(
+            self.before
+                .len()
+                .saturating_add(self.after.len())
+                .saturating_add(CURSOR_MARKER.len()),
+        );
+        text.push_str(self.before);
+        text.push_str(CURSOR_MARKER);
+        text.push_str(self.after);
+        text
+    }
+
+    /// 光标前可见文本。
+    pub(crate) fn before(&self) -> &str {
+        self.before
+    }
+
+    /// 光标在窗口内的列。
+    pub(crate) fn column(&self) -> usize {
+        self.column
+    }
+}
+
+/// 多行文本中光标所在的行与列。
+pub(crate) fn cursor_row_column(value: &str, cursor: usize) -> (usize, usize) {
+    let before = &value[..cursor.min(value.len())];
+    let row = before.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    (row, terminal_width(&before[line_start..]))
+}
+
+/// 把窗口内的可见列换算成整个值的列；`width` 为渲染时传入的窗口宽度。
+pub(crate) fn visible_column(value: &str, cursor: usize, width: usize, column: usize) -> usize {
+    if width == 0 {
+        return column;
+    }
+    let cursor = cursor.min(value.len());
+    let cursor_width = terminal_width(&value[..cursor]);
+    let window = cursor_window(value, cursor, width);
+    let hidden_width = cursor_width.saturating_sub(window.column);
+    if column < window.column {
+        let end = text_position(window.before, 0, column);
+        return hidden_width + terminal_width(&window.before[..end]);
+    }
+    if column == window.column {
+        return cursor_width;
+    }
+    let after_width = terminal_width(window.after);
+    let rest = column - window.column - 1;
+    if rest >= after_width {
+        return terminal_width(value);
+    }
+    let end = text_position(window.after, 0, rest);
+    cursor_width + terminal_width(&window.after[..end])
+}
+
+/// 光标处的可见窗口：光标前可见文本、光标后可见文本、光标在窗口内的列。
+pub(crate) fn cursor_window(value: &str, cursor: usize, width: usize) -> CursorWindow<'_> {
+    let cursor = cursor.min(value.len());
+    let before = &value[..cursor];
+    let after = &value[cursor..];
+    let available = width.saturating_sub(terminal_width(CURSOR_MARKER));
+    let after_width = terminal_width(after).min(available / 2);
+    let before_width = available.saturating_sub(after_width);
+    let (start, column) = take_before(before, before_width);
+    let after_end = take_after(after, after_width);
+    CursorWindow {
+        before: &before[start..],
+        after: &after[..after_end],
+        column,
+    }
+}
+
+/// 从末尾向前取不超过 `columns` 列的片段：起始字节和列数。
+fn take_before(text: &str, columns: usize) -> (usize, usize) {
+    let mut start = text.len();
+    let mut used = 0_usize;
+    for (index, character) in text.char_indices().rev() {
+        let width = character_width(character);
+        if used.saturating_add(width) > columns {
+            break;
+        }
+        used = used.saturating_add(width);
+        start = index;
+    }
+    (start, used)
+}
+
+/// 从开头向后取不超过 `columns` 列的片段：结束字节。
+fn take_after(text: &str, columns: usize) -> usize {
+    let mut end = 0_usize;
+    let mut used = 0_usize;
+    for (index, character) in text.char_indices() {
+        let width = character_width(character);
+        if used.saturating_add(width) > columns {
+            break;
+        }
+        used = used.saturating_add(width);
+        end = index + character.len_utf8();
+    }
+    end
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EditInput {
     value: String,
@@ -98,10 +213,6 @@ impl EditInput {
         self.cursor
     }
 
-    pub(crate) fn cursor_width(&self) -> usize {
-        terminal_width(&self.value[..self.cursor])
-    }
-
     pub(crate) fn mode(&self) -> EditMode {
         self.mode
     }
@@ -109,6 +220,14 @@ impl EditInput {
     pub(crate) fn place_cursor(&mut self, column: usize) {
         self.cursor = text_position(&self.value, 0, column);
         self.mode = EditMode::Insert;
+    }
+
+    /// 把字段内的可见列换算成整个值的列；`width` 为渲染时传入的窗口宽度。
+    pub(crate) fn visible_column(&self, width: usize, column: usize) -> usize {
+        if self.mode == EditMode::Replace {
+            return column;
+        }
+        visible_column(&self.value, self.cursor, width, column)
     }
 
     pub(crate) fn confirmed_value(self) -> String {
@@ -349,15 +468,23 @@ impl BodyValueEditor {
     }
 
     pub(crate) fn position(&self) -> (usize, usize) {
-        let before = &self.document[..self.span.start];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count();
-        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-        (line, terminal_width(&before[line_start..]))
+        cursor_row_column(&self.document, self.span.start)
+    }
+
+    /// 值在预览中占用的列数：值宽度加光标标记。
+    pub(crate) fn display_width(&self) -> usize {
+        terminal_width(self.input.value()).max(1)
+            + usize::from(self.input.mode() == EditMode::Insert)
     }
 }
 
 pub(crate) fn terminal_width(value: &str) -> usize {
     Line::from(value).width()
+}
+
+fn character_width(character: char) -> usize {
+    let mut encoded = [0; 4];
+    terminal_width(character.encode_utf8(&mut encoded))
 }
 
 pub(crate) fn text_position(value: &str, line: usize, column: usize) -> usize {
@@ -373,12 +500,11 @@ pub(crate) fn text_position(value: &str, line: usize, column: usize) -> usize {
     let line = &value[line_start..line_end];
     let mut width = 0usize;
     for (index, character) in line.char_indices() {
-        let mut encoded = [0; 4];
-        let character_width = terminal_width(character.encode_utf8(&mut encoded));
-        if width.saturating_add(character_width) > column {
+        let columns = character_width(character);
+        if width.saturating_add(columns) > column {
             return line_start + index;
         }
-        width = width.saturating_add(character_width);
+        width = width.saturating_add(columns);
     }
     line_end
 }

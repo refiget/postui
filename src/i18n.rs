@@ -293,6 +293,7 @@ impl UiText {
             Context::Help => &[Up, Down, Back],
             Context::Menu => &[Up, Down, Activate, Back, Help],
             Context::Variables => &[Up, Down, Activate, Back, Help],
+            Context::Extracts => &[Up, Down, ReorderUp, ReorderDown, Back, Help],
             Context::Headers => &[Activate, Add, Delete, Toggle, NextTab, FocusNext, Help],
             Context::Params => &[Activate, Add, Delete, NextTab, FocusNext, Help],
             Context::Response => &[
@@ -334,6 +335,21 @@ impl UiText {
             Language::English => format!("{count} field(s) failed"),
             Language::Chinese => format!("{count} 个字段提取失败"),
         }
+    }
+
+    pub(crate) fn response_extracted(self, count: usize) -> String {
+        match self.language {
+            Language::English => format!("Extracted {count} variable(s)"),
+            Language::Chinese => format!("已提取 {count} 个变量"),
+        }
+    }
+
+    pub(crate) fn response_extract_missing(self) -> &'static str {
+        self.pick("No extraction configured", "当前请求未配置提取变量")
+    }
+
+    pub(crate) fn response_extract_unavailable(self) -> &'static str {
+        self.pick("Nothing to extract", "无可提取内容")
     }
 
     pub(crate) fn request_in_progress(self) -> &'static str {
@@ -486,6 +502,34 @@ impl UiText {
 
     pub(crate) fn response_copy_headers(self) -> &'static str {
         self.pick("Copy headers", "复制响应头")
+    }
+
+    pub(crate) fn response_extract(self) -> &'static str {
+        self.pick("Extract", "提取变量")
+    }
+
+    pub(crate) fn extracts(self) -> &'static str {
+        self.pick("Extracts", "提取顺序")
+    }
+
+    pub(crate) fn extract_order(self) -> &'static str {
+        self.pick("Order", "顺序")
+    }
+
+    pub(crate) fn extract_variable(self) -> &'static str {
+        self.pick("Variable", "变量")
+    }
+
+    pub(crate) fn extract_path(self) -> &'static str {
+        self.pick("Path", "路径")
+    }
+
+    pub(crate) fn no_extracts(self) -> &'static str {
+        self.pick("Extracts: empty", "提取规则：空")
+    }
+
+    pub(crate) fn extract_order_updated(self) -> &'static str {
+        self.pick("Order updated", "顺序已调整")
     }
 
     pub(crate) fn response_show_raw(self) -> &'static str {

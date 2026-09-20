@@ -1,27 +1,21 @@
 use super::{
     TABLE_COLUMN_SPACING, TABLE_HIGHLIGHT_WIDTH, contains,
-    layout::{ScrollAreas, inner_scroll_areas},
+    layout::{ListPageLayout, list_page_layout},
     widgets::{
-        constraint_length, draw_scrollbar, edit_input_text_style, editor_view, label_style,
-        panel_block, scrollbar_offset_from_drag, scrollbar_offset_from_track,
-        scrollbar_track_state, section_style, truncate_line,
+        constraint_length, draw_scrollbar, edit_input_text_style, editor_view,
+        handle_list_scroll_mouse, label_style, panel_block, section_style, styled_list_table,
+        truncate_line,
     },
 };
 use crate::{app::App, highlight};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Rect},
     style::Style,
     text::Line,
-    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
+    widgets::{Cell, Paragraph, Row, Table, TableState},
 };
-#[derive(Debug, Clone, Copy)]
-struct VariablesLayout {
-    area: Rect,
-    table_header: Rect,
-    rows: ScrollAreas,
-}
 
 pub(super) fn draw_variables_page(
     frame: &mut Frame<'_>,
@@ -29,7 +23,7 @@ pub(super) fn draw_variables_page(
     page: &crate::app::VariablesPage,
     area: Rect,
 ) {
-    let layout = variables_page_layout(area);
+    let layout = list_page_layout(area);
     if layout.area.is_empty() {
         return;
     }
@@ -42,24 +36,11 @@ pub(super) fn draw_variables_page(
     draw_variables_table(frame, app, page, layout);
 }
 
-fn variables_page_layout(area: Rect) -> VariablesLayout {
-    let inner = area.inner(Margin::new(u16::from(area.width >= 48) + 1, 1));
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-    VariablesLayout {
-        area,
-        table_header: sections[0],
-        rows: inner_scroll_areas(sections[1]),
-    }
-}
-
 fn draw_variables_table(
     frame: &mut Frame<'_>,
     app: &App,
     page: &crate::app::VariablesPage,
-    layout: VariablesLayout,
+    layout: ListPageLayout,
 ) {
     let theme = &app.global_config.theme;
     let text = app.text();
@@ -73,12 +54,10 @@ fn draw_variables_table(
     ])
     .style(section_style(theme));
     frame.render_widget(
-        Table::new(Vec::<Row<'static>>::new(), widths.as_slice())
-            .header(header)
-            .column_spacing(TABLE_COLUMN_SPACING)
-            .highlight_symbol("▸ ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .style(Style::default().bg(theme.surface).fg(theme.text)),
+        styled_list_table(
+            Table::new(Vec::<Row<'static>>::new(), widths.as_slice()).header(header),
+            theme,
+        ),
         layout.table_header,
     );
 
@@ -138,12 +117,11 @@ fn draw_variables_table(
                 .style(Style::default().fg(theme.text))
             })
             .collect::<Vec<_>>();
-        let table = Table::new(rows, widths.as_slice())
-            .column_spacing(TABLE_COLUMN_SPACING)
-            .cell_highlight_style(super::focus::selection_style(theme, true))
-            .highlight_symbol("▸ ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .style(Style::default().bg(theme.surface).fg(theme.text));
+        let table = styled_list_table(
+            Table::new(rows, widths.as_slice())
+                .cell_highlight_style(super::focus::selection_style(theme, true)),
+            theme,
+        );
         let mut state = TableState::default();
         state.select(
             (offset..offset.saturating_add(visible))
@@ -196,118 +174,52 @@ pub(super) fn handle_variables_mouse(
     else {
         return;
     };
-    let layout = variables_page_layout(area);
+    let layout = list_page_layout(area);
     if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) && editing {
         app.confirm_active_input();
     }
-    match event.kind {
-        MouseEventKind::Down(MouseButton::Left)
-            if contains(layout.rows.scrollbar, event.column, event.row) =>
-        {
-            click_variables_scrollbar(app, event.row, layout);
-        }
-        MouseEventKind::Drag(MouseButton::Left)
-            if app
-                .view
-                .variables
-                .as_ref()
-                .is_some_and(|page| page.scroll.drag_anchor.is_some()) =>
-        {
-            drag_variables_scrollbar(app, event.row, layout);
-        }
-        MouseEventKind::Down(MouseButton::Left) => {
-            if !contains(layout.rows.content, event.column, event.row) {
-                app.cancel_variable_edit();
-                return;
-            }
-
-            let visible = usize::from(layout.rows.content.height);
-            let offset = app
-                .view
-                .variables
-                .as_ref()
-                .map_or(0, |page| page.scroll.offset(row_count, visible));
-            let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
-            if index >= row_count {
-                app.cancel_variable_edit();
-                return;
-            }
-
-            let widths = variable_table_widths(layout.rows.content.width);
-            let name_width = constraint_length(widths[0]);
-            let value_start = layout
-                .rows
-                .content
-                .x
-                .saturating_add(TABLE_HIGHLIGHT_WIDTH)
-                .saturating_add(name_width.saturating_add(TABLE_COLUMN_SPACING));
-            let value_end =
-                layout.rows.content.right().saturating_sub(
-                    constraint_length(widths[2]).saturating_add(TABLE_COLUMN_SPACING),
-                );
-            let edit = event.column >= value_start && event.column < value_end;
-            let cursor =
-                (edit && is_double).then(|| usize::from(event.column.saturating_sub(value_start)));
-            app.click_variable_row(index, edit, cursor);
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            if contains(layout.rows.content, event.column, event.row) =>
-        {
-            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                -1
-            } else {
-                1
-            };
-            if let Some(page) = app.view.variables.as_mut() {
-                page.scroll.move_by(
-                    direction,
-                    row_count,
-                    usize::from(layout.rows.content.height),
-                );
-            }
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            if contains(layout.rows.scrollbar, event.column, event.row) =>
-        {
-            click_variables_scrollbar(app, event.row, layout);
-        }
-        _ => {}
+    if app
+        .view
+        .variables
+        .as_mut()
+        .is_some_and(|page| handle_list_scroll_mouse(&mut page.scroll, event, layout, row_count))
+    {
+        return;
     }
-}
+    if !matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return;
+    }
+    if !contains(layout.rows.content, event.column, event.row) {
+        app.cancel_variable_edit();
+        return;
+    }
 
-fn click_variables_scrollbar(app: &mut App, row: u16, layout: VariablesLayout) {
     let visible = usize::from(layout.rows.content.height);
-    let Some(page) = app.view.variables.as_ref() else {
-        return;
-    };
-    let count = page.rows.len();
-    if count == 0 || visible == 0 {
+    let offset = app
+        .view
+        .variables
+        .as_ref()
+        .map_or(0, |page| page.scroll.offset(row_count, visible));
+    let index = offset.saturating_add(usize::from(event.row - layout.rows.content.y));
+    if index >= row_count {
+        app.cancel_variable_edit();
         return;
     }
-    let offset = page.scroll.offset(count, visible);
-    let Some(bar) = scrollbar_track_state(layout.rows.scrollbar, count, visible, offset) else {
-        return;
-    };
-    let target = scrollbar_offset_from_track(&bar, row);
-    if let Some(page) = app.view.variables.as_mut() {
-        page.scroll.set_offset(target, count, visible);
-        page.scroll.drag_anchor = Some((row, target));
-    }
-}
 
-fn drag_variables_scrollbar(app: &mut App, row: u16, layout: VariablesLayout) {
-    let visible = usize::from(layout.rows.content.height);
-    let Some(page) = app.view.variables.as_mut() else {
-        return;
-    };
-    let count = page.rows.len();
-    let offset = page.scroll.offset(count, visible);
-    let Some((anchor_row, anchor_offset)) = page.scroll.drag_anchor else {
-        return;
-    };
-    let Some(bar) = scrollbar_track_state(layout.rows.scrollbar, count, visible, offset) else {
-        return;
-    };
-    let target = scrollbar_offset_from_drag(&bar, anchor_row, anchor_offset, row);
-    page.scroll.set_offset(target, count, visible);
+    let widths = variable_table_widths(layout.rows.content.width);
+    let name_width = constraint_length(widths[0]);
+    let value_start = layout
+        .rows
+        .content
+        .x
+        .saturating_add(TABLE_HIGHLIGHT_WIDTH)
+        .saturating_add(name_width.saturating_add(TABLE_COLUMN_SPACING));
+    let value_end = layout
+        .rows
+        .content
+        .right()
+        .saturating_sub(constraint_length(widths[2]).saturating_add(TABLE_COLUMN_SPACING));
+    let edit = event.column >= value_start && event.column < value_end;
+    let cursor = (edit && is_double).then(|| usize::from(event.column.saturating_sub(value_start)));
+    app.click_variable_row(index, edit, cursor);
 }

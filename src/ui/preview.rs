@@ -3,8 +3,8 @@ use super::{
     inline_editor::draw_inline_editor,
     temporary_variables::draw_temporary_variables,
     widgets::{
-        edit_input_style, editor_view_with_cursor, label_style, method_style, panel_block,
-        section_style, truncate_line,
+        coordinate, edit_input_style, editor_view_with_cursor, label_style, method_style,
+        panel_block, place_cursor, section_style, truncate_line,
     },
 };
 use crate::{
@@ -237,11 +237,9 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let scroll = usize::from(app.view.preview.scroll.offset());
         if editor_line >= scroll && editor_line < scroll + usize::from(area.height) {
             let input_area = Rect::new(
-                area.x
-                    .saturating_add(u16::try_from(editor_column).unwrap_or(u16::MAX)),
+                area.x.saturating_add(coordinate(editor_column)),
                 area.y.saturating_add((editor_line - scroll) as u16),
-                u16::try_from(crate::editor::terminal_width(editor.input.value()).max(1))
-                    .unwrap_or(u16::MAX),
+                coordinate(editor.display_width()),
                 1,
             )
             .intersection(area);
@@ -258,13 +256,7 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     input_area,
                 );
                 if let Some(cursor_width) = cursor_width {
-                    frame.set_cursor_position((
-                        input_area
-                            .x
-                            .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
-                            .min(input_area.right().saturating_sub(1)),
-                        input_area.y,
-                    ));
+                    place_cursor(frame, input_area, cursor_width, 0);
                 }
             }
         }
@@ -272,7 +264,7 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if let Some(editor) = app.file_editor() {
         let scroll = usize::from(app.view.preview.scroll.offset());
         if editor.line >= scroll && editor.line < scroll + usize::from(area.height) {
-            let editor_column = u16::try_from(editor.column).unwrap_or(u16::MAX);
+            let editor_column = coordinate(editor.column);
             let input_area = Rect::new(
                 area.x.saturating_add(editor_column),
                 area.y.saturating_add((editor.line - scroll) as u16),
@@ -293,13 +285,7 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     input_area,
                 );
                 if let Some(cursor_width) = cursor_width {
-                    frame.set_cursor_position((
-                        input_area
-                            .x
-                            .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
-                            .min(input_area.right().saturating_sub(1)),
-                        input_area.y,
-                    ));
+                    place_cursor(frame, input_area, cursor_width, 0);
                 }
             }
         }

@@ -1,8 +1,8 @@
 use super::{
     TABLE_COLUMN_SPACING,
     widgets::{
-        edit_input_style, edit_input_text_style, editor_view, editor_view_with_cursor, label_style,
-        section_style, truncate_line,
+        coordinate, edit_input_style, edit_input_text_style, editor_view, editor_view_with_cursor,
+        label_style, place_cursor, section_style, styled_list_table, truncate_line,
     },
 };
 use crate::{app::App, highlight};
@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
+    widgets::{Cell, Paragraph, Row, Table, TableState},
 };
 
 pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -91,13 +91,12 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
             )),
         ])
     });
-    let table = Table::new(table_rows, widths)
-        .header(header)
-        .column_spacing(TABLE_COLUMN_SPACING)
-        .cell_highlight_style(super::focus::selection_style(theme, true))
-        .highlight_symbol("▸ ")
-        .highlight_spacing(HighlightSpacing::Always)
-        .style(Style::default().bg(theme.surface).fg(theme.text));
+    let table = styled_list_table(
+        Table::new(table_rows, widths)
+            .header(header)
+            .cell_highlight_style(super::focus::selection_style(theme, true)),
+        theme,
+    );
     let selected = app.selected_temporary_variable();
     let mut state = TableState::default().with_selected(selected);
     if editor.is_some_and(|editor| editor.input.mode() == crate::editor::EditMode::Replace) {
@@ -125,7 +124,7 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
         table_area
             .y
             .saturating_add(1)
-            .saturating_add(u16::try_from(selected.unwrap_or_default()).unwrap_or(u16::MAX)),
+            .saturating_add(coordinate(selected.unwrap_or_default())),
         table_area
             .width
             .saturating_sub(name_width)
@@ -148,13 +147,7 @@ pub(super) fn draw_temporary_variables(frame: &mut Frame<'_>, area: Rect, app: &
             input_area,
         );
         if let Some(cursor_width) = cursor_width {
-            frame.set_cursor_position((
-                input_area
-                    .x
-                    .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX))
-                    .min(input_area.right().saturating_sub(1)),
-                input_area.y,
-            ));
+            place_cursor(frame, input_area, cursor_width, 0);
         }
     }
 }

@@ -3,6 +3,7 @@ use super::{
     contains,
     curl_import::{CurlImportLayout, compact_field_label_width, curl_import_layout},
     dialog::configuration_menu_area,
+    extracts::handle_extracts_mouse,
     help_layout,
     inline_editor::{
         drag_inline_editor_scrollbar, handle_inline_editor_click, place_inline_editor_cursor,
@@ -16,6 +17,7 @@ use super::{
     response_toolbar::response_menu_area,
     screen_layout_for_app,
     variables::handle_variables_mouse,
+    widgets::coordinate,
 };
 use crate::app::{
     App, CurlImportFocus, Dialog, Focus, MainButton, PreviewAction, PreviewTab, RequestStatus,
@@ -54,6 +56,10 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     {
         return;
     }
+    if app.view.extracts.is_some() {
+        handle_extracts_mouse(app, event, areas.response);
+        return;
+    }
     if app.view.variables.is_some() {
         let is_double = matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
             && app.view.clicks.register(event.column, event.row);
@@ -63,6 +69,7 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     if app.view.curl_import.is_some() {
         let layout = curl_import_layout(areas.response);
         if matches!(app.view.dialog, Some(Dialog::Configurations(_))) {
+            handle_curl_workspace_button(app, event, layout);
             handle_configuration_mouse(app, event, area, areas, layout.workspace, Some(layout));
         } else {
             handle_curl_import_mouse(app, event, layout);
@@ -71,6 +78,12 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
     }
     if matches!(app.view.dialog, Some(Dialog::Configurations(_))) {
         handle_configuration_mouse(app, event, area, areas, areas.workspace_selector, None);
+        if let Some(MainButton::Workspace) = clicked_button {
+            handle_main_button_click(app, MainButton::Workspace);
+        }
+        return;
+    }
+    if handle_response_menu_mouse(app, event, areas) {
         return;
     }
     if let Some(button) = clicked_button {
@@ -128,9 +141,6 @@ pub(crate) fn handle_mouse(app: &mut App, event: MouseEvent, area: Rect) {
                 "处理鼠标滚动"
             );
             handle_scroll(app, event.column, event.row, areas, direction);
-        }
-        MouseEventKind::Moved if app.view.response.menu.is_open() => {
-            update_response_hover(app, event.column, event.row, areas);
         }
         _ => {}
     }
@@ -194,7 +204,7 @@ fn handle_main_button_click(app: &mut App, button: MainButton) {
         }
         MainButton::Workspace => {
             app.view.focus = Focus::WorkspaceButton;
-            app.open_configurations();
+            app.toggle_configurations();
         }
         MainButton::Variables => {
             app.view.focus = Focus::Variables;
@@ -210,7 +220,7 @@ fn handle_main_button_click(app: &mut App, button: MainButton) {
         }
         MainButton::ResponseMenu => {
             app.view.focus = Focus::ResponseActions;
-            app.open_response_menu();
+            app.toggle_response_menu();
         }
         MainButton::ResponseZoom => {
             app.view.focus = Focus::ResponseZoom;
@@ -240,6 +250,10 @@ impl SearchTarget {
         }
     }
 
+    fn input_width(self, areas: UiLayout) -> u16 {
+        self.area(areas).width.saturating_sub(self.prefix_width())
+    }
+
     fn input_mut(self, app: &mut App) -> Option<&mut crate::editor::EditInput> {
         match self {
             Self::Requests => app.view.requests.search.as_mut(),
@@ -263,8 +277,9 @@ fn handle_search_mouse(
                 .column
                 .saturating_sub(search_area.x.saturating_add(target.prefix_width())),
         );
+        let width = usize::from(target.input_width(areas));
         if let Some(input) = target.input_mut(app) {
-            input.place_cursor(column);
+            input.place_cursor(input.visible_column(width, column));
         }
         return true;
     }
@@ -280,19 +295,41 @@ fn handle_search_mouse(
     true
 }
 
-fn update_response_hover(app: &mut App, column: u16, row: u16, areas: UiLayout) {
-    let content =
-        response_menu_area(areas.response, areas.response_menu_button).inner(Margin::new(1, 1));
-    if !contains(content, column, row) {
-        return;
+/// 响应操作菜单的鼠标处理；返回 true 表示事件已由菜单处理。
+fn handle_response_menu_mouse(app: &mut App, event: MouseEvent, areas: UiLayout) -> bool {
+    if !app.view.response.menu.is_open() {
+        return false;
     }
-
-    let index = usize::from(row.saturating_sub(content.y));
-    if index < ResponseMenuAction::all().len() {
-        app.view
-            .response
-            .menu
-            .select(index, ResponseMenuAction::all().len());
+    let trigger = areas.response_menu_button;
+    // 触发按钮的左键在释放时确认，由按钮自身处理。
+    if contains(trigger, event.column, event.row)
+        || !matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Moved
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+        )
+    {
+        return false;
+    }
+    let menu = response_menu_area(areas.response, trigger);
+    let item_count = ResponseMenuAction::all().len();
+    match app
+        .view
+        .response
+        .menu
+        .handle_mouse(event, trigger, menu, item_count)
+    {
+        tui_assets_rust::DropdownEvent::Selected(index) => {
+            app.view.focus = Focus::ResponseActions;
+            app.choose_response_action(index);
+            true
+        }
+        // 点击菜单外：菜单已关闭，点击继续按内容区域处理。
+        tui_assets_rust::DropdownEvent::Closed => false,
+        // 菜单内的其余事件不再传递给内容区域。
+        _ => contains(menu, event.column, event.row),
     }
 }
 
@@ -311,6 +348,16 @@ fn handle_configuration_mouse(
         return;
     };
     let menu = configuration_menu_area(screen, selector, row_count);
+    // 触发按钮的左键在释放时确认，由按钮自身处理。
+    if contains(selector, event.column, event.row)
+        && !contains(menu, event.column, event.row)
+        && matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        )
+    {
+        return;
+    }
     let dropdown_event = match app.view.dialog.as_mut() {
         Some(Dialog::Configurations(dialog)) => {
             dialog.state.handle_mouse(event, selector, menu, row_count)
@@ -348,6 +395,16 @@ fn handle_configuration_mouse(
         }
         tui_assets_rust::DropdownEvent::None
         | tui_assets_rust::DropdownEvent::SelectionChanged(_) => {}
+    }
+}
+
+/// 下拉菜单打开时，工作区触发按钮的左键仍由该按钮确认。
+fn handle_curl_workspace_button(app: &mut App, event: MouseEvent, layout: CurlImportLayout) {
+    let clicked = app.view.curl_import.as_mut().and_then(|page| {
+        page.handle_button_mouse(event, layout.workspace, Rect::default(), Rect::default())
+    });
+    if let Some(focus) = clicked {
+        app.activate_curl_import(focus);
     }
 }
 
@@ -424,23 +481,40 @@ fn curl_field_position(
         });
     }
     let area = curl_field_area(layout, focus)?;
+    let page = app.view.curl_import.as_ref()?;
+    // 聚焦字段按可见窗口换算光标位置。
+    let place = |position: usize, width: usize| {
+        if page.focused(focus) {
+            crate::editor::visible_column(
+                page.field_value(focus),
+                page.cursor(focus),
+                width,
+                position,
+            )
+        } else {
+            position
+        }
+    };
     if layout.wide() {
         (row >= area.y && row < area.bottom()).then(|| {
+            let line = usize::from(row - area.y);
+            let width = usize::from(area.width).saturating_sub(2);
+            let position = usize::from(column.saturating_sub(area.x.saturating_add(2)));
             (
-                usize::from(row - area.y),
-                usize::from(column.saturating_sub(area.x.saturating_add(2))),
+                line,
+                if line == 0 {
+                    place(position, width)
+                } else {
+                    position
+                },
             )
         })
     } else {
         let label_width = compact_field_label_width(app.text());
-        Some((
-            0,
-            usize::from(column.saturating_sub(
-                area.x.saturating_add(
-                    u16::try_from(label_width.saturating_add(2)).unwrap_or(u16::MAX),
-                ),
-            )),
-        ))
+        let label_cells = coordinate(label_width.saturating_add(2));
+        let position = usize::from(column.saturating_sub(area.x.saturating_add(label_cells)));
+        let width = usize::from(area.width).saturating_sub(label_width.saturating_add(2));
+        Some((0, place(position, width)))
     }
 }
 
@@ -480,21 +554,6 @@ fn handle_click(app: &mut App, column: u16, row: u16, areas: UiLayout, is_double
         app.confirm_active_input();
     }
     focus_panel_at(app, column, row, areas);
-
-    if app.view.response.menu.is_open() {
-        let menu = response_menu_area(areas.response, areas.response_menu_button);
-        let content = menu.inner(Margin::new(1, 1));
-        if contains(content, column, row) {
-            app.view.focus = Focus::ResponseActions;
-            app.choose_response_action(usize::from(row.saturating_sub(content.y)));
-            return;
-        }
-        if contains(areas.response_menu_button, column, row) {
-            app.close_response_menu();
-            return;
-        }
-        app.close_response_menu();
-    }
 
     if contains(areas.request_search, column, row) {
         app.open_request_search();
@@ -590,12 +649,7 @@ fn click_request_list(app: &mut App, column: u16, row: u16, area: Rect, is_doubl
 }
 
 fn handle_scroll(app: &mut App, column: u16, row: u16, areas: UiLayout, direction: isize) {
-    let response_menu = response_menu_area(areas.response, areas.response_menu_button);
-    if app.view.response.menu.is_open() && contains(response_menu, column, row) {
-        app.move_response_menu_selection(direction);
-    } else if contains(areas.request_scrollbar, column, row)
-        || contains(areas.request_list, column, row)
-    {
+    if contains(areas.request_scrollbar, column, row) || contains(areas.request_list, column, row) {
         tracing::trace!(column, row, direction, "滚动左侧接口列表");
         let count = app.visible_request_indices().len();
         app.view

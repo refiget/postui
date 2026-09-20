@@ -14,7 +14,8 @@ pub(super) struct ReloadedWorkspace {
 impl App {
     pub(super) fn has_request_changes(&self) -> bool {
         self.workspace_state.requests.iter().any(|session| {
-            self.request_modified(&session.source.id)
+            session.has_extract_order()
+                || self.request_modified(&session.source.id)
                 || self
                     .baseline_requests
                     .get(&session.source.id)
@@ -59,6 +60,7 @@ impl App {
             let request = source.for_configuration(configuration);
             session.draft = RequestDraft::from(&request);
             session.reset_temporary_variables(&self.baseline_config, configuration, &request);
+            session.set_extract_order(None);
         }
         self.view.preview = PreviewContentState::default();
         self.view.dialog = None;
@@ -81,6 +83,7 @@ impl App {
                 let request = source.for_configuration(&configuration);
                 session.draft = RequestDraft::from(&request);
                 session.reset_temporary_variables(&self.baseline_config, &configuration, &request);
+                session.set_extract_order(None);
             }
         }
         self.config
@@ -109,6 +112,15 @@ impl App {
             configuration_count = self.config.configurations.len(),
             "打开 workspace 配置下拉菜单"
         );
+    }
+
+    /// 触发按钮的行为：已打开时关闭，否则打开。
+    pub(crate) fn toggle_configurations(&mut self) {
+        if matches!(self.view.dialog, Some(Dialog::Configurations(_))) {
+            self.close_dialog();
+        } else {
+            self.open_configurations();
+        }
     }
 
     pub(crate) fn switch_configuration(&mut self, configuration: &str) {

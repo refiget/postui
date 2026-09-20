@@ -155,9 +155,12 @@ Headers are mappings. A value is a string or a non-empty list of strings.
 Multipart file entries use `field`, `path`, optional `filename`, and optional
 `content_type`. Relative paths use `directories.uploads`.
 
-`extracts` run for JSON responses with HTTP status below 400. Paths support dot
-segments, array indexes, and JSON Pointer. Extracted values update runtime
-variables.
+`extracts` run for JSON responses with HTTP status below 400, in list order.
+Paths support dot segments, array indexes, and JSON Pointer. Extracted values
+update runtime variables. The response action `Extract` applies the same
+extraction to the current response and reports the extracted and failed counts.
+The extraction order page `e` lists the effective rules of the current request
+and adjusts their order for the current session.
 
 ## User settings
 

@@ -11,6 +11,7 @@ use std::{
 static NEXT_RESPONSE_ID: AtomicU64 = AtomicU64::new(1);
 
 use crate::{
+    config::ResponseExtract,
     http::{self, HttpClient, HttpError, RequestOptions, ResponseData},
     response_document::ResponseDocument,
     template::ResolvedRequest,
@@ -144,7 +145,7 @@ impl RequestExecutor {
                             let queue_us = queued.elapsed().as_micros() as u64;
                             let _permit = permit;
                             let (extracted_variables, extraction_failure_count) =
-                                extract_response_variables(&request, &response);
+                                extract_response_variables(&request.extracts, &response);
                             let extraction_us = started.elapsed().as_micros() as u64;
                             let document_started = std::time::Instant::now();
                             let document = ResponseDocument::new(
@@ -217,11 +218,11 @@ impl Drop for RequestExecutor {
     }
 }
 
-fn extract_response_variables(
-    request: &ResolvedRequest,
+pub(crate) fn extract_response_variables(
+    extracts: &[ResponseExtract],
     response: &ResponseData,
 ) -> (Vec<(String, String)>, usize) {
-    if response.status >= 400 || request.extracts.is_empty() {
+    if response.status >= 400 || extracts.is_empty() {
         return (Vec::new(), 0);
     }
 
@@ -229,12 +230,12 @@ fn extract_response_variables(
         Ok(root) => root,
         Err(error) => {
             tracing::debug!(error = %error, "响应不是有效 JSON，无法提取字段");
-            return (Vec::new(), request.extracts.len());
+            return (Vec::new(), extracts.len());
         }
     };
     let mut values = Vec::new();
     let mut failure_count = 0;
-    for extract in &request.extracts {
+    for extract in extracts {
         match crate::template::extract_json_value(&root, &extract.path) {
             Ok(value) => {
                 tracing::debug!(

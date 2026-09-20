@@ -173,6 +173,7 @@ fn response_action_symbol(action: ResponseMenuAction) -> &'static str {
     match action {
         ResponseMenuAction::Download => "↓",
         ResponseMenuAction::CopyBody | ResponseMenuAction::CopyHeaders => "⧉",
+        ResponseMenuAction::Extract => "⇥",
     }
 }
 
@@ -181,5 +182,6 @@ fn response_action_label(action: ResponseMenuAction, text: crate::i18n::UiText) 
         ResponseMenuAction::Download => text.response_download(),
         ResponseMenuAction::CopyBody => text.response_copy_body(),
         ResponseMenuAction::CopyHeaders => text.response_copy_headers(),
+        ResponseMenuAction::Extract => text.response_extract(),
     }
 }

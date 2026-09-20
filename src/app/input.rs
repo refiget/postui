@@ -14,7 +14,10 @@ impl App {
             self.handle_curl_import_paste(value);
             return;
         }
-        if self.view.prompt.is_some() || self.view.response.menu.is_open() {
+        if self.view.prompt.is_some()
+            || self.view.response.menu.is_open()
+            || self.view.extracts.is_some()
+        {
             return;
         }
         let mut truncated = false;
@@ -130,6 +133,11 @@ impl App {
             return;
         }
 
+        if self.view.extracts.is_some() {
+            self.handle_extracts_key(key);
+            return;
+        }
+
         if self.view.variables.is_some() {
             self.handle_variables_key(key);
             return;
@@ -187,6 +195,7 @@ impl App {
             Some(Command::Reload) => self.reload_workspace(),
             Some(Command::Workspace) => self.open_configurations(),
             Some(Command::Variables) => self.open_variables(),
+            Some(Command::Extracts) => self.open_extracts(),
             Some(Command::ImportCurl) => self.open_curl_import(),
             Some(Command::ResponseMenu) => self.open_response_menu(),
             Some(Command::Search) if self.view.focus.container() == Focus::Response => {
@@ -247,6 +256,9 @@ impl App {
                 Context::Variables
             };
         }
+        if self.view.extracts.is_some() {
+            return Context::Extracts;
+        }
         if let Some(dialog) = &self.view.dialog {
             if dialog.is_editing() {
                 return Context::Editor;
@@ -292,6 +304,7 @@ impl App {
             Focus::Header => {}
             Focus::Requests => {}
             Focus::Variables => self.open_variables(),
+            Focus::Extracts => {}
             Focus::Preview => {
                 if !self.start_temporary_variable_edit() {
                     let action = PreviewAction::Edit(self.view.preview.active_tab);
@@ -320,6 +333,7 @@ impl App {
             Focus::Response => self.scroll_response(direction),
             Focus::WorkspaceButton
             | Focus::Variables
+            | Focus::Extracts
             | Focus::SendButton
             | Focus::ResponseActions
             | Focus::ResponseZoom => {}

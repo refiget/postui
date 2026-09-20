@@ -1,5 +1,6 @@
 use super::{
-    App, CurlImportPage, Dialog, Feedback, PreviewAction, PreviewTab, ResponseTab, VariablesPage,
+    App, CurlImportPage, Dialog, ExtractsPage, Feedback, PreviewAction, PreviewTab, ResponseTab,
+    VariablesPage,
 };
 use crate::editor::{BodyValueEditor, EditInput};
 use crossterm::event::MouseEvent;
@@ -12,6 +13,7 @@ pub(crate) enum Focus {
     Requests,
     WorkspaceButton,
     Variables,
+    Extracts,
     Preview,
     SendButton,
     ResponseActions,
@@ -102,7 +104,9 @@ impl Focus {
     pub(crate) const fn container(self) -> Self {
         match self {
             Self::Header => Self::Header,
-            Self::Requests | Self::WorkspaceButton | Self::Variables => Self::Requests,
+            Self::Requests | Self::WorkspaceButton | Self::Variables | Self::Extracts => {
+                Self::Requests
+            }
             Self::Preview | Self::SendButton => Self::Preview,
             Self::ResponseActions | Self::ResponseZoom | Self::Response => Self::Response,
         }
@@ -376,6 +380,7 @@ pub(crate) struct ViewState {
     pub(crate) preview: PreviewContentState,
     pub(crate) response: ResponseContentState,
     pub(crate) variables: Option<VariablesPage>,
+    pub(crate) extracts: Option<ExtractsPage>,
     pub(crate) curl_import: Option<CurlImportPage>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) prompt: Option<AppPrompt>,
@@ -396,6 +401,7 @@ impl Default for ViewState {
             preview: PreviewContentState::default(),
             response: ResponseContentState::default(),
             variables: None,
+            extracts: None,
             curl_import: None,
             dialog: None,
             prompt: None,
@@ -420,6 +426,9 @@ impl ViewState {
             _ => {}
         }
         if let Some(page) = self.variables.as_mut() {
+            page.scroll.drag_anchor = None;
+        }
+        if let Some(page) = self.extracts.as_mut() {
             page.scroll.drag_anchor = None;
         }
     }
