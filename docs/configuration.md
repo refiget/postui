@@ -52,7 +52,6 @@ variables:
     secret: true
   order_id:
     value:
-    temporary: false
 headers:
   Accept: application/json
 ```
@@ -70,15 +69,8 @@ headers:
 
 Relative upload and download paths are resolved from the project root. Secret
 variables are masked in the variable editor and excluded from debug values.
-Runtime variable edits are not written to YAML.
-
-Structured variables accept `value`, `secret`, and `temporary`. `temporary`
-defaults to `true`. Referenced variables appear in the request Body view when
-the request has no body content. `temporary: false` excludes a variable from
-that area. Temporary values are stored per request and take precedence over the
-current workspace value and the configured default.
-Response extraction writes workspace values. Extracted variables do not appear
-in the temporary variable area unless the request also references them as input.
+Variable values are read from YAML. Structured variables accept `value` and
+`secret`.
 
 ## Scenarios
 
@@ -115,8 +107,7 @@ Merge order:
 
 Lists are replaced as complete values. An empty request header mapping clears
 request-level headers but does not clear inherited workspace or scenario
-headers. Empty `params`, `form`, `files`, or `extracts` lists clear those
-request fields.
+headers. Empty `params`, `form`, or `files` lists clear those request fields.
 
 ## Request files
 
@@ -138,15 +129,12 @@ params:
     value: profile
 body: |
   {"name": "Example"}
-extracts:
-  - variable: updated_id
-    path: data.id
 ```
 
 `url` is required. `method` defaults to `GET`. Standard and syntactically valid
 extension methods are accepted. Supported fields are `name`, `description`,
 `method`, `url`, `timeout`, `skip_ssl_verification`, `headers`, `params`,
-`body`, `form`, `files`, and `extracts`.
+`body`, `form`, and `files`.
 
 Headers are mappings. A value is a string or a non-empty list of strings.
 `params` and `form` preserve entry order and repeated names. Set
@@ -154,13 +142,6 @@ Headers are mappings. A value is a string or a non-empty list of strings.
 
 Multipart file entries use `field`, `path`, optional `filename`, and optional
 `content_type`. Relative paths use `directories.uploads`.
-
-`extracts` run for JSON responses with HTTP status below 400, in list order.
-Paths support dot segments, array indexes, and JSON Pointer. Extracted values
-update runtime variables. The response action `Extract` applies the same
-extraction to the current response and reports the extracted and failed counts.
-The extraction order page `e` lists the effective rules of the current request
-and adjusts their order for the current session.
 
 ## User settings
 

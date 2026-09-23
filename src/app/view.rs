@@ -1,136 +1,45 @@
-use super::{
-    App, CurlImportPage, Dialog, ExtractsPage, Feedback, PreviewAction, PreviewTab, ResponseTab,
-    VariablesPage,
+use super::{CurlImportPage, Dialog, Feedback, PreviewTab, ResponseTab};
+use crate::editor::{EditInput, EditMode, JsonScalarKind, terminal_width};
+use std::{
+    ops::Range,
+    time::{Duration, Instant},
 };
-use crate::editor::{BodyValueEditor, EditInput};
-use crossterm::event::MouseEvent;
-use ratatui::layout::Rect;
-use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
     Header,
     Requests,
-    WorkspaceButton,
-    Variables,
-    Extracts,
     Preview,
-    SendButton,
-    ResponseActions,
-    ResponseZoom,
     Response,
-}
-
-#[repr(usize)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MainButton {
-    NewRequest,
-    Workspace,
-    Variables,
-    Send,
-    ResponseFormat,
-    ResponseMenu,
-    ResponseZoom,
-}
-
-impl MainButton {
-    pub(crate) const COUNT: usize = Self::ResponseZoom as usize + 1;
-
-    const fn index(self) -> usize {
-        self as usize
-    }
-
-    pub(crate) fn enabled(self, app: &App) -> bool {
-        match self {
-            Self::NewRequest
-            | Self::Workspace
-            | Self::Variables
-            | Self::ResponseMenu
-            | Self::ResponseZoom => true,
-            Self::Send => app.can_execute_preview_action(PreviewAction::Send),
-            Self::ResponseFormat => app.current_response().is_some(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MainButtonStates {
-    interactions: [tui_assets_rust::ButtonInteraction; MainButton::COUNT],
-}
-
-impl MainButtonStates {
-    pub(crate) fn handle_mouse(
-        &mut self,
-        button: MainButton,
-        event: MouseEvent,
-        area: Rect,
-        enabled: bool,
-    ) -> tui_assets_rust::ButtonEvent {
-        let interaction = self.interaction_mut(button);
-        interaction.set_enabled(enabled);
-        interaction.handle_mouse(event, area)
-    }
-
-    pub(crate) fn visual_state(
-        &self,
-        button: MainButton,
-        enabled: bool,
-        focused: bool,
-    ) -> tui_assets_rust::ButtonState {
-        let interaction = self.interaction(button);
-        if !enabled {
-            tui_assets_rust::ButtonState::Disabled
-        } else if interaction.pressed() {
-            tui_assets_rust::ButtonState::Pressed
-        } else if focused {
-            tui_assets_rust::ButtonState::Focused
-        } else if interaction.hovered() {
-            tui_assets_rust::ButtonState::Hovered
-        } else {
-            tui_assets_rust::ButtonState::Idle
-        }
-    }
-
-    fn interaction(&self, button: MainButton) -> &tui_assets_rust::ButtonInteraction {
-        &self.interactions[button.index()]
-    }
-
-    fn interaction_mut(&mut self, button: MainButton) -> &mut tui_assets_rust::ButtonInteraction {
-        &mut self.interactions[button.index()]
-    }
-}
-
-impl Focus {
-    pub(crate) const fn container(self) -> Self {
-        match self {
-            Self::Header => Self::Header,
-            Self::Requests | Self::WorkspaceButton | Self::Variables | Self::Extracts => {
-                Self::Requests
-            }
-            Self::Preview | Self::SendButton => Self::Preview,
-            Self::ResponseActions | Self::ResponseZoom | Self::Response => Self::Response,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewMode {
     #[default]
     Standard,
-    ResponseZoom {
-        return_focus: Focus,
-    },
+    ResponseZoom,
+}
+
+/// 键盘和滚轮的滚动步长。
+const SCROLL_STEP: usize = 3;
+
+/// 按方向移动一个滚动步长；方向为 0 时不变。
+fn stepped(offset: usize, direction: isize) -> usize {
+    match direction {
+        value if value < 0 => offset.saturating_sub(SCROLL_STEP),
+        value if value > 0 => offset.saturating_add(SCROLL_STEP),
+        _ => offset,
+    }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ScrollState {
-    offset: u16,
+    offset: usize,
+    viewport: usize,
 }
 
 impl ScrollState {
-    const STEP: u16 = 3;
-
-    pub(crate) fn offset(&self) -> u16 {
+    pub(crate) fn offset(&self) -> usize {
         self.offset
     }
 
@@ -138,13 +47,23 @@ impl ScrollState {
         self.offset = 0;
     }
 
+    /// 记录预览内容区的可见行数。
+    pub(crate) fn set_viewport(&mut self, height: usize) {
+        self.viewport = height;
+    }
+
+    /// 移动视图，使 `line` 行落在可见范围内。
+    pub(crate) fn reveal(&mut self, line: usize) {
+        if line < self.offset {
+            self.offset = line;
+        } else if self.viewport > 0 && line >= self.offset.saturating_add(self.viewport) {
+            self.offset = line.saturating_sub(self.viewport - 1);
+        }
+    }
+
     pub(crate) fn move_by(&mut self, direction: isize) -> bool {
         let previous = self.offset;
-        self.offset = match direction {
-            -1 => self.offset.saturating_sub(Self::STEP),
-            1 => self.offset.saturating_add(Self::STEP),
-            _ => self.offset,
-        };
+        self.offset = stepped(self.offset, direction);
         self.offset != previous
     }
 }
@@ -157,8 +76,6 @@ pub(crate) struct ResponseScrollState {
 }
 
 impl ResponseScrollState {
-    const STEP: usize = 3;
-
     pub(crate) fn offset(&self) -> usize {
         self.offset
     }
@@ -179,12 +96,7 @@ impl ResponseScrollState {
 
     pub(crate) fn move_by(&mut self, direction: isize) -> bool {
         let previous = self.offset;
-        self.offset = match direction {
-            -1 => self.offset.saturating_sub(Self::STEP),
-            1 => self.offset.saturating_add(Self::STEP),
-            _ => self.offset,
-        }
-        .min(self.max_offset);
+        self.offset = stepped(self.offset, direction).min(self.max_offset);
         self.offset != previous
     }
 }
@@ -193,9 +105,9 @@ impl ResponseScrollState {
 pub(crate) struct PreviewContentState {
     pub(crate) active_tab: PreviewTab,
     pub(crate) scroll: ScrollState,
-    pub(crate) editor: Option<BodyValueEditor>,
-    pub(crate) file_editor: Option<FileValueEditor>,
-    pub(super) temporary_variables: TemporaryVariablesView,
+    /// 内容页签里选中字段的下标。
+    pub(crate) field_cursor: usize,
+    pub(crate) editor: Option<ContentEditor>,
 }
 
 #[derive(Debug)]
@@ -205,70 +117,72 @@ pub(crate) enum AppPrompt {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileValueEditor {
-    pub(crate) file_index: usize,
+pub(crate) struct ContentEditor {
+    pub(crate) target: ContentTarget,
+    /// 渲染行号和值起始列。
     pub(crate) line: usize,
     pub(crate) column: usize,
     pub(crate) input: EditInput,
 }
 
+/// 内容页签里正在编辑的对象。
 #[derive(Debug)]
-pub(crate) struct TemporaryVariableEditor {
-    pub(crate) name: String,
-    pub(crate) input: EditInput,
+pub(crate) enum ContentTarget {
+    /// 请求体 JSON 里的值：渲染文本、值的字节范围和类型。
+    Body {
+        document: String,
+        span: Range<usize>,
+        kind: JsonScalarKind,
+    },
+    Form(usize),
+    File(usize),
 }
 
-#[derive(Debug, Default)]
-pub(super) struct TemporaryVariablesView {
-    selected: usize,
-    editor: Option<TemporaryVariableEditor>,
+/// 内容页签里可编辑字段的位置：内容行号和值起始列。
+#[derive(Debug, Clone)]
+pub(crate) struct ContentField {
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+    pub(crate) source: ContentFieldSource,
 }
 
-impl TemporaryVariablesView {
-    pub(super) fn selected(&self, count: usize) -> Option<usize> {
-        (count > 0).then(|| self.selected.min(count - 1))
+/// 内容页签里可编辑字段的来源。
+#[derive(Debug, Clone)]
+pub(crate) enum ContentFieldSource {
+    /// 请求体 JSON 里的值；编辑时按渲染位置重新定位。
+    Body,
+    Form(usize),
+    File(usize),
+}
+
+impl ContentEditor {
+    /// 请求体 JSON 编辑后的渲染文本；编辑其他对象时为 None。
+    pub(crate) fn display_document(&self) -> Option<String> {
+        let ContentTarget::Body { document, span, .. } = &self.target else {
+            return None;
+        };
+        let mut document = document.clone();
+        document.replace_range(span.clone(), self.input.value());
+        Some(document)
     }
 
-    pub(super) fn select(&mut self, index: usize, count: usize) -> bool {
-        if index >= count {
+    /// 值加光标标记占用的列数。
+    pub(crate) fn display_width(&self) -> usize {
+        terminal_width(self.input.value()).max(1)
+            + usize::from(self.input.mode() == EditMode::Insert)
+    }
+
+    /// 点击位置是否落在编辑器覆盖的值范围内。
+    pub(crate) fn covers(&self, line: usize, column: usize) -> bool {
+        if self.line != line || column < self.column {
             return false;
         }
-        self.selected = index;
-        true
-    }
-
-    pub(super) fn move_by(&mut self, direction: isize, count: usize) {
-        let Some(selected) = self.selected(count) else {
-            return;
-        };
-        self.selected = match direction {
-            value if value < 0 => selected.saturating_sub(1),
-            value if value > 0 => (selected + 1).min(count - 1),
-            _ => selected,
-        };
-    }
-
-    pub(super) fn editor(&self) -> Option<&TemporaryVariableEditor> {
-        self.editor.as_ref()
-    }
-
-    pub(super) fn editor_mut(&mut self) -> Option<&mut TemporaryVariableEditor> {
-        self.editor.as_mut()
-    }
-
-    pub(super) fn start_editing(&mut self, name: String, value: String) {
-        self.editor = Some(TemporaryVariableEditor {
-            name,
-            input: EditInput::new(value),
-        });
-    }
-
-    pub(super) fn finish_editing(&mut self) -> Option<TemporaryVariableEditor> {
-        self.editor.take()
-    }
-
-    pub(super) fn cancel_editing(&mut self) {
-        self.editor = None;
+        match self.target {
+            // JSON 值右侧的文本属于渲染文档，光标只落在值本身。
+            ContentTarget::Body { .. } => column < self.column.saturating_add(self.display_width()),
+            // 表单字段和文件路径的值覆盖到内容区右边界。
+            _ => true,
+        }
     }
 }
 
@@ -277,9 +191,34 @@ pub(crate) struct ResponseContentState {
     pub(crate) scroll: ResponseScrollState,
     pub(crate) menu: tui_assets_rust::DropdownState,
     pub(crate) active_tab: ResponseTab,
+    pub(crate) selection: Option<ResponseSelection>,
     pub(crate) search: Option<EditInput>,
     pub(crate) search_query: String,
     pub(crate) search_match_line: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ResponseTextPoint {
+    pub(crate) line: usize,
+    pub(crate) grapheme: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResponseSelection {
+    pub(crate) anchor: ResponseTextPoint,
+    pub(crate) head: ResponseTextPoint,
+    pub(crate) text: String,
+    pub(crate) dragging: bool,
+}
+
+impl ResponseSelection {
+    pub(crate) fn ordered(&self) -> (ResponseTextPoint, ResponseTextPoint) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -304,8 +243,6 @@ pub(crate) enum ScrollDragTarget {
 }
 
 impl ListScrollState {
-    const STEP: usize = 3;
-
     pub(crate) fn offset(&self, content_length: usize, viewport_length: usize) -> usize {
         self.offset
             .min(content_length.saturating_sub(viewport_length))
@@ -327,12 +264,7 @@ impl ListScrollState {
         viewport_length: usize,
     ) {
         let max_offset = content_length.saturating_sub(viewport_length);
-        self.offset = match direction {
-            value if value < 0 => self.offset.saturating_sub(Self::STEP),
-            value if value > 0 => self.offset.saturating_add(Self::STEP),
-            _ => self.offset,
-        }
-        .min(max_offset);
+        self.offset = stepped(self.offset, direction).min(max_offset);
     }
 }
 
@@ -379,8 +311,6 @@ pub(crate) struct ViewState {
     pub(crate) requests: RequestListState,
     pub(crate) preview: PreviewContentState,
     pub(crate) response: ResponseContentState,
-    pub(crate) variables: Option<VariablesPage>,
-    pub(crate) extracts: Option<ExtractsPage>,
     pub(crate) curl_import: Option<CurlImportPage>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) prompt: Option<AppPrompt>,
@@ -389,7 +319,6 @@ pub(crate) struct ViewState {
     pub(crate) animation_frame: usize,
     pub(crate) clicks: ClickSequence,
     pub(crate) scroll_drag_target: Option<ScrollDragTarget>,
-    pub(crate) main_buttons: MainButtonStates,
 }
 
 impl Default for ViewState {
@@ -400,8 +329,6 @@ impl Default for ViewState {
             requests: RequestListState::default(),
             preview: PreviewContentState::default(),
             response: ResponseContentState::default(),
-            variables: None,
-            extracts: None,
             curl_import: None,
             dialog: None,
             prompt: None,
@@ -410,7 +337,6 @@ impl Default for ViewState {
             animation_frame: 0,
             clicks: ClickSequence::default(),
             scroll_drag_target: None,
-            main_buttons: MainButtonStates::default(),
         }
     }
 }
@@ -420,36 +346,13 @@ impl ViewState {
         self.scroll_drag_target = None;
         self.response.scroll.drag_anchor = None;
         self.requests.scroll.drag_anchor = None;
-        match self.dialog.as_mut() {
-            Some(Dialog::Headers(dialog)) => dialog.scroll.drag_anchor = None,
-            Some(Dialog::Params(dialog)) => dialog.scroll.drag_anchor = None,
-            _ => {}
+        if let Some(table) = self.dialog.as_mut().and_then(Dialog::table_mut) {
+            table.scroll.drag_anchor = None;
         }
-        if let Some(page) = self.variables.as_mut() {
-            page.scroll.drag_anchor = None;
-        }
-        if let Some(page) = self.extracts.as_mut() {
-            page.scroll.drag_anchor = None;
-        }
-    }
-
-    pub(crate) fn is_editing(&self) -> bool {
-        self.preview.is_editing()
-            || self.curl_import.is_some()
-            || self.response.search.is_some()
-            || self.requests.search.is_some()
-            || self
-                .variables
-                .as_ref()
-                .is_some_and(|page| page.editor.is_some())
-            || self.dialog.as_ref().is_some_and(Dialog::is_editing)
     }
 
     pub(crate) fn cancel_active_editors(&mut self) {
         self.preview.cancel_editor();
-        if let Some(page) = self.variables.as_mut() {
-            page.cancel_editor();
-        }
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.cancel_editor();
         }
@@ -458,10 +361,9 @@ impl ViewState {
     pub(super) fn next_focus(&self, reverse: bool) -> Focus {
         let order: &[Focus] = match self.mode {
             ViewMode::Standard => &[Focus::Requests, Focus::Preview, Focus::Response],
-            ViewMode::ResponseZoom { .. } => &[Focus::Response],
+            ViewMode::ResponseZoom => &[Focus::Response],
         };
-        let container = self.focus.container();
-        let Some(index) = order.iter().position(|focus| *focus == container) else {
+        let Some(index) = order.iter().position(|focus| *focus == self.focus) else {
             return Focus::Response;
         };
         let next = if reverse {
@@ -474,15 +376,16 @@ impl ViewState {
 }
 
 impl PreviewContentState {
+    pub(super) fn reset_content(&mut self) {
+        self.scroll.reset();
+        self.field_cursor = 0;
+    }
+
     pub(super) fn is_editing(&self) -> bool {
         self.editor.is_some()
-            || self.file_editor.is_some()
-            || self.temporary_variables.editor().is_some()
     }
 
     pub(super) fn cancel_editor(&mut self) {
         self.editor = None;
-        self.file_editor = None;
-        self.temporary_variables.cancel_editing();
     }
 }

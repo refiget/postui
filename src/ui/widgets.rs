@@ -1,20 +1,16 @@
-use super::{TABLE_COLUMN_SPACING, contains, layout::ListPageLayout};
-use crate::{
-    app::{ListScrollState, RequestStatus},
-    http_method,
-};
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use super::TABLE_COLUMN_SPACING;
+use crate::{app::RequestStatus, http_method};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     symbols::{border, scrollbar::VERTICAL},
-    text::{Line, Span},
+    text::Line,
     widgets::{
         Block, Borders, HighlightSpacing, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
     },
 };
-use tui_assets_rust::{Button as AssetButton, ButtonState as FlatButtonState, Theme as AssetTheme};
+use tui_assets_rust::Theme as AssetTheme;
 
 const TABLE_HIGHLIGHT_SYMBOL: &str = "▸ ";
 
@@ -28,89 +24,6 @@ pub(super) fn styled_list_table<'a>(
         .highlight_symbol(TABLE_HIGHLIGHT_SYMBOL)
         .highlight_spacing(HighlightSpacing::Always)
         .style(Style::default().bg(theme.surface).fg(theme.text))
-}
-
-/// 点击列表滚动条：按轨道位置跳转并记录拖拽锚点。
-pub(super) fn click_list_scrollbar(
-    scroll: &mut ListScrollState,
-    row: u16,
-    layout: ListPageLayout,
-    content_length: usize,
-) {
-    let visible = usize::from(layout.rows.content.height);
-    if content_length == 0 || visible == 0 {
-        return;
-    }
-    let offset = scroll.offset(content_length, visible);
-    let Some(track) = scrollbar_track_state(layout.rows.scrollbar, content_length, visible, offset)
-    else {
-        return;
-    };
-    let target = scrollbar_offset_from_track(&track, row);
-    scroll.set_offset(target, content_length, visible);
-    scroll.drag_anchor = Some((row, target));
-}
-
-/// 拖拽列表滚动条。
-pub(super) fn drag_list_scrollbar(
-    scroll: &mut ListScrollState,
-    row: u16,
-    layout: ListPageLayout,
-    content_length: usize,
-) {
-    let visible = usize::from(layout.rows.content.height);
-    let offset = scroll.offset(content_length, visible);
-    let Some((anchor_row, anchor_offset)) = scroll.drag_anchor else {
-        return;
-    };
-    let Some(track) = scrollbar_track_state(layout.rows.scrollbar, content_length, visible, offset)
-    else {
-        return;
-    };
-    let target = scrollbar_offset_from_drag(&track, anchor_row, anchor_offset, row);
-    scroll.set_offset(target, content_length, visible);
-}
-
-/// 列表页的滚动条与滚轮鼠标处理；返回 true 表示事件已处理。
-pub(super) fn handle_list_scroll_mouse(
-    scroll: &mut ListScrollState,
-    event: MouseEvent,
-    layout: ListPageLayout,
-    content_length: usize,
-) -> bool {
-    match event.kind {
-        MouseEventKind::Down(MouseButton::Left)
-            if contains(layout.rows.scrollbar, event.column, event.row) =>
-        {
-            click_list_scrollbar(scroll, event.row, layout, content_length);
-            true
-        }
-        MouseEventKind::Drag(MouseButton::Left) if scroll.drag_anchor.is_some() => {
-            drag_list_scrollbar(scroll, event.row, layout, content_length);
-            true
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let direction = if matches!(event.kind, MouseEventKind::ScrollUp) {
-                -1
-            } else {
-                1
-            };
-            if contains(layout.rows.content, event.column, event.row) {
-                scroll.move_by(
-                    direction,
-                    content_length,
-                    usize::from(layout.rows.content.height),
-                );
-                true
-            } else if contains(layout.rows.scrollbar, event.column, event.row) {
-                click_list_scrollbar(scroll, event.row, layout, content_length);
-                true
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
 }
 
 pub(super) fn constraint_length(constraint: Constraint) -> u16 {
@@ -335,24 +248,6 @@ pub(super) fn panel_block(
     }
 }
 
-pub(super) fn draw_flat_button_colored(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    state: FlatButtonState,
-    color: Color,
-    theme: &crate::settings::UiTheme,
-    alignment: Alignment,
-) {
-    frame.render_widget(
-        AssetButton::new(label, asset_theme(theme))
-            .state(state)
-            .color(color)
-            .alignment(alignment),
-        area,
-    );
-}
-
 pub(super) fn asset_theme(theme: &crate::settings::UiTheme) -> AssetTheme {
     AssetTheme {
         primary: theme.primary,
@@ -399,48 +294,6 @@ pub(super) fn truncate(value: &str, width: usize) -> String {
     }
     result.push('…');
     result
-}
-
-pub(super) fn truncate_line(line: Line<'static>, width: usize) -> Line<'static> {
-    if width == 0 {
-        return Line::default();
-    }
-    if line.width() <= width {
-        return line;
-    }
-
-    let content_width = width.saturating_sub(1);
-    let mut used = 0_usize;
-    let mut spans = Vec::new();
-    let mut ellipsis_style = line
-        .spans
-        .first()
-        .map_or_else(Style::default, |span| span.style);
-
-    for span in line.spans {
-        ellipsis_style = span.style;
-        let mut content = String::new();
-        let mut fits = true;
-        for grapheme in
-            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
-        {
-            let grapheme_width = Line::from(grapheme).width();
-            if used.saturating_add(grapheme_width) > content_width {
-                fits = false;
-                break;
-            }
-            content.push_str(grapheme);
-            used = used.saturating_add(grapheme_width);
-        }
-        if !content.is_empty() {
-            spans.push(Span::styled(content, span.style));
-        }
-        if !fits || used >= content_width {
-            break;
-        }
-    }
-    spans.push(Span::styled("…", ellipsis_style));
-    Line::from(spans)
 }
 
 pub(super) fn editor_view(editor: &crate::editor::EditInput, width: usize) -> String {

@@ -1,6 +1,6 @@
 use super::{
-    ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam, ResponseExtract,
-    VariableDefinition, WorkspaceConfiguration, headers,
+    ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam, VariableDefinition,
+    WorkspaceConfiguration, headers,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,8 +20,6 @@ pub struct VariableDefinitionDocument {
     pub value: Option<Value>,
     #[serde(default)]
     pub secret: bool,
-    #[serde(default = "super::default_temporary_variable")]
-    pub temporary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +47,6 @@ pub struct RequestDocument {
     pub form: Vec<RequestParam>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileUpload>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -93,8 +89,6 @@ pub struct RequestOverrideDocument {
     pub form: Option<Vec<RequestParam>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<FileUpload>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extracts: Option<Vec<ResponseExtract>>,
 }
 
 impl From<&ApiRequest> for RequestDocument {
@@ -115,7 +109,6 @@ impl From<&ApiRequest> for RequestDocument {
             body: body_text(&request.body_parts),
             form: request.form.clone(),
             files: request.files.clone(),
-            extracts: request.extracts.clone(),
         }
     }
 }
@@ -149,14 +142,13 @@ impl From<&WorkspaceConfiguration> for ConfigurationDocument {
 }
 
 fn variable_document(definition: &VariableDefinition) -> Option<RawVariableDefinition> {
-    if !definition.secret && definition.temporary {
+    if !definition.secret {
         return definition.default.clone().map(RawVariableDefinition::Value);
     }
     Some(RawVariableDefinition::Definition(
         VariableDefinitionDocument {
             value: definition.default.clone(),
             secret: definition.secret,
-            temporary: definition.temporary,
         },
     ))
 }
@@ -179,7 +171,6 @@ impl From<&RequestOverride> for RequestOverrideDocument {
                 .map(|parts| body_text(parts).unwrap_or_default()),
             form: request_override.form.clone(),
             files: request_override.files.clone(),
-            extracts: request_override.extracts.clone(),
         }
     }
 }

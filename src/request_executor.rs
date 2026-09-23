@@ -11,7 +11,6 @@ use std::{
 static NEXT_RESPONSE_ID: AtomicU64 = AtomicU64::new(1);
 
 use crate::{
-    config::ResponseExtract,
     http::{self, HttpClient, HttpError, RequestOptions, ResponseData},
     response_document::ResponseDocument,
     template::ResolvedRequest,
@@ -44,8 +43,6 @@ pub enum RequestOutcome {
     Response {
         response: Box<ResponseData>,
         document: ResponseDocument,
-        extracted_variables: Vec<(String, String)>,
-        extraction_failure_count: usize,
     },
     Failed(HttpError),
 }
@@ -141,19 +138,15 @@ impl RequestExecutor {
                         let prepared = tokio::task::spawn_blocking(move || {
                             let span = tracing::debug_span!(target: "postui::perf", "response_prepare", response_id);
                             let _entered = span.enter();
-                            let started = std::time::Instant::now();
                             let queue_us = queued.elapsed().as_micros() as u64;
                             let _permit = permit;
-                            let (extracted_variables, extraction_failure_count) =
-                                extract_response_variables(&request.extracts, &response);
-                            let extraction_us = started.elapsed().as_micros() as u64;
                             let document_started = std::time::Instant::now();
                             let document = ResponseDocument::new(
                                 response.body_bytes.clone(),
                                 &response.headers,
                                 options.max_display_bytes,
                             );
-                            tracing::debug!(target: "postui::perf", queue_us, extraction_us,
+                            tracing::debug!(target: "postui::perf", queue_us,
                                 document_us = document_started.elapsed().as_micros() as u64,
                                 network_ms = response.elapsed_ms as u64,
                                 response_bytes = response.body_bytes.len(),
@@ -163,8 +156,6 @@ impl RequestExecutor {
                             RequestOutcome::Response {
                                 response: Box::new(response),
                                 document,
-                                extracted_variables,
-                                extraction_failure_count,
                             }
                         })
                         .await;
@@ -216,45 +207,4 @@ impl Drop for RequestExecutor {
             runtime.shutdown_background();
         }
     }
-}
-
-pub(crate) fn extract_response_variables(
-    extracts: &[ResponseExtract],
-    response: &ResponseData,
-) -> (Vec<(String, String)>, usize) {
-    if response.status >= 400 || extracts.is_empty() {
-        return (Vec::new(), 0);
-    }
-
-    let root = match serde_json::from_slice::<serde_json::Value>(&response.body_bytes) {
-        Ok(root) => root,
-        Err(error) => {
-            tracing::debug!(error = %error, "响应不是有效 JSON，无法提取字段");
-            return (Vec::new(), extracts.len());
-        }
-    };
-    let mut values = Vec::new();
-    let mut failure_count = 0;
-    for extract in extracts {
-        match crate::template::extract_json_value(&root, &extract.path) {
-            Ok(value) => {
-                tracing::debug!(
-                    variable = %extract.variable,
-                    path = %extract.path,
-                    "响应字段已在 HTTP 工作线程提取"
-                );
-                values.push((extract.variable.clone(), value));
-            }
-            Err(error) => {
-                failure_count += 1;
-                tracing::debug!(
-                    variable = %extract.variable,
-                    path = %extract.path,
-                    error = %error,
-                    "响应字段提取失败"
-                );
-            }
-        }
-    }
-    (values, failure_count)
 }

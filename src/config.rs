@@ -12,6 +12,20 @@ mod headers;
 mod loading;
 mod validation;
 
+/// 工作区配置文件的文件名。
+pub(crate) const WORKSPACE_FILE_NAME: &str = "postui.yaml";
+
+/// 工作区内置场景名。
+pub(crate) const DEFAULT_CONFIGURATION_NAME: &str = "default";
+
+/// 名为 `default` 的空场景集合。
+pub(crate) fn default_configurations() -> BTreeMap<String, WorkspaceConfiguration> {
+    BTreeMap::from([(
+        DEFAULT_CONFIGURATION_NAME.to_string(),
+        WorkspaceConfiguration::default(),
+    )])
+}
+
 pub use documents::{
     ConfigurationDocument, RawVariableDefinition, RequestDocument, RequestOverrideDocument,
     VariableDefinitionDocument,
@@ -59,23 +73,14 @@ impl RequestConfig {
             .map(|value| value.to_string_lossy().into_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "PostUI".to_string());
-        let default_configuration = WorkspaceConfiguration {
-            path: None,
-            variables: BTreeMap::new(),
-            headers: Vec::new(),
-            timeout_seconds: None,
-            skip_ssl_verification: None,
-            request_overrides: BTreeMap::new(),
-        };
-
         Self {
             name,
             file_directory: normalize_path(&project_path.join(default_upload_directory())),
             download_directory: normalize_path(&project_path.join(default_download_directory())),
             headers: Vec::new(),
             variables: BTreeMap::new(),
-            configurations: BTreeMap::from([("default".to_string(), default_configuration)]),
-            default_configuration: "default".to_string(),
+            configurations: default_configurations(),
+            default_configuration: DEFAULT_CONFIGURATION_NAME.to_string(),
             editable_variables: BTreeSet::new(),
             requests: Vec::new(),
             timeout_seconds: default_timeout_seconds(),
@@ -119,12 +124,6 @@ pub struct VariableDefinition {
     pub default: Option<Value>,
     #[serde(default)]
     pub secret: bool,
-    #[serde(default = "default_temporary_variable")]
-    pub temporary: bool,
-}
-
-pub(super) fn default_temporary_variable() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,10 +191,9 @@ pub struct ApiRequest {
     pub query_parts: Vec<DataPart>,
     pub form: Vec<RequestParam>,
     pub files: Vec<FileUpload>,
-    pub extracts: Vec<ResponseExtract>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceConfiguration {
     #[serde(default)]
     pub path: Option<PathBuf>,
@@ -218,7 +216,6 @@ pub struct RequestOverride {
     pub body_parts: Option<Vec<DataPart>>,
     pub form: Option<Vec<RequestParam>>,
     pub files: Option<Vec<FileUpload>>,
-    pub extracts: Option<Vec<ResponseExtract>>,
 }
 
 impl ApiRequest {
@@ -248,7 +245,6 @@ impl RequestOverride {
             && self.body_parts.is_none()
             && self.form.is_none()
             && self.files.is_none()
-            && self.extracts.is_none()
     }
 
     pub fn apply_to(&self, request: &mut ApiRequest) {
@@ -279,9 +275,6 @@ impl RequestOverride {
         if let Some(files) = &self.files {
             request.files = files.clone();
         }
-        if let Some(extracts) = &self.extracts {
-            request.extracts = extracts.clone();
-        }
     }
 }
 
@@ -301,13 +294,6 @@ pub struct FileUpload {
     pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResponseExtract {
-    pub variable: String,
-    pub path: String,
 }
 
 pub fn value_to_string(value: &Value) -> String {

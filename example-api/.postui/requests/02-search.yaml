@@ -8,6 +8,3 @@ params:
     value: "{{search_term}}"
   - name: page
     value: "{{page}}"
-extracts:
-  - variable: search_echo
-    path: data.query.q

@@ -1,23 +1,18 @@
 use super::{
     dialog::draw_configuration_dropdown,
-    widgets::{
-        asset_theme, draw_flat_button_colored, edit_input_text_style, panel_block, place_cursor,
-        section_style,
-    },
+    widgets::{asset_theme, edit_input_text_style, panel_block, place_cursor, section_style},
 };
 use crate::app::{App, CurlImportFocus, Dialog};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use tui_assets_rust::ButtonState as FlatButtonState;
 
 const DETAILS_WIDTH: u16 = 31;
-const IMPORT_WIDTH: u16 = 16;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct CurlImportLayout {
@@ -27,8 +22,6 @@ pub(super) struct CurlImportLayout {
     pub(super) registered_variables: Rect,
     pub(super) command: Rect,
     pub(super) status: Rect,
-    pub(super) confirm: Rect,
-    pub(super) cancel: Rect,
     heading: Rect,
     flow: Rect,
     wide: bool,
@@ -69,7 +62,6 @@ fn wide_layout(area: Rect) -> CurlImportLayout {
     ])
     .spacing(1)
     .split(columns[1]);
-    let actions = action_layout(editor[2]);
     CurlImportLayout {
         heading: fields[0],
         name: value_line(fields[1]),
@@ -83,9 +75,7 @@ fn wide_layout(area: Rect) -> CurlImportLayout {
         ),
         flow: editor[0],
         command: editor[1],
-        status: actions[0],
-        cancel: actions[1],
-        confirm: actions[2],
+        status: editor[2],
         wide: true,
     }
 }
@@ -106,28 +96,15 @@ fn compact_layout(area: Rect) -> CurlImportLayout {
     let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .spacing(2)
         .split(rows[0]);
-    let actions = action_layout(rows[4]);
     CurlImportLayout {
         name: top[0],
         workspace: top[1],
         description: rows[1],
         registered_variables: rows[2],
         command: rows[3],
-        status: actions[0],
-        cancel: actions[1],
-        confirm: actions[2],
+        status: rows[4],
         ..CurlImportLayout::default()
     }
-}
-
-fn action_layout(area: Rect) -> std::rc::Rc<[Rect]> {
-    Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(10),
-        Constraint::Length(IMPORT_WIDTH.min(area.width / 2)),
-    ])
-    .spacing(1)
-    .split(area)
 }
 
 fn value_line(area: Rect) -> Rect {
@@ -141,7 +118,6 @@ pub(super) fn draw_curl_import_page(frame: &mut Frame<'_>, area: Rect, app: &mut
     let Some(page) = app.view.curl_import.as_mut() else {
         return;
     };
-    page.sync_buttons();
     let block = panel_block(format!(" {} ", text.curl_import_title()), area, theme)
         .border_style(Style::default().fg(theme.accent));
     frame.render_widget(block, area);
@@ -167,7 +143,7 @@ pub(super) fn draw_curl_import_page(frame: &mut Frame<'_>, area: Rect, app: &mut
         draw_compact_fields(frame, layout, page, &workspace, text, theme);
     }
     draw_command(frame, layout.command, page, !layout.wide, text, theme);
-    draw_actions(frame, layout, page, text, theme);
+    draw_status(frame, layout.status, page, text, theme);
 
     if let Some(Dialog::Configurations(dialog)) = &mut app.view.dialog {
         draw_configuration_dropdown(
@@ -209,7 +185,7 @@ fn draw_wide_fields(
         layout.workspace,
         text.curl_import_workspace(),
         workspace,
-        page.button_state(CurlImportFocus::Workspace),
+        page.focused(CurlImportFocus::Workspace),
         theme,
     );
     draw_stacked_field(
@@ -325,22 +301,30 @@ fn stacked_workspace(
     area: Rect,
     label: &str,
     workspace: &str,
-    state: FlatButtonState,
+    focused: bool,
     theme: &crate::settings::UiTheme,
 ) {
     frame.render_widget(
-        Paragraph::new(label).style(Style::default().fg(theme.muted)),
+        Paragraph::new(label).style(Style::default().fg(if focused {
+            theme.secondary
+        } else {
+            theme.muted
+        })),
         Rect::new(area.x, area.y.saturating_sub(1), area.width, 1),
     );
-    draw_flat_button_colored(
-        frame,
-        area,
-        &format!("  {workspace}  ▾"),
-        state,
-        theme.secondary,
-        theme,
-        Alignment::Left,
-    );
+    let style = Style::default()
+        .fg(theme.text)
+        .bg(if focused {
+            theme.selection
+        } else {
+            theme.surface
+        })
+        .add_modifier(if focused {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+    frame.render_widget(Paragraph::new(format!("  {workspace}")).style(style), area);
 }
 
 fn draw_compact_fields(
@@ -365,14 +349,14 @@ fn draw_compact_fields(
         width,
         theme,
     );
-    draw_flat_button_colored(
+    inline_workspace(
         frame,
         layout.workspace,
-        &format!("{}: {workspace} ▾", text.curl_import_workspace()),
-        page.button_state(CurlImportFocus::Workspace),
-        theme.secondary,
+        text.curl_import_workspace(),
+        workspace,
+        page.focused(CurlImportFocus::Workspace),
+        width,
         theme,
-        Alignment::Left,
     );
     inline_field(
         frame,
@@ -412,6 +396,33 @@ pub(super) fn compact_field_label_width(text: crate::i18n::UiText) -> usize {
     .map(|label| Line::from(label).width())
     .max()
     .unwrap_or_default()
+}
+
+fn inline_workspace(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    workspace: &str,
+    focused: bool,
+    label_width: usize,
+    theme: &crate::settings::UiTheme,
+) {
+    let padding = " ".repeat(label_width.saturating_sub(Line::from(label).width()));
+    let value_style = if focused {
+        edit_input_text_style(theme.secondary)
+    } else {
+        Style::default().fg(theme.secondary)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{label}{padding}: "),
+                Style::default().fg(theme.secondary),
+            ),
+            Span::styled(workspace.to_string(), value_style),
+        ])),
+        area,
+    );
 }
 
 fn inline_field(
@@ -454,9 +465,9 @@ fn inline_field(
     }
 }
 
-fn draw_actions(
+fn draw_status(
     frame: &mut Frame<'_>,
-    layout: CurlImportLayout,
+    area: Rect,
     page: &crate::app::CurlImportPage,
     text: crate::i18n::UiText,
     theme: &crate::settings::UiTheme,
@@ -468,27 +479,9 @@ fn draw_actions(
             } else {
                 theme.primary
             })),
-            layout.status,
+            area,
         );
     }
-    draw_flat_button_colored(
-        frame,
-        layout.cancel,
-        text.curl_import_cancel(),
-        page.button_state(CurlImportFocus::Cancel),
-        theme.muted,
-        theme,
-        Alignment::Center,
-    );
-    draw_flat_button_colored(
-        frame,
-        layout.confirm,
-        text.curl_import_confirm(),
-        page.button_state(CurlImportFocus::Confirm),
-        theme.primary,
-        theme,
-        Alignment::Center,
-    );
 }
 
 fn draw_command(

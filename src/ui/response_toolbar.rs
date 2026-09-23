@@ -1,148 +1,30 @@
-use super::widgets::{asset_theme, draw_flat_button_colored};
-use crate::app::{App, Focus, MainButton, ResponseMenuAction, ResponseTab};
+use super::widgets::asset_theme;
+use crate::app::{App, ResponseMenuAction};
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
-    text::Line,
+    layout::{Margin, Rect},
+    style::{Modifier, Style},
 };
-use tui_assets_rust::{
-    ButtonState as FlatButtonState, Dropdown as AssetDropdown, DropdownItem as AssetDropdownItem,
-};
+use tui_assets_rust::{Dropdown as AssetDropdown, DropdownItem as AssetDropdownItem};
 
-pub(super) fn draw_response_format_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let enabled = MainButton::ResponseFormat.enabled(app);
-    let (symbol, label) = match app.view.response.active_tab {
-        ResponseTab::Raw => ("↔", app.text().response_show_formatted()),
-        ResponseTab::Formatted => ("↔", app.text().response_show_raw()),
-        ResponseTab::Headers => ("↔", app.text().response_show_formatted()),
-    };
-    let focused =
-        app.view.focus == Focus::Response && app.view.response.active_tab != ResponseTab::Headers;
-    draw_response_toolbar_button(
-        frame,
-        area,
-        &format!("{symbol} {label}"),
-        symbol,
-        app.view
-            .main_buttons
-            .visual_state(MainButton::ResponseFormat, enabled, focused),
-        app.global_config.theme.primary,
-        &app.global_config.theme,
-    );
-}
-
-pub(super) fn response_menu_area(panel: Rect, trigger: Rect) -> Rect {
-    if panel.is_empty() || trigger.is_empty() {
+/// 响应操作菜单的区域：贴住响应面板内区右上角。
+pub(super) fn response_menu_area(panel: Rect) -> Rect {
+    if panel.is_empty() {
         return Rect::default();
     }
-    let width = 20.min(panel.width.saturating_sub(2));
+    let inner = panel.inner(Margin::new(1, 1));
+    if inner.is_empty() {
+        return Rect::default();
+    }
+    let width = 20.min(inner.width);
     let height = u16::try_from(ResponseMenuAction::all().len())
         .unwrap_or(u16::MAX)
         .saturating_add(2)
-        .min(panel.height);
+        .min(inner.height);
     if width < 3 || height < 3 {
         return Rect::default();
     }
-    let y = trigger
-        .bottom()
-        .min(panel.bottom().saturating_sub(height))
-        .max(panel.y);
-    Rect::new(
-        panel.right().saturating_sub(width).saturating_sub(1),
-        y,
-        width,
-        height,
-    )
-}
-
-pub(super) fn draw_response_menu_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let label = format!("{} ▾", app.text().response_menu());
-    draw_response_toolbar_button_left(
-        frame,
-        area,
-        &label,
-        "▾",
-        app.view.main_buttons.visual_state(
-            MainButton::ResponseMenu,
-            MainButton::ResponseMenu.enabled(app),
-            app.view.focus == Focus::ResponseActions,
-        ),
-        app.global_config.theme.accent,
-        &app.global_config.theme,
-    );
-}
-
-pub(super) fn draw_response_zoom_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() {
-        return;
-    }
-    let (symbol, label) = if app.response_zoomed() {
-        ("↙", app.text().response_restore())
-    } else {
-        ("↗", app.text().response_zoom())
-    };
-    draw_response_toolbar_button(
-        frame,
-        area,
-        &format!("{symbol} {label}"),
-        symbol,
-        app.view.main_buttons.visual_state(
-            MainButton::ResponseZoom,
-            MainButton::ResponseZoom.enabled(app),
-            app.view.focus == Focus::ResponseZoom,
-        ),
-        app.global_config.theme.secondary,
-        &app.global_config.theme,
-    );
-}
-
-pub(super) fn draw_response_toolbar_button(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    symbol: &str,
-    state: FlatButtonState,
-    color: Color,
-    theme: &crate::settings::UiTheme,
-) {
-    let text = response_toolbar_button_text(area, label, symbol);
-    draw_flat_button_colored(frame, area, text, state, color, theme, Alignment::Center);
-}
-
-pub(super) fn draw_response_toolbar_button_left(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
-    symbol: &str,
-    state: FlatButtonState,
-    color: Color,
-    theme: &crate::settings::UiTheme,
-) {
-    let text = response_toolbar_button_text(area, label, symbol);
-    draw_flat_button_colored(frame, area, text, state, color, theme, Alignment::Left);
-}
-
-fn response_toolbar_button_text<'a>(area: Rect, label: &'a str, symbol: &'a str) -> &'a str {
-    let width = usize::from(area.width);
-    if width == 0 || area.is_empty() {
-        return "";
-    }
-
-    let content_width = width.saturating_sub(3);
-    if Line::from(label).width() <= content_width {
-        label
-    } else if Line::from(symbol).width() <= content_width {
-        symbol
-    } else {
-        ""
-    }
+    Rect::new(inner.right().saturating_sub(width), inner.y, width, height)
 }
 
 pub(super) fn draw_response_menu(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
@@ -173,7 +55,6 @@ fn response_action_symbol(action: ResponseMenuAction) -> &'static str {
     match action {
         ResponseMenuAction::Download => "↓",
         ResponseMenuAction::CopyBody | ResponseMenuAction::CopyHeaders => "⧉",
-        ResponseMenuAction::Extract => "⇥",
     }
 }
 
@@ -182,6 +63,5 @@ fn response_action_label(action: ResponseMenuAction, text: crate::i18n::UiText) 
         ResponseMenuAction::Download => text.response_download(),
         ResponseMenuAction::CopyBody => text.response_copy_body(),
         ResponseMenuAction::CopyHeaders => text.response_copy_headers(),
-        ResponseMenuAction::Extract => text.response_extract(),
     }
 }

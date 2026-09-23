@@ -1,8 +1,8 @@
 use super::App;
 use crate::{
     app::{
-        DataPart, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog, KeyValueField,
-        ParamSource, ParamsDialog, ParamsDialogRow, PreviewTab, RequestParam,
+        DataPart, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog, InlineTable,
+        KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow, PreviewTab, RequestParam,
     },
     template,
 };
@@ -38,10 +38,11 @@ impl App {
                 Some(Dialog::Headers(HeadersDialog {
                     request_id,
                     rows,
-                    selected: 0,
-                    scroll: Default::default(),
-                    field: KeyValueField::Value,
-                    editor: None,
+                    table: InlineTable {
+                        field: KeyValueField::Value,
+                        ..InlineTable::default()
+                    },
+                    preset_selection: None,
                 }))
             }
             PreviewTab::Params => {
@@ -103,10 +104,7 @@ impl App {
                 Some(Dialog::Params(ParamsDialog {
                     request_id,
                     rows,
-                    selected: 0,
-                    scroll: Default::default(),
-                    field: KeyValueField::Name,
-                    editor: None,
+                    table: InlineTable::default(),
                 }))
             }
         }
@@ -159,7 +157,7 @@ impl App {
         }
     }
 
-    fn sync_params_dialog(&mut self, dialog: &ParamsDialog) -> bool {
+    pub(in crate::app) fn sync_params_dialog(&mut self, dialog: &ParamsDialog) -> bool {
         let Some(session) = self.workspace_state.request_mut(&dialog.request_id) else {
             return false;
         };

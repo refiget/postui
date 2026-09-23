@@ -85,6 +85,10 @@ impl UiText {
         self.pick("Workspace", "工作区")
     }
 
+    pub(crate) fn scenario(self) -> &'static str {
+        self.pick("Scenario", "场景")
+    }
+
     pub(crate) fn curl_import_name(self) -> &'static str {
         self.pick("* Name", "* 名称")
     }
@@ -122,14 +126,6 @@ impl UiText {
 
     pub(crate) fn curl_import_command(self) -> &'static str {
         self.pick("Command", "命令")
-    }
-
-    pub(crate) fn curl_import_confirm(self) -> &'static str {
-        self.pick("Import request", "导入请求")
-    }
-
-    pub(crate) fn curl_import_cancel(self) -> &'static str {
-        self.pick("Cancel", "取消")
     }
 
     pub(crate) fn curl_import_parsing(self) -> &'static str {
@@ -259,6 +255,46 @@ impl UiText {
         )
     }
 
+    pub(crate) fn editor_failed(self, detail: &str) -> String {
+        match self.language {
+            Language::English => format!("Editor failed: {detail}"),
+            Language::Chinese => format!("编辑器执行失败：{detail}"),
+        }
+    }
+
+    pub(crate) fn temporary_edit_applied(self) -> &'static str {
+        self.pick("Temporary request updated", "临时请求已更新")
+    }
+
+    pub(crate) fn header_preset_title(self) -> &'static str {
+        self.pick("Add header", "添加请求头")
+    }
+
+    pub(crate) fn custom_header(self) -> &'static str {
+        self.pick("Custom header", "自定义请求头")
+    }
+
+    pub(crate) fn temporary_edit_unavailable(self) -> &'static str {
+        self.pick(
+            "External editing is unavailable for this content",
+            "当前内容不可使用外部编辑",
+        )
+    }
+
+    pub(crate) fn temporary_edit_failed(self, detail: &str) -> String {
+        match self.language {
+            Language::English => format!("Temporary edit was not applied: {detail}"),
+            Language::Chinese => format!("临时编辑未应用：{detail}"),
+        }
+    }
+
+    pub(crate) fn temporary_cleanup_failed(self, detail: &str) -> String {
+        match self.language {
+            Language::English => format!("Temporary request updated; cleanup failed: {detail}"),
+            Language::Chinese => format!("临时请求已更新；临时文件清理失败：{detail}"),
+        }
+    }
+
     pub(crate) fn request_delete_failed(self, error: &str) -> String {
         match self.language {
             Language::English => format!("Could not delete request: {error}"),
@@ -268,10 +304,6 @@ impl UiText {
 
     pub(crate) fn request_selector(self) -> &'static str {
         self.pick("Requests", "接口")
-    }
-
-    pub(crate) fn new_request(self) -> &'static str {
-        self.pick("+ New", "+ 新建")
     }
 
     pub(crate) fn request_filter(self) -> &'static str {
@@ -292,20 +324,44 @@ impl UiText {
             Context::Confirm => &[Confirm, Back],
             Context::Help => &[Up, Down, Back],
             Context::Menu => &[Up, Down, Activate, Back, Help],
-            Context::Variables => &[Up, Down, Activate, Back, Help],
-            Context::Extracts => &[Up, Down, ReorderUp, ReorderDown, Back, Help],
-            Context::Headers => &[Activate, Add, Delete, Toggle, NextTab, FocusNext, Help],
-            Context::Params => &[Activate, Add, Delete, NextTab, FocusNext, Help],
+            Context::Headers => &[
+                Activate,
+                Add,
+                Delete,
+                Toggle,
+                PreviousTab,
+                NextTab,
+                FocusNext,
+                Help,
+            ],
+            Context::Params => &[Activate, Add, Delete, PreviousTab, NextTab, FocusNext, Help],
+            Context::Preview => &[
+                FocusNext,
+                Up,
+                Down,
+                Activate,
+                PreviousTab,
+                NextTab,
+                Search,
+                Send,
+                ResponseZoom,
+                Reload,
+                Help,
+            ],
             Context::Response => &[
                 Up,
                 Down,
                 Search,
                 NextMatch,
                 PreviousMatch,
+                ResponseFormat,
                 ResponseMenu,
+                ResponseZoom,
                 Help,
             ],
-            _ => &[FocusNext, Search, Send, Reload, Help, Back],
+            Context::Global | Context::Requests | Context::CurlImport => {
+                &[FocusNext, Search, Send, ResponseZoom, Reload, Help, Back]
+            }
         };
         shortcuts::hint(context, self.language, commands, debug)
     }
@@ -328,28 +384,6 @@ impl UiText {
 
     pub(crate) fn confirmation_hint(self) -> String {
         self.shortcut_hint(Context::Confirm, false)
-    }
-
-    pub(crate) fn response_extract_failures(self, count: usize) -> String {
-        match self.language {
-            Language::English => format!("{count} field(s) failed"),
-            Language::Chinese => format!("{count} 个字段提取失败"),
-        }
-    }
-
-    pub(crate) fn response_extracted(self, count: usize) -> String {
-        match self.language {
-            Language::English => format!("Extracted {count} variable(s)"),
-            Language::Chinese => format!("已提取 {count} 个变量"),
-        }
-    }
-
-    pub(crate) fn response_extract_missing(self) -> &'static str {
-        self.pick("No extraction configured", "当前请求未配置提取变量")
-    }
-
-    pub(crate) fn response_extract_unavailable(self) -> &'static str {
-        self.pick("Nothing to extract", "无可提取内容")
     }
 
     pub(crate) fn request_in_progress(self) -> &'static str {
@@ -414,24 +448,12 @@ impl UiText {
         self.pick("Description", "说明")
     }
 
-    pub(crate) fn current_value(self) -> &'static str {
-        self.pick("Current", "当前值")
-    }
-
     pub(crate) fn value(self) -> &'static str {
         self.pick("Value", "值")
     }
 
     pub(crate) fn name(self) -> &'static str {
         self.pick("Name", "名称")
-    }
-
-    pub(crate) fn default_value(self) -> &'static str {
-        self.pick("Default", "默认值")
-    }
-
-    pub(crate) fn no_variables(self) -> &'static str {
-        self.pick("Variables: empty", "变量：空")
     }
 
     pub(crate) fn no_headers(self) -> &'static str {
@@ -464,32 +486,8 @@ impl UiText {
         self.pick("—", "—")
     }
 
-    pub(crate) fn send_button(self, loading: bool) -> &'static str {
-        if loading {
-            self.pick("Sending…", "发送中…")
-        } else {
-            self.pick("Send", "发送")
-        }
-    }
-
-    pub(crate) fn cancel_request(self) -> &'static str {
-        self.pick("Cancel", "取消")
-    }
-
     pub(crate) fn response(self) -> &'static str {
         self.pick("Response", "响应")
-    }
-
-    pub(crate) fn response_menu(self) -> &'static str {
-        self.pick("Actions", "操作")
-    }
-
-    pub(crate) fn response_zoom(self) -> &'static str {
-        self.pick("Zoom", "放大")
-    }
-
-    pub(crate) fn response_restore(self) -> &'static str {
-        self.pick("Restore", "还原")
     }
 
     pub(crate) fn response_download(self) -> &'static str {
@@ -502,42 +500,6 @@ impl UiText {
 
     pub(crate) fn response_copy_headers(self) -> &'static str {
         self.pick("Copy headers", "复制响应头")
-    }
-
-    pub(crate) fn response_extract(self) -> &'static str {
-        self.pick("Extract", "提取变量")
-    }
-
-    pub(crate) fn extracts(self) -> &'static str {
-        self.pick("Extracts", "提取顺序")
-    }
-
-    pub(crate) fn extract_order(self) -> &'static str {
-        self.pick("Order", "顺序")
-    }
-
-    pub(crate) fn extract_variable(self) -> &'static str {
-        self.pick("Variable", "变量")
-    }
-
-    pub(crate) fn extract_path(self) -> &'static str {
-        self.pick("Path", "路径")
-    }
-
-    pub(crate) fn no_extracts(self) -> &'static str {
-        self.pick("Extracts: empty", "提取规则：空")
-    }
-
-    pub(crate) fn extract_order_updated(self) -> &'static str {
-        self.pick("Order updated", "顺序已调整")
-    }
-
-    pub(crate) fn response_show_raw(self) -> &'static str {
-        self.pick("Raw", "原文")
-    }
-
-    pub(crate) fn response_show_formatted(self) -> &'static str {
-        self.pick("Formatted", "格式化")
     }
 
     pub(crate) fn response_headers_tab(self) -> &'static str {

@@ -43,6 +43,10 @@ cargo run --example frontend_preview
 - Scenario switching commits drafts to in-process scenario state. It does not
   write YAML.
 - Keyboard and mouse handlers dispatch the same application operations.
+- An external editor request carries the file path and the result handling. The
+  terminal event loop suspends the TUI, runs the editor, resumes, and applies
+  the result. A request-list editor reloads the workspace on success; a
+  configuration error page editor writes failures to that page.
 
 ## Response processing
 
@@ -54,11 +58,6 @@ Raw views retain source byte order. Copy and download operate on original bytes.
 Network execution uses one Tokio runtime and connection pool. At most eight
 requests execute concurrently. Cancellation aborts the async request task.
 Completed work with an obsolete operation ID is discarded.
-
-Response extraction uses one function for the completion path and for the
-response menu `Extract` action. Both read the effective request `extracts` and
-write runtime variables. The effective request applies the session extraction
-order, so extraction follows the order shown on the extraction order page.
 
 ## Verification
 

@@ -7,6 +7,9 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use directories::ProjectDirs;
 
+/// 工作区目录名。
+pub(crate) const WORKSPACE_DIRECTORY: &str = ".postui";
+
 #[derive(Debug)]
 pub(crate) enum WorkspaceSource {
     Explicit,
@@ -27,7 +30,7 @@ pub(crate) fn discover_user_config_path() -> Option<PathBuf> {
 pub(crate) fn discover_workspace() -> Result<Option<WorkspaceLocation>> {
     let start = env::current_dir().context("Cannot determine current directory")?;
     for directory in start.ancestors() {
-        if let Some(path) = existing_workspace(&directory.join(".postui"))? {
+        if let Some(path) = existing_workspace(&directory.join(WORKSPACE_DIRECTORY))? {
             return Ok(Some(WorkspaceLocation {
                 path,
                 source: WorkspaceSource::Discovered,
@@ -51,12 +54,16 @@ pub(crate) fn resolve_workspace(input: &Path) -> Result<WorkspaceLocation> {
         "Workspace path must be a directory: {}",
         input.display()
     );
-    let path = if input.file_name().is_some_and(|name| name == ".postui")
-        || directory.file_name().is_some_and(|name| name == ".postui")
+    let path = if input
+        .file_name()
+        .is_some_and(|name| name == WORKSPACE_DIRECTORY)
+        || directory
+            .file_name()
+            .is_some_and(|name| name == WORKSPACE_DIRECTORY)
     {
         directory
     } else {
-        directory.join(".postui")
+        directory.join(WORKSPACE_DIRECTORY)
     };
     let path = existing_workspace(&path)?
         .with_context(|| format!("PostUI workspace not found: {}", path.display()))?;

@@ -96,7 +96,7 @@ fn run_app(options: CliOptions) -> Result<()> {
             if error_page.is_none() {
                 error_page = Some(ErrorPage::from_error(
                     &error,
-                    workspace_path.join("postui.yaml"),
+                    workspace_path.join(config::WORKSPACE_FILE_NAME),
                 ));
             }
             config::RequestConfig::default_for_workspace(&workspace_path)
@@ -112,13 +112,13 @@ fn run_app(options: CliOptions) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let error = diagnostics::invalid(
-                    &workspace_path.join("postui.yaml"),
+                    &workspace_path.join(config::WORKSPACE_FILE_NAME),
                     "scenario",
                     format!("Scenario {scenario} does not exist; available scenarios: {available}"),
                 );
                 error_page = Some(ErrorPage::from_error(
                     &error,
-                    workspace_path.join("postui.yaml"),
+                    workspace_path.join(config::WORKSPACE_FILE_NAME),
                 ));
             }
         } else {

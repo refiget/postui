@@ -6,6 +6,3 @@ headers:
   Content-Type: application/json
   X-Debug-Token: "{{token}}"
 body: '{"name":"{{item_name}}","value":"{{item_value}}"}'
-extracts:
-  - variable: updated_method
-    path: data.method

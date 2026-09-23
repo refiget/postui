@@ -1,14 +1,13 @@
 use super::{
-    focus::FocusStyles,
+    focus::{FocusStyles, selection_style},
     inline_editor::draw_inline_editor,
-    temporary_variables::draw_temporary_variables,
     widgets::{
         coordinate, edit_input_style, editor_view_with_cursor, label_style, method_style,
-        panel_block, place_cursor, section_style, truncate_line,
+        panel_block, place_cursor, section_style,
     },
 };
 use crate::{
-    app::{App, PreviewTab},
+    app::{App, ContentEditor, ContentTarget, Focus, PreviewTab},
     highlight, http_method,
 };
 use ratatui::{
@@ -16,7 +15,7 @@ use ratatui::{
     layout::{Alignment, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
 };
 
 pub(super) fn draw_preview(
@@ -72,18 +71,20 @@ pub(super) fn draw_preview_summary(frame: &mut Frame<'_>, area: Rect, app: &App)
     if area.is_empty() {
         return;
     }
-    let lines = request_summary_lines(app)
-        .into_iter()
-        .map(|line| truncate_line(line, usize::from(area.width)))
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(
+        Paragraph::new(request_summary_lines(app)).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-pub(super) fn preview_summary_height(_app: &App, width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    2
+pub(super) fn preview_summary_height(app: &App, width: u16) -> u16 {
+    request_summary_lines(app)
+        .into_iter()
+        .map(|line| {
+            let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
+            u16::try_from(paragraph.line_count(width)).unwrap_or(u16::MAX)
+        })
+        .fold(0, u16::saturating_add)
 }
 
 fn request_summary_lines(app: &App) -> Vec<Line<'static>> {
@@ -187,7 +188,7 @@ pub(super) fn draw_preview_content(frame: &mut Frame<'_>, area: Rect, app: &App)
         return;
     }
     match app.view.preview.active_tab {
-        PreviewTab::Body => draw_body_editor(frame, area, app),
+        PreviewTab::Body => draw_content_editor(frame, area, app),
         tab @ (PreviewTab::Params | PreviewTab::Headers) => {
             if let Some(dialog) = app
                 .view
@@ -203,23 +204,15 @@ pub(super) fn draw_preview_content(frame: &mut Frame<'_>, area: Rect, app: &App)
     }
 }
 
-pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub(super) fn draw_content_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.global_config.theme;
     let Some(request) = app.current_effective_request() else {
         return;
     };
-    if app.temporary_variables_visible() {
-        draw_temporary_variables(frame, area, app);
-        return;
-    }
-    let has_body = !request.body_parts.is_empty();
-    let offset = usize::from(app.view.preview.scroll.offset());
-    let body_value = (has_body || app.body_editor().is_some()).then(|| {
-        app.body_editor()
-            .map_or_else(|| app.body_preview(), |editor| editor.display_document())
-    });
-    let mut lines = if let Some(value) = &body_value {
-        highlight::json_text_lines_window(value, offset, usize::from(area.height), theme)
+    let offset = app.view.preview.scroll.offset();
+    let document = app.body_document();
+    let mut lines = if let Some(document) = &document {
+        highlight::json_text_lines_window(document, offset, usize::from(area.height), theme)
     } else {
         request_content_lines(app, &request)
             .into_iter()
@@ -227,69 +220,76 @@ pub(super) fn draw_body_editor(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .take(usize::from(area.height))
             .collect()
     };
-    if let Some(value) = &body_value {
-        underline_json_values(value, offset, &mut lines);
+    if let Some(document) = &document {
+        underline_json_values(document, offset, &mut lines);
+    }
+    if let Some(field) = app.selected_content_field()
+        && let Some(row) = row_in_area(field.line, offset, area.height)
+        && let Some(cursor) = lines.get_mut(usize::from(row))
+    {
+        cursor.style = selection_style(theme, app.view.focus == Focus::Preview);
     }
 
     frame.render_widget(Paragraph::new(lines), area);
-    if let Some(editor) = app.body_editor() {
-        let (editor_line, editor_column) = editor.position();
-        let scroll = usize::from(app.view.preview.scroll.offset());
-        if editor_line >= scroll && editor_line < scroll + usize::from(area.height) {
-            let input_area = Rect::new(
-                area.x.saturating_add(coordinate(editor_column)),
-                area.y.saturating_add((editor_line - scroll) as u16),
-                coordinate(editor.display_width()),
-                1,
-            )
-            .intersection(area);
-            if !input_area.is_empty() {
-                let (value, cursor_width) =
-                    editor_view_with_cursor(&editor.input, usize::from(input_area.width));
-                frame.render_widget(
-                    Paragraph::new(value).style(edit_input_style(
-                        &editor.input,
-                        theme,
-                        theme.text,
-                        theme.background,
-                    )),
-                    input_area,
-                );
-                if let Some(cursor_width) = cursor_width {
-                    place_cursor(frame, input_area, cursor_width, 0);
-                }
-            }
-        }
+    if let Some(editor) = app.content_editor()
+        && let Some(row) = row_in_area(editor.line, offset, area.height)
+    {
+        draw_editor_input(frame, area, row, editor, theme);
     }
-    if let Some(editor) = app.file_editor() {
-        let scroll = usize::from(app.view.preview.scroll.offset());
-        if editor.line >= scroll && editor.line < scroll + usize::from(area.height) {
-            let editor_column = coordinate(editor.column);
-            let input_area = Rect::new(
-                area.x.saturating_add(editor_column),
-                area.y.saturating_add((editor.line - scroll) as u16),
-                area.width.saturating_sub(editor_column).max(1),
-                1,
-            )
-            .intersection(area);
-            if !input_area.is_empty() {
-                let (value, cursor_width) =
-                    editor_view_with_cursor(&editor.input, usize::from(input_area.width));
-                frame.render_widget(
-                    Paragraph::new(value).style(edit_input_style(
-                        &editor.input,
-                        theme,
-                        theme.text,
-                        theme.background,
-                    )),
-                    input_area,
-                );
-                if let Some(cursor_width) = cursor_width {
-                    place_cursor(frame, input_area, cursor_width, 0);
-                }
-            }
-        }
+}
+
+/// 绘制编辑器输入：文本、光标和选中底色。
+fn draw_editor_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: u16,
+    editor: &ContentEditor,
+    theme: &crate::settings::UiTheme,
+) {
+    let json_value = matches!(editor.target, ContentTarget::Body { .. });
+    let column = coordinate(editor.column);
+    let width = if json_value {
+        coordinate(editor.display_width())
+    } else {
+        area.width.saturating_sub(column).max(1)
+    };
+    let input_area = Rect::new(
+        area.x.saturating_add(column),
+        area.y.saturating_add(row),
+        width,
+        1,
+    )
+    .intersection(area);
+    if input_area.is_empty() {
+        return;
     }
+    let (value, cursor_width) =
+        editor_view_with_cursor(&editor.input, usize::from(input_area.width));
+    // 请求体 JSON 的渲染文本已替换成输入内容；表单字段和文件路径覆盖掉旧值。
+    let padding = if json_value {
+        0
+    } else {
+        usize::from(input_area.width).saturating_sub(Line::from(value.as_str()).width())
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{value}{}", " ".repeat(padding))).style(edit_input_style(
+            &editor.input,
+            theme,
+            theme.text,
+            theme.background,
+        )),
+        input_area,
+    );
+    if let Some(cursor_width) = cursor_width {
+        place_cursor(frame, input_area, cursor_width, 0);
+    }
+}
+
+/// 行在可见范围内时返回区域中的行号。
+fn row_in_area(line: usize, offset: usize, height: u16) -> Option<u16> {
+    (offset..offset.saturating_add(usize::from(height)))
+        .contains(&line)
+        .then(|| (line - offset) as u16)
 }
 
 fn underline_json_values(value: &str, offset: usize, lines: &mut [Line<'static>]) {

@@ -3,6 +3,3 @@ description: 422 with a JSON error body.
 method: POST
 url: http://{{host}}/v1/error
 body: '{"name":"{{item_name}}"}'
-extracts:
-  - variable: error_code
-    path: error.code

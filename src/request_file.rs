@@ -26,7 +26,7 @@ impl RequestFileStore {
     }
 
     pub fn delete(&self, request_id: &str) -> Result<()> {
-        let path = self.path_for_id(request_id)?;
+        let path = self.source_path(request_id)?;
         fs::remove_file(&path)
             .with_context(|| format!("Could not delete request file: {}", path.display()))?;
         tracing::debug!(path = %path.display(), "删除请求文件");
@@ -63,7 +63,8 @@ impl RequestFileStore {
         write_yaml_file(path, configuration)
     }
 
-    fn path_for_id(&self, request_id: &str) -> Result<PathBuf> {
+    /// 请求的源文件路径。
+    pub fn source_path(&self, request_id: &str) -> Result<PathBuf> {
         let relative = request_id
             .strip_prefix("requests/")
             .filter(|value| !value.is_empty())
@@ -163,6 +164,29 @@ fn write_yaml_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
         };
     }
     sync_parent_directory(path)
+}
+
+pub(crate) fn write_text_if_unchanged(
+    path: &Path,
+    expected: &str,
+    replacement: &str,
+) -> Result<bool> {
+    let current = fs::read_to_string(path)
+        .with_context(|| format!("Could not read request file: {}", path.display()))?;
+    if current != expected {
+        return Ok(false);
+    }
+    let temporary = temporary_path(path);
+    let result = write_temporary_file(&temporary, path, replacement.as_bytes())
+        .and_then(|()| replace_file(&temporary, path));
+    if let Err(error) = result {
+        return match remove_temporary_file(&temporary) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(error.context(cleanup_error)),
+        };
+    }
+    sync_parent_directory(path)?;
+    Ok(true)
 }
 
 fn write_temporary_file(temporary: &Path, path: &Path, contents: &[u8]) -> Result<()> {

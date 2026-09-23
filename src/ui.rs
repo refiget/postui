@@ -10,7 +10,6 @@ use ratatui::{
 mod chrome;
 mod curl_import;
 mod dialog;
-mod extracts;
 mod focus;
 mod inline_editor;
 mod layout;
@@ -18,22 +17,18 @@ mod mouse;
 mod preview;
 mod response;
 mod response_toolbar;
-mod temporary_variables;
-mod variables;
 mod widgets;
 
-use chrome::{draw_footer, draw_header, draw_request_list, draw_request_send_button};
+use chrome::{draw_footer, draw_header, draw_request_list};
 use curl_import::draw_curl_import_page;
 use dialog::draw_configuration_dropdown;
-use extracts::draw_extracts_page;
 pub(crate) use mouse::handle_mouse;
 use preview::{draw_preview, preview_summary_height};
 use response::{draw_response, sync_response_scroll};
 use response_toolbar::{draw_response_menu, response_menu_area};
-use variables::draw_variables_page;
 use widgets::asset_theme;
 
-use layout::{UiLayout, response_zoom, screen as screen_layout, screen_with_summary, single_panel};
+use layout::{UiLayout, response_zoom, screen_with_summary};
 
 const TABLE_HIGHLIGHT_WIDTH: u16 = 2;
 const TABLE_COLUMN_SPACING: u16 = 1;
@@ -43,6 +38,10 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let areas = screen_layout_for_app(frame.area(), app);
     if !app.full_page_open() {
         sync_response_scroll(app, areas);
+        app.view
+            .preview
+            .scroll
+            .set_viewport(usize::from(areas.preview_content.height));
     }
     let theme = &app.global_config.theme;
 
@@ -56,20 +55,10 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
 
-    draw_header(
-        frame,
-        areas.header,
-        areas.header_content,
-        areas.header_action,
-        app,
-    );
+    draw_header(frame, areas.header, areas.header_content, app);
     draw_footer(frame, areas.footer, app);
     if app.view.curl_import.is_some() {
         draw_curl_import_page(frame, areas.response, app);
-    } else if let Some(page) = &app.view.extracts {
-        draw_extracts_page(frame, app, page, areas.response);
-    } else if let Some(variables) = &app.view.variables {
-        draw_variables_page(frame, app, variables, areas.response);
     } else {
         if !app.response_zoomed() {
             draw_request_list(frame, areas, app);
@@ -81,22 +70,10 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 areas.preview_content,
                 app,
             );
-            draw_request_send_button(frame, areas.send_button, app);
         }
-        draw_response(
-            frame,
-            areas.response,
-            areas.response_format_button,
-            areas.response_menu_button,
-            areas.response_zoom_button,
-            app,
-        );
+        draw_response(frame, areas.response, app);
         if app.view.response.menu.is_open() {
-            draw_response_menu(
-                frame,
-                response_menu_area(areas.response, areas.response_menu_button),
-                app,
-            );
+            draw_response_menu(frame, response_menu_area(areas.response), app);
         }
         let dropdown_title = app.text().workspace();
         let dropdown_theme = asset_theme(&app.global_config.theme);
@@ -104,7 +81,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
             draw_configuration_dropdown(
                 frame,
                 dialog,
-                areas.workspace_selector,
+                areas.configuration_menu,
                 dropdown_title,
                 dropdown_theme,
             )
@@ -119,17 +96,11 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn screen_layout_for_app(area: Rect, app: &App) -> UiLayout {
-    if app.full_page_open() {
-        return single_panel(area);
-    }
-    if app.response_zoomed() {
+    if app.full_page_open() || app.response_zoomed() {
         return response_zoom(area);
     }
-    let base = screen_layout(area);
-    if !app.has_current_request() {
-        return base;
-    }
-    let summary_height = preview_summary_height(app, base.preview_details.width);
+    let initial = screen_with_summary(area, 0);
+    let summary_height = preview_summary_height(app, initial.preview_summary.width);
     screen_with_summary(area, summary_height)
 }
 

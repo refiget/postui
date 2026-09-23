@@ -43,12 +43,8 @@ impl App {
             }
             changed = true;
             match outcome {
-                RequestOutcome::Response {
-                    response,
-                    document,
-                    extracted_variables,
-                    extraction_failure_count,
-                } => {
+                RequestOutcome::Response { response, document } => {
+                    self.view.response.selection = None;
                     let status = response.status;
                     let elapsed_ms = response.elapsed_ms;
                     let request_status = RequestStatus::from_http_status(status);
@@ -62,13 +58,8 @@ impl App {
                         body_bytes = response.body_bytes.len(),
                         "HTTP 响应已接收"
                     );
-                    for (variable, value) in extracted_variables {
-                        self.workspace_state.variables.insert(variable, value);
-                    }
                     let feedback = if status >= 400 {
                         Feedback::Error(text.request_status_failed().to_string())
-                    } else if extraction_failure_count > 0 {
-                        Feedback::Warning(text.response_extract_failures(extraction_failure_count))
                     } else {
                         Feedback::Success(text.request_status_success().to_string())
                     };
@@ -165,7 +156,7 @@ impl App {
             return;
         }
         let resolved =
-            crate::template::resolve_request(&effective_request, &self.current_request_variables());
+            crate::template::resolve_request(&effective_request, self.current_request_variables());
         let operation = self.request_executor.prepare(&request_id);
         let operation_id = operation.operation_id.clone();
         let file_directory = self.config.file_directory.clone();

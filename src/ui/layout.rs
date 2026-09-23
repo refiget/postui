@@ -1,13 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 
 const SIDEBAR_WIDE: u16 = 30;
-const SIDEBAR_MEDIUM: u16 = 22;
 const SIDEBAR_NARROW: u16 = 22;
-pub(super) const PREVIEW_ACTION_WIDTH: u16 = 14;
-pub(super) const SEND_BUTTON_HEIGHT: u16 = 1;
-const SEND_BUTTON_BORDER_GAP: u16 = 1;
-const SEND_BUTTON_RESERVED_HEIGHT: u16 = SEND_BUTTON_HEIGHT + SEND_BUTTON_BORDER_GAP;
 const MAIN_HORIZONTAL_MIN_WIDTH: u16 = 64;
+/// 底栏高度：状态行和按键提示行。
+const FOOTER_HEIGHT: u16 = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ScrollAreas {
@@ -20,23 +17,16 @@ pub(super) struct UiLayout {
     pub(super) header: Rect,
     pub(super) footer: Rect,
     pub(super) header_content: Rect,
-    pub(super) header_action: Rect,
     pub(super) requests: Rect,
-    pub(super) workspace_selector: Rect,
-    pub(super) variables_button: Rect,
     pub(super) request_search: Rect,
     pub(super) request_list: Rect,
     pub(super) request_scrollbar: Rect,
+    pub(super) configuration_menu: Rect,
     pub(super) preview: Rect,
-    pub(super) preview_details: Rect,
     pub(super) preview_summary: Rect,
     pub(super) preview_tabs: Rect,
     pub(super) preview_content: Rect,
-    pub(super) send_button: Rect,
     pub(super) response: Rect,
-    pub(super) response_format_button: Rect,
-    pub(super) response_menu_button: Rect,
-    pub(super) response_zoom_button: Rect,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -46,53 +36,32 @@ pub(super) struct PreviewSections {
     pub(super) content: Rect,
 }
 
-pub(super) fn screen(area: Rect) -> UiLayout {
-    screen_with_summary(area, 2)
-}
-
-pub(super) fn response_zoom(area: Rect) -> UiLayout {
-    let sections = Layout::default()
+/// 顶栏、主区域和底栏的三段纵向布局。
+fn screen_sections(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height(area.height)),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(FOOTER_HEIGHT),
         ])
-        .split(area);
-    let header_content = header_content(sections[0]);
-    let response = sections[1];
-    let (response_format_button, response_zoom_button, response_menu_button) =
-        response_action_buttons(response);
+        .split(area)
+}
+
+pub(super) fn response_zoom(area: Rect) -> UiLayout {
+    let sections = screen_sections(area);
     UiLayout {
         header: sections[0],
         footer: sections[2],
-        header_content,
-        response,
-        response_format_button,
-        response_menu_button,
-        response_zoom_button,
+        header_content: header_content(sections[0]),
+        configuration_menu: configuration_anchor(sections[0]),
+        response: sections[1],
         ..UiLayout::default()
     }
 }
 
-pub(super) fn single_panel(area: Rect) -> UiLayout {
-    let mut layout = response_zoom(area);
-    layout.send_button = Rect::default();
-    layout.response_format_button = Rect::default();
-    layout.response_menu_button = Rect::default();
-    layout.response_zoom_button = Rect::default();
-    layout
-}
-
 pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height(area.height)),
-            Constraint::Min(0),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let sections = screen_sections(area);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -100,56 +69,39 @@ pub(super) fn screen_with_summary(area: Rect, summary_height: u16) -> UiLayout {
             Constraint::Min(0),
         ])
         .split(sections[1]);
+    let main_direction = if columns[1].width < MAIN_HORIZONTAL_MIN_WIDTH {
+        Direction::Vertical
+    } else {
+        Direction::Horizontal
+    };
+    let main_constraints = if main_direction == Direction::Vertical {
+        [
+            Constraint::Length(summary_height.saturating_add(3)),
+            Constraint::Min(0),
+        ]
+    } else {
+        [Constraint::Percentage(45), Constraint::Percentage(55)]
+    };
     let main = Layout::default()
-        .direction(if columns[1].width < MAIN_HORIZONTAL_MIN_WIDTH {
-            Direction::Vertical
-        } else {
-            Direction::Horizontal
-        })
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .direction(main_direction)
+        .constraints(main_constraints)
         .split(columns[1]);
     let sidebar = sidebar_parts(columns[0]);
-    let header_content = header_content(sections[0]);
-    let preview_details = main[0].inner(Margin::new(1, 1));
-    let preview_content_area = Rect::new(
-        preview_details.x,
-        preview_details.y,
-        preview_details.width,
-        preview_details
-            .height
-            .saturating_sub(SEND_BUTTON_RESERVED_HEIGHT),
-    );
-    let preview = preview_sections(preview_content_area, summary_height);
-    let (response_format_button, response_zoom_button, response_menu_button) =
-        response_action_buttons(main[1]);
-    let send_button = request_send_button(main[0]);
-    let header_action = Rect::new(
-        response_menu_button.x,
-        header_content.y,
-        response_menu_button.width,
-        u16::from(!response_menu_button.is_empty()),
-    );
+    let preview = preview_sections(main[0].inner(Margin::new(1, 1)), summary_height);
     UiLayout {
         header: sections[0],
         footer: sections[2],
-        header_content,
-        header_action,
+        header_content: header_content(sections[0]),
         requests: columns[0],
-        workspace_selector: sidebar.workspace_selector,
-        variables_button: sidebar.variables_button,
         request_search: sidebar.request_search,
         request_list: sidebar.request_list.content,
         request_scrollbar: sidebar.request_list.scrollbar,
+        configuration_menu: configuration_anchor(sections[0]),
         preview: main[0],
-        preview_details,
         preview_summary: preview.summary,
         preview_tabs: preview.tabs,
         preview_content: preview.content,
-        send_button,
         response: main[1],
-        response_format_button,
-        response_menu_button,
-        response_zoom_button,
     }
 }
 
@@ -183,8 +135,6 @@ fn header_height(height: u16) -> u16 {
 fn sidebar_width(width: u16) -> u16 {
     let preferred = if width >= 100 {
         SIDEBAR_WIDE
-    } else if width >= 72 {
-        SIDEBAR_MEDIUM
     } else if width >= 48 {
         SIDEBAR_NARROW
     } else {
@@ -195,52 +145,25 @@ fn sidebar_width(width: u16) -> u16 {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct SidebarLayout {
-    workspace_selector: Rect,
-    variables_button: Rect,
     request_search: Rect,
     request_list: ScrollAreas,
 }
 
 fn sidebar_parts(area: Rect) -> SidebarLayout {
     let inner = area.inner(Margin::new(1, 1));
-    if inner.height < 4 {
+    if inner.is_empty() {
         return SidebarLayout {
-            request_list: panel_scroll_areas(area),
-            ..SidebarLayout::default()
+            request_search: Rect::default(),
+            request_list: inner_scroll_areas(area),
         };
     }
-    let parts = if inner.height >= 7 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(inner)
-    };
-    let (variables_button, request_search, request_list) = if inner.height >= 7 {
-        (parts[2], parts[3], parts[4])
-    } else {
-        (parts[1], parts[2], parts[3])
-    };
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
     SidebarLayout {
-        workspace_selector: parts[0],
-        variables_button,
-        request_search,
-        request_list: inner_scroll_areas(request_list),
+        request_search: parts[0],
+        request_list: inner_scroll_areas(parts[1]),
     }
 }
 
@@ -252,82 +175,14 @@ fn header_content(area: Rect) -> Rect {
     inner
 }
 
-fn request_send_button(area: Rect) -> Rect {
-    if area.width <= 2 || area.height <= 1 {
-        return Rect::default();
-    }
-    let inner = area.inner(Margin::new(1, 1));
-    if inner.width <= SEND_BUTTON_BORDER_GAP || inner.height < SEND_BUTTON_RESERVED_HEIGHT {
-        return Rect::default();
-    }
-    let width = PREVIEW_ACTION_WIDTH.min(inner.width - SEND_BUTTON_BORDER_GAP);
+/// 配置下拉菜单的定位锚点：紧贴顶栏下沿的左上角。
+fn configuration_anchor(header: Rect) -> Rect {
     Rect::new(
-        inner
-            .right()
-            .saturating_sub(SEND_BUTTON_BORDER_GAP)
-            .saturating_sub(width),
-        inner
-            .bottom()
-            .saturating_sub(SEND_BUTTON_BORDER_GAP)
-            .saturating_sub(SEND_BUTTON_HEIGHT),
-        width,
-        SEND_BUTTON_HEIGHT,
+        header.x.saturating_add(1),
+        header.bottom().saturating_sub(1),
+        1,
+        1,
     )
-}
-
-fn response_action_buttons(area: Rect) -> (Rect, Rect, Rect) {
-    if area.width <= 2 || area.height <= 1 {
-        return (Rect::default(), Rect::default(), Rect::default());
-    }
-    let inner = area.inner(Margin::new(1, 1));
-    if inner.is_empty() {
-        return (Rect::default(), Rect::default(), Rect::default());
-    }
-    let button_count = 3u16;
-    let width = 14.min(inner.width.saturating_sub(button_count) / button_count);
-    if width == 0 {
-        return (Rect::default(), Rect::default(), Rect::default());
-    }
-    let gap = 1u16;
-    let total_width = width
-        .saturating_mul(button_count)
-        .saturating_add(gap.saturating_mul(button_count.saturating_sub(1)));
-    if inner.width < total_width {
-        return (Rect::default(), Rect::default(), Rect::default());
-    }
-    let format_x = inner.right().saturating_sub(total_width);
-    let zoom_x = format_x.saturating_add(width.saturating_add(gap));
-    let menu_x = zoom_x.saturating_add(width.saturating_add(gap));
-    (
-        Rect::new(format_x, inner.y, width, 1),
-        Rect::new(zoom_x, inner.y, width, 1),
-        Rect::new(menu_x, inner.y, width, 1),
-    )
-}
-
-pub(super) fn panel_scroll_areas(area: Rect) -> ScrollAreas {
-    inner_scroll_areas(area.inner(Margin::new(1, 1)))
-}
-
-/// 列表页布局：面板区域、表头和内容滚动区域。
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct ListPageLayout {
-    pub(super) area: Rect,
-    pub(super) table_header: Rect,
-    pub(super) rows: ScrollAreas,
-}
-
-pub(super) fn list_page_layout(area: Rect) -> ListPageLayout {
-    let inner = area.inner(Margin::new(u16::from(area.width >= 48) + 1, 1));
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-    ListPageLayout {
-        area,
-        table_header: sections[0],
-        rows: inner_scroll_areas(sections[1]),
-    }
 }
 
 pub(super) fn inner_scroll_areas(area: Rect) -> ScrollAreas {

@@ -196,13 +196,11 @@ fn handle_terminal_event(
                 "收到键盘事件"
             );
             app.handle_key(key);
-            if let Some(path) = app.take_editor_request() {
+            if let Some(request) = app.take_editor_request() {
                 terminal_session.suspend()?;
-                let editor_result = crate::editor::open_file(&path);
+                let editor_result = crate::editor::open_file(&request.path);
                 let resume_result = terminal_session.resume();
-                if let Err(error) = editor_result {
-                    app.report_editor_error(format!("{error:#}"));
-                }
+                app.finish_editor(&request, editor_result);
                 resume_result?;
                 terminal.clear()?;
             }

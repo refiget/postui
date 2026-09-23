@@ -452,32 +452,6 @@ pub(crate) enum JsonScalarKind {
     Null,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct BodyValueEditor {
-    pub(crate) document: String,
-    pub(crate) span: Range<usize>,
-    pub(crate) kind: JsonScalarKind,
-    pub(crate) input: EditInput,
-}
-
-impl BodyValueEditor {
-    pub(crate) fn display_document(&self) -> String {
-        let mut value = self.document.clone();
-        value.replace_range(self.span.clone(), self.input.value());
-        value
-    }
-
-    pub(crate) fn position(&self) -> (usize, usize) {
-        cursor_row_column(&self.document, self.span.start)
-    }
-
-    /// 值在预览中占用的列数：值宽度加光标标记。
-    pub(crate) fn display_width(&self) -> usize {
-        terminal_width(self.input.value()).max(1)
-            + usize::from(self.input.mode() == EditMode::Insert)
-    }
-}
-
 pub(crate) fn terminal_width(value: &str) -> usize {
     Line::from(value).width()
 }

@@ -13,10 +13,7 @@ impl<'a> FocusStyles<'a> {
     }
 
     pub(super) fn sidebar_border(&self) -> Style {
-        self.panel(matches!(
-            self.focus,
-            Focus::Requests | Focus::WorkspaceButton | Focus::Variables
-        ))
+        self.panel(self.focus == Focus::Requests)
     }
 
     pub(super) fn header_border(&self) -> Style {
@@ -24,26 +21,15 @@ impl<'a> FocusStyles<'a> {
     }
 
     pub(super) fn preview_border(&self) -> Style {
-        self.panel(matches!(self.focus, Focus::Preview | Focus::SendButton))
+        self.panel(self.focus == Focus::Preview)
     }
 
     pub(super) fn response_border(&self) -> Style {
-        self.panel(matches!(
-            self.focus,
-            Focus::Response | Focus::ResponseActions | Focus::ResponseZoom
-        ))
+        self.panel(self.focus == Focus::Response)
     }
 
     pub(super) fn request_selection(&self) -> Style {
         selection_style(self.theme, self.focus == Focus::Requests)
-    }
-
-    pub(super) fn variables_focused(&self) -> bool {
-        self.focus == Focus::Variables
-    }
-
-    pub(super) fn workspace_focused(&self) -> bool {
-        self.focus == Focus::WorkspaceButton
     }
 
     fn panel(&self, active: bool) -> Style {

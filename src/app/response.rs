@@ -243,16 +243,6 @@ impl App {
             .menu
             .select(0, ResponseMenuAction::all().len());
         self.view.response.menu.open();
-        self.view.focus = Focus::ResponseActions;
-    }
-
-    /// 触发按钮的行为：已打开时关闭，否则打开。
-    pub(crate) fn toggle_response_menu(&mut self) {
-        if self.view.response.menu.is_open() {
-            self.close_response_menu();
-        } else {
-            self.open_response_menu();
-        }
     }
 
     pub(crate) fn close_response_menu(&mut self) {
@@ -289,7 +279,6 @@ impl App {
             ResponseMenuAction::Download => self.download_current_response(),
             ResponseMenuAction::CopyBody => self.copy_current_response(),
             ResponseMenuAction::CopyHeaders => self.copy_current_response_headers(),
-            ResponseMenuAction::Extract => self.extract_current_response_variables(),
         }
     }
 
@@ -318,32 +307,30 @@ impl App {
             task.pending = None;
         }
         self.view.response.active_tab = tab;
+        self.view.response.selection = None;
         self.view.response.scroll.reset();
         self.view.response.search_match_line = None;
         self.view.response.search = None;
     }
 
     pub(crate) fn response_zoomed(&self) -> bool {
-        matches!(self.view.mode, ViewMode::ResponseZoom { .. })
+        matches!(self.view.mode, ViewMode::ResponseZoom)
     }
 
     pub(crate) fn toggle_response_zoom(&mut self) {
         if self.response_zoomed() {
             self.restore_standard_view();
         } else {
-            self.view.mode = ViewMode::ResponseZoom {
-                return_focus: self.view.focus,
-            };
-            self.view.focus = Focus::ResponseZoom;
+            self.view.mode = ViewMode::ResponseZoom;
+            self.view.focus = Focus::Response;
         }
     }
 
     pub(super) fn restore_standard_view(&mut self) {
-        let ViewMode::ResponseZoom { return_focus } = self.view.mode else {
+        if !self.response_zoomed() {
             return;
-        };
+        }
         self.view.mode = ViewMode::Standard;
-        self.view.focus = return_focus;
         self.close_response_menu();
     }
 
@@ -365,6 +352,13 @@ impl App {
         }
         let body = response.body_bytes.clone();
         self.response_actions.copy(body);
+    }
+
+    pub(crate) fn copy_response_selection(&mut self, text: String) {
+        if text.is_empty() || self.response_actions.is_running() {
+            return;
+        }
+        self.response_actions.copy(text.into());
     }
 
     fn copy_current_response_headers(&mut self) {
@@ -405,44 +399,5 @@ impl App {
             request_id,
             self.config.download_directory.clone(),
         );
-    }
-
-    fn extract_current_response_variables(&mut self) {
-        let Some(extracts) = self
-            .current_effective_request()
-            .map(|request| request.extracts)
-        else {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().response_action_no_response().to_string(),
-            ));
-            return;
-        };
-        if extracts.is_empty() {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().response_extract_missing().to_string(),
-            ));
-            return;
-        }
-        let Some(response) = self.current_response() else {
-            self.view.notice = Some(Feedback::Warning(
-                self.text().response_action_no_response().to_string(),
-            ));
-            return;
-        };
-        let (values, failure_count) =
-            crate::request_executor::extract_response_variables(&extracts, response);
-        let extracted = values.len();
-        for (variable, value) in values {
-            self.workspace_state.variables.insert(variable, value);
-        }
-        tracing::debug!(extracted, failure_count, "响应操作提取字段");
-        let text = self.text();
-        self.view.notice = Some(if failure_count > 0 {
-            Feedback::Warning(text.response_extract_failures(failure_count))
-        } else if extracted > 0 {
-            Feedback::Success(text.response_extracted(extracted))
-        } else {
-            Feedback::Warning(text.response_extract_unavailable().to_string())
-        });
     }
 }

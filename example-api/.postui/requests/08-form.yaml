@@ -5,6 +5,3 @@ url: http://{{host}}/v1/form
 headers:
   Content-Type: application/x-www-form-urlencoded
 body: 'name={{item_name}}&note={{note}}'
-extracts:
-  - variable: header_echo
-    path: request.headers.content-type

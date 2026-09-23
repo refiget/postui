@@ -10,8 +10,6 @@ pub(crate) enum Context {
     Headers,
     Params,
     Menu,
-    Variables,
-    Extracts,
     CurlImport,
     Confirm,
     Editor,
@@ -37,11 +35,12 @@ pub(crate) enum Command {
     Reload,
     Workspace,
     Variables,
-    Extracts,
-    ReorderUp,
-    ReorderDown,
+    EditRequest,
+    EditDraft,
     ImportCurl,
     ResponseMenu,
+    ResponseFormat,
+    ResponseZoom,
     Search,
     NextMatch,
     PreviousMatch,
@@ -116,19 +115,26 @@ macro_rules! binding {
 use KeyCode::*;
 
 const GLOBAL: &[Binding] = &[
-    binding!(FocusNext, "Tab", "Focus", "焦点", plain(Tab)),
+    binding!(
+        FocusNext,
+        "Tab/Ctrl+N",
+        "Focus",
+        "焦点",
+        plain(Tab),
+        ctrl(Char('n'))
+    ),
     binding!(
         FocusPrevious,
-        "Shift+Tab",
+        "Shift+Tab/Ctrl+P",
         "Previous focus",
         "上一焦点",
-        plain(BackTab)
+        plain(BackTab),
+        ctrl(Char('p'))
     ),
     binding!(Send, "s", "Send/Stop", "发送/停止", plain(Char('s'))),
     binding!(Reload, "r", "Reload", "重载", plain(Char('r'))),
     binding!(Workspace, "c", "Scenario", "场景", plain(Char('c'))),
     binding!(Variables, "v", "Variables", "变量", plain(Char('v'))),
-    binding!(Extracts, "e", "Extract order", "提取顺序", plain(Char('e'))),
     binding!(ImportCurl, "n", "New", "新建", plain(Char('n'))),
     binding!(
         ResponseMenu,
@@ -136,6 +142,13 @@ const GLOBAL: &[Binding] = &[
         "Response actions",
         "响应操作",
         plain(Char('m'))
+    ),
+    binding!(
+        ResponseZoom,
+        "z",
+        "Zoom response",
+        "放大响应",
+        plain(Char('z'))
     ),
     binding!(Search, "/", "Filter", "筛选", plain(Char('/'))),
     binding!(Help, "?", "Keys", "按键", plain(Char('?'))),
@@ -161,6 +174,7 @@ const MOVEMENT: &[Binding] = &[
     binding!(Down, "j/↓", "Down", "下移", plain(Char('j')), plain(Down)),
 ];
 const REQUESTS: &[Binding] = &[
+    binding!(EditRequest, "e", "Edit", "编辑", plain(Char('e'))),
     binding!(
         ResetRequest,
         "u",
@@ -184,8 +198,33 @@ const REQUESTS: &[Binding] = &[
         plain(Delete)
     ),
 ];
+/// 请求容器内容页签的按键；`Enter` 编辑光标所在字段。
+const PREVIEW: &[Binding] = &[
+    binding!(
+        Activate,
+        "Enter/Space",
+        "Edit",
+        "编辑",
+        plain(Enter),
+        plain(Char(' '))
+    ),
+    binding!(
+        EditDraft,
+        "e",
+        "External edit",
+        "外部编辑",
+        plain(Char('e'))
+    ),
+];
 const RESPONSE: &[Binding] = &[
     binding!(Search, "/", "Search response", "搜索响应", plain(Char('/'))),
+    binding!(
+        ResponseFormat,
+        "f",
+        "Raw/Formatted",
+        "原文/格式化",
+        plain(Char('f'))
+    ),
     binding!(NextMatch, "n", "Next match", "下一匹配", plain(Char('n'))),
     binding!(
         PreviousMatch,
@@ -195,23 +234,16 @@ const RESPONSE: &[Binding] = &[
         plain(Char('N'))
     ),
 ];
+const PARAMS: &[Binding] = &[binding!(
+    EditDraft,
+    "e",
+    "External edit",
+    "外部编辑",
+    plain(Char('e'))
+)];
 const TABLE: &[Binding] = &[
-    binding!(
-        Left,
-        "h/←",
-        "Name column",
-        "名称列",
-        plain(Char('h')),
-        plain(Left)
-    ),
-    binding!(
-        Right,
-        "l/→",
-        "Value column",
-        "值列",
-        plain(Char('l')),
-        plain(Right)
-    ),
+    binding!(Left, "←", "Name column", "名称列", plain(Left)),
+    binding!(Right, "→", "Value column", "值列", plain(Right)),
     binding!(
         Activate,
         "Enter/Space",
@@ -239,6 +271,13 @@ const TABLE: &[Binding] = &[
     ),
 ];
 const HEADERS: &[Binding] = &[
+    binding!(
+        EditDraft,
+        "e",
+        "External edit",
+        "外部编辑",
+        plain(Char('e'))
+    ),
     binding!(Activate, "Enter", "Edit", "编辑", plain(Enter)),
     binding!(
         Toggle,
@@ -259,22 +298,6 @@ const MENU: &[Binding] = &[
     ),
     binding!(Back, "Esc/q", "Close", "关闭", plain(Esc), plain(Char('q'))),
 ];
-const VARIABLES: &[Binding] = &[
-    binding!(
-        Activate,
-        "Enter/Space",
-        "Edit",
-        "编辑",
-        plain(Enter),
-        plain(Char(' '))
-    ),
-    binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
-];
-const EXTRACTS: &[Binding] = &[
-    binding!(ReorderUp, "K", "Move up", "顺序上移", plain(Char('K'))),
-    binding!(ReorderDown, "J", "Move down", "顺序下移", plain(Char('J'))),
-    binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
-];
 const CURL_IMPORT: &[Binding] = &[
     binding!(FocusNext, "Tab", "Next field", "下一字段", plain(Tab)),
     binding!(
@@ -286,6 +309,7 @@ const CURL_IMPORT: &[Binding] = &[
     ),
     binding!(Back, "Esc/q", "Back", "返回", plain(Esc), plain(Char('q'))),
     binding!(Clear, "Ctrl+U", "Clear", "清空", ctrl(Char('u'))),
+    binding!(Send, "Ctrl+S", "Import", "导入", ctrl(Char('s'))),
 ];
 const CONFIRM: &[Binding] = &[
     binding!(
@@ -410,33 +434,40 @@ const COMMON: &[Binding] = &[
 ];
 const TABS: &[Binding] = &[
     binding!(
-        Left,
+        PreviousTab,
         "h/←",
         "Previous tab",
         "上一页签",
         plain(Char('h')),
-        plain(Left)
-    ),
-    binding!(
-        Right,
-        "l/→",
-        "Next tab",
-        "下一页签",
-        plain(Char('l')),
-        plain(Right)
-    ),
-    binding!(
-        PreviousTab,
-        "Alt+←",
-        "Previous tab",
-        "上一页签",
+        plain(Left),
         (Left, KeyModifiers::ALT)
     ),
     binding!(
         NextTab,
-        "Alt+→",
+        "l/→",
         "Next tab",
         "下一页签",
+        plain(Char('l')),
+        plain(Right),
+        (Right, KeyModifiers::ALT)
+    ),
+];
+/// 参数和请求头表格中的页签按键；`←`/`→` 在这些表格中切换列。
+const TABLE_TABS: &[Binding] = &[
+    binding!(
+        PreviousTab,
+        "h",
+        "Previous tab",
+        "上一页签",
+        plain(Char('h')),
+        (Left, KeyModifiers::ALT)
+    ),
+    binding!(
+        NextTab,
+        "l",
+        "Next tab",
+        "下一页签",
+        plain(Char('l')),
         (Right, KeyModifiers::ALT)
     ),
 ];
@@ -446,30 +477,25 @@ fn bindings(context: Context, debug: bool) -> impl Iterator<Item = &'static Bind
     let groups: &[&[Binding]] = match context {
         Context::Global => &[GLOBAL],
         Context::Requests => &[REQUESTS, MOVEMENT],
-        Context::Preview => &[MOVEMENT],
+        Context::Preview => &[PREVIEW, MOVEMENT],
         Context::Response => &[RESPONSE, MOVEMENT],
         Context::Headers => &[HEADERS, TABLE, MOVEMENT],
-        Context::Params => &[TABLE, MOVEMENT],
+        Context::Params => &[PARAMS, TABLE, MOVEMENT],
         Context::Menu => &[MENU, MOVEMENT],
-        Context::Variables => &[VARIABLES, MOVEMENT],
-        Context::Extracts => &[EXTRACTS, MOVEMENT],
         Context::CurlImport => &[CURL_IMPORT],
         Context::Confirm => &[CONFIRM],
         Context::Editor => &[EDITOR],
         Context::Help => &[HELP],
     };
+    let tabs = match context {
+        Context::Preview | Context::Response => Some(TABS),
+        Context::Headers | Context::Params => Some(TABLE_TABS),
+        _ => None,
+    };
     groups
         .iter()
         .flat_map(|group| group.iter())
-        .chain(
-            matches!(
-                context,
-                Context::Preview | Context::Response | Context::Headers | Context::Params
-            )
-            .then_some(TABS)
-            .into_iter()
-            .flatten(),
-        )
+        .chain(tabs.into_iter().flatten())
         .chain(
             context
                 .inherits_global()

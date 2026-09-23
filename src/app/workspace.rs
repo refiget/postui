@@ -1,6 +1,6 @@
 use super::{
-    App, ConfigurationsDialog, Dialog, ErrorPage, Feedback, Focus, PreviewContentState,
-    RequestDraft, RequestStatus, ResponseContentState, WorkspaceSession,
+    App, ConfigurationsDialog, Dialog, ErrorPage, Feedback, PreviewContentState, RequestDraft,
+    RequestStatus, ResponseContentState, WorkspaceSession,
 };
 
 pub(super) struct ReloadedWorkspace {
@@ -14,8 +14,7 @@ pub(super) struct ReloadedWorkspace {
 impl App {
     pub(super) fn has_request_changes(&self) -> bool {
         self.workspace_state.requests.iter().any(|session| {
-            session.has_extract_order()
-                || self.request_modified(&session.source.id)
+            self.request_modified(&session.source.id)
                 || self
                     .baseline_requests
                     .get(&session.source.id)
@@ -59,8 +58,6 @@ impl App {
         if let Some(session) = self.workspace_state.request_mut(&request_id) {
             let request = source.for_configuration(configuration);
             session.draft = RequestDraft::from(&request);
-            session.reset_temporary_variables(&self.baseline_config, configuration, &request);
-            session.set_extract_order(None);
         }
         self.view.preview = PreviewContentState::default();
         self.view.dialog = None;
@@ -82,8 +79,6 @@ impl App {
             if let Some(source) = self.baseline_requests.get(&session.source.id) {
                 let request = source.for_configuration(&configuration);
                 session.draft = RequestDraft::from(&request);
-                session.reset_temporary_variables(&self.baseline_config, &configuration, &request);
-                session.set_extract_order(None);
             }
         }
         self.config
@@ -106,21 +101,11 @@ impl App {
         state.select(selected, rows.len());
         state.open();
         self.view.dialog = Some(Dialog::Configurations(ConfigurationsDialog { rows, state }));
-        self.view.focus = Focus::WorkspaceButton;
         tracing::debug!(
             configuration = %self.active_configuration(),
             configuration_count = self.config.configurations.len(),
             "打开 workspace 配置下拉菜单"
         );
-    }
-
-    /// 触发按钮的行为：已打开时关闭，否则打开。
-    pub(crate) fn toggle_configurations(&mut self) {
-        if matches!(self.view.dialog, Some(Dialog::Configurations(_))) {
-            self.close_dialog();
-        } else {
-            self.open_configurations();
-        }
     }
 
     pub(crate) fn switch_configuration(&mut self, configuration: &str) {
@@ -183,8 +168,10 @@ impl App {
             let loaded = match crate::config::load_tolerant(&path) {
                 Ok(loaded) => loaded,
                 Err(error) => {
-                    let _ =
-                        sender.send(Err(ErrorPage::from_error(&error, path.join("postui.yaml"))));
+                    let _ = sender.send(Err(ErrorPage::from_error(
+                        &error,
+                        path.join(crate::config::WORKSPACE_FILE_NAME),
+                    )));
                     return;
                 }
             };
@@ -218,9 +205,12 @@ impl App {
             Ok(loaded) => loaded,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(ErrorPage::from_message(
-                self.workspace_path().join("postui.yaml"),
+                self.workspace_path()
+                    .join(crate::config::WORKSPACE_FILE_NAME),
                 crate::diagnostics::invalid(
-                    &self.workspace_path().join("postui.yaml"),
+                    &self
+                        .workspace_path()
+                        .join(crate::config::WORKSPACE_FILE_NAME),
                     "workspace reload",
                     "Workspace reload ended unexpectedly",
                 )

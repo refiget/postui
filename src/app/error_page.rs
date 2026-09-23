@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, EditorOutcome, EditorRequest};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -6,7 +6,6 @@ pub(crate) struct ErrorPage {
     pub(crate) message: String,
     pub(crate) path: PathBuf,
     pub(crate) editor_error: Option<String>,
-    editor_requested: bool,
 }
 
 impl ErrorPage {
@@ -23,7 +22,6 @@ impl ErrorPage {
             message,
             path: first.path().to_path_buf(),
             editor_error: None,
-            editor_requested: false,
         })
     }
 
@@ -48,7 +46,6 @@ impl ErrorPage {
                 message: diagnostic.to_string(),
                 path,
                 editor_error: None,
-                editor_requested: false,
             };
         }
 
@@ -63,7 +60,6 @@ impl ErrorPage {
             message,
             path,
             editor_error: None,
-            editor_requested: false,
         }
     }
 }
@@ -78,21 +74,14 @@ impl App {
         tracing::debug!("关闭配置错误页面，继续使用已加载配置");
     }
 
+    /// 用外部编辑器打开配置错误页指向的文件。
     pub(crate) fn request_error_editor(&mut self) {
-        let Some(error_page) = self.error_page.as_mut() else {
+        let Some(path) = self.error_page.as_ref().map(|page| page.path.clone()) else {
             return;
         };
-        error_page.editor_requested = true;
-    }
-
-    pub(crate) fn take_editor_request(&mut self) -> Option<PathBuf> {
-        let page = self.error_page.as_mut()?;
-        std::mem::take(&mut page.editor_requested).then(|| page.path.clone())
-    }
-
-    pub(crate) fn report_editor_error(&mut self, error: impl Into<String>) {
-        if let Some(error_page) = self.error_page.as_mut() {
-            error_page.editor_error = Some(error.into());
-        }
+        self.editor_request = Some(EditorRequest {
+            path,
+            outcome: EditorOutcome::ErrorPage,
+        });
     }
 }

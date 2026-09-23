@@ -1,8 +1,7 @@
 use super::App;
 use crate::editor::sanitize_paste;
 use crate::shortcuts::{self, Command, Context};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -48,8 +47,6 @@ pub(crate) enum CurlImportFocus {
     RegisteredVariables,
     Workspace,
     Command,
-    Confirm,
-    Cancel,
 }
 
 impl CurlImportFocus {
@@ -62,13 +59,11 @@ impl CurlImportFocus {
 
     fn next(self, reverse: bool) -> Self {
         match (self, reverse) {
-            (Self::Name, false) | (Self::RegisteredVariables, true) => Self::Description,
-            (Self::Description, false) | (Self::Workspace, true) => Self::RegisteredVariables,
-            (Self::RegisteredVariables, false) | (Self::Command, true) => Self::Workspace,
-            (Self::Workspace, false) | (Self::Confirm, true) => Self::Command,
-            (Self::Command, false) | (Self::Cancel, true) => Self::Confirm,
-            (Self::Confirm, false) | (Self::Name, true) => Self::Cancel,
-            (Self::Cancel, false) | (Self::Description, true) => Self::Name,
+            (Self::Name, false) | (Self::Command, true) => Self::Description,
+            (Self::Description, false) | (Self::Name, true) => Self::RegisteredVariables,
+            (Self::RegisteredVariables, false) | (Self::Description, true) => Self::Workspace,
+            (Self::Workspace, false) | (Self::RegisteredVariables, true) => Self::Command,
+            (Self::Command, false) | (Self::Workspace, true) => Self::Name,
         }
     }
 }
@@ -131,59 +126,9 @@ pub(crate) struct CurlImportPage {
     command: CurlImportField,
     focus: CurlImportFocus,
     state: CurlImportState,
-    workspace_button: tui_assets_rust::ButtonInteraction,
-    confirm_button: tui_assets_rust::ButtonInteraction,
-    cancel_button: tui_assets_rust::ButtonInteraction,
 }
 
 impl CurlImportPage {
-    pub(crate) fn sync_buttons(&mut self) {
-        let enabled = !self.is_running();
-        self.workspace_button
-            .set_focused(self.focus == CurlImportFocus::Workspace);
-        self.workspace_button.set_enabled(enabled);
-        self.confirm_button
-            .set_focused(self.focus == CurlImportFocus::Confirm);
-        self.confirm_button.set_enabled(self.can_confirm());
-        self.cancel_button
-            .set_focused(self.focus == CurlImportFocus::Cancel);
-        self.cancel_button.set_enabled(enabled);
-    }
-
-    pub(crate) fn button_state(&self, focus: CurlImportFocus) -> tui_assets_rust::ButtonState {
-        match focus {
-            CurlImportFocus::Workspace => self.workspace_button.visual_state(),
-            CurlImportFocus::Confirm => self.confirm_button.visual_state(),
-            CurlImportFocus::Cancel => self.cancel_button.visual_state(),
-            CurlImportFocus::Name
-            | CurlImportFocus::Description
-            | CurlImportFocus::RegisteredVariables
-            | CurlImportFocus::Command => tui_assets_rust::ButtonState::Idle,
-        }
-    }
-
-    pub(crate) fn handle_button_mouse(
-        &mut self,
-        event: MouseEvent,
-        workspace: Rect,
-        confirm: Rect,
-        cancel: Rect,
-    ) -> Option<CurlImportFocus> {
-        self.confirm_button.set_enabled(self.can_confirm());
-        let workspace_event = self.workspace_button.handle_mouse(event, workspace);
-        let confirm_event = self.confirm_button.handle_mouse(event, confirm);
-        let cancel_event = self.cancel_button.handle_mouse(event, cancel);
-        if workspace_event == tui_assets_rust::ButtonEvent::Clicked {
-            Some(CurlImportFocus::Workspace)
-        } else if confirm_event == tui_assets_rust::ButtonEvent::Clicked {
-            Some(CurlImportFocus::Confirm)
-        } else if cancel_event == tui_assets_rust::ButtonEvent::Clicked {
-            Some(CurlImportFocus::Cancel)
-        } else {
-            None
-        }
-    }
-
     pub(crate) fn command(&self) -> &str {
         &self.command.value
     }
@@ -197,12 +142,6 @@ impl CurlImportPage {
         if let Some(field) = self.active_field_mut() {
             field.place_cursor(line, column);
         }
-    }
-
-    pub(crate) fn can_confirm(&self) -> bool {
-        !self.is_running()
-            && !self.name.value.trim().is_empty()
-            && !self.command.value.trim().is_empty()
     }
 
     fn is_running(&self) -> bool {
@@ -240,7 +179,7 @@ impl CurlImportPage {
             CurlImportFocus::Description => Some(&self.description),
             CurlImportFocus::RegisteredVariables => Some(&self.registered_variables),
             CurlImportFocus::Command => Some(&self.command),
-            CurlImportFocus::Workspace | CurlImportFocus::Confirm | CurlImportFocus::Cancel => None,
+            CurlImportFocus::Workspace => None,
         }
     }
 
@@ -250,7 +189,7 @@ impl CurlImportPage {
             CurlImportFocus::Description => Some(&mut self.description),
             CurlImportFocus::RegisteredVariables => Some(&mut self.registered_variables),
             CurlImportFocus::Command => Some(&mut self.command),
-            CurlImportFocus::Workspace | CurlImportFocus::Confirm | CurlImportFocus::Cancel => None,
+            CurlImportFocus::Workspace => None,
         }
     }
 
@@ -428,21 +367,6 @@ impl App {
         }
     }
 
-    pub(crate) fn activate_curl_import(&mut self, focus: CurlImportFocus) {
-        self.focus_curl_import(focus);
-        match focus {
-            CurlImportFocus::Workspace => self.toggle_configurations(),
-            CurlImportFocus::Confirm => {
-                self.start_curl_import();
-            }
-            CurlImportFocus::Cancel => self.view.curl_import = None,
-            CurlImportFocus::Name
-            | CurlImportFocus::Description
-            | CurlImportFocus::RegisteredVariables
-            | CurlImportFocus::Command => {}
-        }
-    }
-
     pub(super) fn handle_curl_import_key(&mut self, key: KeyEvent) {
         let key = shortcuts::normalize(key);
         match shortcuts::resolve(Context::CurlImport, key, false) {
@@ -471,6 +395,7 @@ impl App {
             Some(Command::Back) if key.code == KeyCode::Esc || !page.focus.is_input() => {
                 self.view.curl_import = None;
             }
+            Some(Command::Send) => self.start_curl_import(),
             Some(Command::FocusNext) => page.focus = page.focus.next(false),
             Some(Command::FocusPrevious) => page.focus = page.focus.next(true),
             Some(Command::Clear) => {
@@ -479,12 +404,6 @@ impl App {
             }
             _ if key.code == KeyCode::Enter && page.focus == CurlImportFocus::Workspace => {
                 self.open_configurations();
-            }
-            _ if key.code == KeyCode::Enter && page.focus == CurlImportFocus::Cancel => {
-                self.view.curl_import = None;
-            }
-            _ if key.code == KeyCode::Enter && page.focus == CurlImportFocus::Confirm => {
-                self.start_curl_import();
             }
             _ if key.code == KeyCode::Enter && page.focus == CurlImportFocus::Command => {
                 page.command.insert("\n");
@@ -569,7 +488,6 @@ fn imported_request_document(
         body: imported_body(request.body_parts),
         form: request.form,
         files: request.files,
-        extracts: Vec::new(),
     }
 }
 
@@ -711,7 +629,6 @@ fn merge_registered_variables(
                 entry.insert(crate::config::VariableDefinition {
                     default: variable.default,
                     secret: false,
-                    temporary: true,
                 });
             }
         }

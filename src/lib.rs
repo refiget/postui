@@ -15,6 +15,7 @@ pub mod curl;
 pub mod highlight;
 pub mod http;
 pub mod http_method;
+mod request_body_formatter;
 pub mod request_executor;
 pub mod request_file;
 pub mod response_document;

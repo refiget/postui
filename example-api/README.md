@@ -35,7 +35,7 @@ JSON keeps viewport-based formatting and immediate highlighting, even beyond 1 M
 
 ## Requests
 
-The top-level request examples cover variable extraction, request headers, forms, file uploads, redirects, HTTP errors, empty responses, and timeouts. Prepare non-sensitive sample files locally for upload; do not commit uploaded files or downloaded artifacts.
+The top-level request examples cover request headers, forms, file uploads, redirects, HTTP errors, empty responses, and timeouts. Prepare non-sensitive sample files locally for upload; do not commit uploaded files or downloaded artifacts.
 
 `GET /v1/large-response` produces a marked large response with slow, streamed chunks:
 

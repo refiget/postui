@@ -1,5 +1,6 @@
 use super::{
-    ConfigurationDocument, RequestConfig, WorkspaceConfiguration,
+    ConfigurationDocument, RequestConfig, WORKSPACE_FILE_NAME, WorkspaceConfiguration,
+    default_configurations,
     documents::RawWorkspaceConfig,
     files::{
         ConfigurationFile, RequestFile, normalize_configuration_name, normalize_request_id,
@@ -41,7 +42,7 @@ fn load_workspace(workspace_path: &Path, tolerant: bool) -> Result<LoadOutcome> 
     }
 
     let mut warnings = Vec::new();
-    let workspace_config_path = workspace_path.join("postui.yaml");
+    let workspace_config_path = workspace_path.join(WORKSPACE_FILE_NAME);
     let workspace_config = match read_optional_file(&workspace_config_path) {
         Ok(text) => text,
         Err(error) if tolerant => {
@@ -90,6 +91,7 @@ fn load_workspace(workspace_path: &Path, tolerant: bool) -> Result<LoadOutcome> 
         download_directory = %config.download_directory.display(),
         "配置文件加载完成"
     );
+    crate::request_body_formatter::format_after_load(workspace_path.to_path_buf());
     Ok(LoadOutcome { config, warnings })
 }
 
@@ -103,7 +105,7 @@ fn parse_workspace_config(
     warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
 ) -> Result<RequestConfig> {
     let raw = match text {
-        Some(text) => match diagnostics::parse_yaml(path, "postui.yaml", text) {
+        Some(text) => match diagnostics::parse_yaml(path, WORKSPACE_FILE_NAME, text) {
             Ok(raw) => raw,
             Err(error) if tolerant => {
                 record_warning(warnings, config_diagnostic(&error)?);
@@ -221,7 +223,6 @@ fn normalize_config(
             header_count = request.headers.len(),
             form_field_count = request.form.len(),
             file_count = request.files.len(),
-            extract_count = request.extracts.len(),
             body_part_count = request.body_parts.len(),
             query_part_count = request.query_parts.len(),
             "规范化接口配置"
@@ -301,17 +302,7 @@ fn normalize_configurations(
     warnings: &mut Vec<crate::diagnostics::ConfigDiagnostic>,
 ) -> Result<BTreeMap<String, WorkspaceConfiguration>> {
     if configuration_files.is_empty() {
-        return Ok(BTreeMap::from([(
-            "default".to_string(),
-            WorkspaceConfiguration {
-                path: None,
-                variables: BTreeMap::new(),
-                headers: Vec::new(),
-                timeout_seconds: None,
-                skip_ssl_verification: None,
-                request_overrides: BTreeMap::new(),
-            },
-        )]));
+        return Ok(default_configurations());
     }
 
     let mut configurations = BTreeMap::new();
@@ -341,17 +332,7 @@ fn normalize_configurations(
         configurations.insert(name, configuration);
     }
     if configurations.is_empty() {
-        configurations.insert(
-            "default".to_string(),
-            WorkspaceConfiguration {
-                path: None,
-                variables: BTreeMap::new(),
-                headers: Vec::new(),
-                timeout_seconds: None,
-                skip_ssl_verification: None,
-                request_overrides: BTreeMap::new(),
-            },
-        );
+        configurations.extend(default_configurations());
     }
     Ok(configurations)
 }

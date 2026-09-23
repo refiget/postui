@@ -47,6 +47,11 @@ logs/
 /.codegraph/
 /tuibot/
 
+# Local reference checkouts and assistant tool state
+/.claude/
+/yazi/
+/yazi-picker/
+
 # Editor and operating system files
 .DS_Store
 Thumbs.db

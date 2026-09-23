@@ -1,12 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use form_urlencoded::{Serializer, parse};
-use serde_json::Value;
 use url::Url;
 
-use crate::config::{
-    ApiRequest, DataPart, NameValue, RequestOverride, RequestParam, ResponseExtract,
-};
+use crate::config::{ApiRequest, DataPart, NameValue, RequestOverride, RequestParam};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedRequest {
@@ -16,7 +13,6 @@ pub struct ResolvedRequest {
     pub raw_body: Option<String>,
     pub form: Vec<RequestParam>,
     pub files: Vec<ResolvedFile>,
-    pub extracts: Vec<ResponseExtract>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +59,6 @@ pub fn resolve_request(
                     .map(|value| resolve_text(value, variables)),
             })
             .collect(),
-        extracts: request.extracts.clone(),
     }
 }
 
@@ -94,46 +89,6 @@ pub fn variable_names_in_text(input: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
     collect_text(input, &mut names);
     names.into_iter().collect()
-}
-
-pub fn extract_json_value(root: &Value, path: &str) -> Result<String, String> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("响应提取路径不能为空".to_string());
-    }
-
-    let value = if path.starts_with('/') {
-        root.pointer(path)
-            .ok_or_else(|| format!("响应中找不到字段: {path}"))?
-    } else {
-        let segments = path_segments(path);
-        if segments.is_empty() {
-            return Err(format!("响应提取路径无效: {path}"));
-        }
-        let mut value = root;
-        for segment in segments {
-            value = match value {
-                Value::Object(fields) => fields
-                    .get(segment)
-                    .ok_or_else(|| format!("响应中找不到字段: {path}"))?,
-                Value::Array(items) => {
-                    let index = segment
-                        .parse::<usize>()
-                        .map_err(|_| format!("数组下标无效: {segment}"))?;
-                    items
-                        .get(index)
-                        .ok_or_else(|| format!("响应中找不到字段: {path}"))?
-                }
-                _ => return Err(format!("字段路径中无法继续读取: {segment}")),
-            };
-        }
-        value
-    };
-
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        _ => serde_json::to_string(value).map_err(|error| format!("响应字段无法复制: {error}")),
-    }
 }
 
 pub fn resolve_text(input: &str, variables: &BTreeMap<String, String>) -> String {
@@ -195,11 +150,20 @@ fn resolve_data_part(part: &DataPart, variables: &BTreeMap<String, String>) -> S
     }
 }
 
-pub fn data_part_text(part: &DataPart) -> String {
+fn data_part_text(part: &DataPart) -> String {
     match part {
         DataPart::Raw(value) => value.clone(),
         DataPart::UrlEncoded(parameter) => parameter.to_text(),
     }
+}
+
+/// 请求体各部分的文本，按分隔符拼接。
+pub fn body_parts_text(parts: &[DataPart], separator: &str) -> String {
+    parts
+        .iter()
+        .map(data_part_text)
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 fn resolve_parameter(
@@ -269,12 +233,7 @@ pub fn parse_query_params(query: &str) -> Vec<RequestParam> {
 }
 
 pub fn append_display_query(url: &str, parts: &[DataPart]) -> String {
-    let query = parts
-        .iter()
-        .map(data_part_text)
-        .collect::<Vec<_>>()
-        .join("&");
-    append_query(url, &query)
+    append_query(url, &body_parts_text(parts, "&"))
 }
 
 pub fn split_url_query(input: &str) -> UrlParts {
@@ -377,12 +336,6 @@ fn collect_text_values(values: &[NameValue], names: &mut BTreeSet<String>) {
 
 fn collect_text_request(request: &ApiRequest, names: &mut BTreeSet<String>) {
     collect_request_inputs(request, names);
-    for extract in &request.extracts {
-        let variable = strip_variable_delimiters(&extract.variable);
-        if !variable.is_empty() {
-            names.insert(variable.to_string());
-        }
-    }
 }
 
 fn collect_request_inputs(request: &ApiRequest, names: &mut BTreeSet<String>) {
@@ -436,14 +389,6 @@ fn collect_text_override(request_override: &RequestOverride, names: &mut BTreeSe
             }
         }
     }
-    if let Some(extracts) = &request_override.extracts {
-        for extract in extracts {
-            let variable = strip_variable_delimiters(&extract.variable);
-            if !variable.is_empty() {
-                names.insert(variable.to_string());
-            }
-        }
-    }
 }
 
 fn collect_text_params(values: &[RequestParam], names: &mut BTreeSet<String>) {
@@ -471,22 +416,6 @@ fn collect_text(input: &str, names: &mut BTreeSet<String>) {
         }
         rest = &rest[end..];
     }
-}
-
-fn strip_variable_delimiters(value: &str) -> &str {
-    let value = value.trim();
-    value
-        .strip_prefix("{{")
-        .and_then(|value| value.strip_suffix("}}"))
-        .map(str::trim)
-        .unwrap_or(value)
-}
-
-fn path_segments(path: &str) -> Vec<&str> {
-    path.split(['.', '[', ']'])
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .collect()
 }
 
 pub fn find_placeholder(input: &str) -> Option<(usize, usize, &str)> {

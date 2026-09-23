@@ -2,15 +2,14 @@ use super::{
     TABLE_HIGHLIGHT_WIDTH,
     focus::FocusStyles,
     layout::UiLayout,
-    response_toolbar::draw_response_toolbar_button_left,
     widgets::{
-        draw_flat_button_colored, draw_scrollbar, edit_input_style, editor_view, label_style,
-        method_style, panel_block, request_status_style, request_status_symbol,
-        scrollbar_offset_from_drag, scrollbar_offset_from_track, scrollbar_track_state, truncate,
+        draw_scrollbar, edit_input_style, editor_view, label_style, method_style, panel_block,
+        request_status_style, request_status_symbol, scrollbar_offset_from_drag,
+        scrollbar_offset_from_track, scrollbar_track_state, truncate,
     },
 };
 use crate::{
-    app::{App, Focus, MainButton, PreviewAction, RequestStatus, ScrollDragTarget},
+    app::{App, Focus, RequestStatus, ScrollDragTarget},
     config::ApiRequest,
 };
 use ratatui::{
@@ -49,7 +48,7 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled(feedback.message(), Style::default().fg(color)),
         ]);
     } else {
-        let container = match app.view.focus.container() {
+        let container = match app.view.focus {
             Focus::Requests => text.request_selector(),
             Focus::Preview => text.request_editor(),
             Focus::Response => text.response(),
@@ -57,10 +56,6 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         };
         let label = if app.view.help_scroll.is_some() {
             text.help_title()
-        } else if app.view.variables.is_some() {
-            text.variables()
-        } else if app.view.extracts.is_some() {
-            text.extracts()
         } else if app.view.curl_import.is_some() {
             text.curl_import_title()
         } else {
@@ -109,6 +104,11 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
     }
 
+    draw_hint_row(frame, hint_area, &hint, theme);
+}
+
+/// 底栏按键提示行；放不下时跳过靠后的提示，`?` 提示优先保留。
+fn draw_hint_row(frame: &mut Frame<'_>, area: Rect, hint: &str, theme: &crate::settings::UiTheme) {
     let hints = hint
         .split("  ")
         .filter_map(|hint| hint.split_once(' '))
@@ -131,7 +131,7 @@ pub(super) fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if let Some((key, label)) = help.filter(|_| used + help_width <= available) {
         spans.extend(shortcut_spans(key, label, theme));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), hint_area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn shortcut_spans<'a>(
@@ -149,25 +149,10 @@ fn shortcut_spans<'a>(
     ]
 }
 
-pub(super) fn draw_header(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    content_area: Rect,
-    action_area: Rect,
-    app: &App,
-) {
+pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, content_area: Rect, app: &App) {
     let theme = &app.global_config.theme;
     let focus = FocusStyles::new(app.view.focus, theme);
-    let title_area = if action_area.is_empty() {
-        content_area
-    } else {
-        Rect::new(
-            content_area.x,
-            content_area.y,
-            action_area.x.saturating_sub(content_area.x),
-            content_area.height,
-        )
-    };
+    let text = app.text();
     let mut line = vec![
         Span::styled(
             " POSTUI ",
@@ -189,6 +174,14 @@ pub(super) fn draw_header(
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    line.push(Span::styled(
+        format!("  ·  {} {}", text.scenario(), app.active_configuration()),
+        Style::default().fg(theme.muted),
+    ));
+    line.push(Span::styled(
+        format!("  ·  {} {}", text.variables(), app.variable_count()),
+        Style::default().fg(theme.muted),
+    ));
     if area.width >= 110 {
         line.push(Span::styled(
             format!("  │  {}", app.workspace_path().display()),
@@ -201,59 +194,12 @@ pub(super) fn draw_header(
     );
     frame.render_widget(
         Paragraph::new(Line::from(line)).style(Style::default().fg(theme.text)),
-        title_area,
-    );
-    draw_response_toolbar_button_left(
-        frame,
-        action_area,
-        app.text().new_request(),
-        "+",
-        app.view.main_buttons.visual_state(
-            MainButton::NewRequest,
-            MainButton::NewRequest.enabled(app),
-            app.view.focus == Focus::Header,
-        ),
-        theme.primary,
-        theme,
-    );
-}
-
-pub(super) fn draw_request_send_button(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if area.is_empty() || !app.has_current_request() {
-        return;
-    }
-    let Some(request) = app.current_request() else {
-        return;
-    };
-    let request_status = app.request_status(&request.id);
-    let loading = request_status == RequestStatus::Sending;
-    let send_label = format!("▶ {}  s", app.text().send_button(false));
-    let cancel_label = format!("■ {}  s", app.text().cancel_request());
-    let label_width = Line::from(send_label.as_str())
-        .width()
-        .max(Line::from(cancel_label.as_str()).width());
-    let mut label = if loading { cancel_label } else { send_label };
-    let padding = label_width.saturating_sub(Line::from(label.as_str()).width());
-    label.extend(std::iter::repeat_n(' ', padding));
-    draw_flat_button_colored(
-        frame,
-        area,
-        &label,
-        app.view.main_buttons.visual_state(
-            MainButton::Send,
-            MainButton::Send.enabled(app),
-            app.focused_preview_action() == Some(PreviewAction::Send),
-        ),
-        app.global_config.theme.accent,
-        &app.global_config.theme,
-        Alignment::Right,
+        content_area,
     );
 }
 
 pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &App) {
     let area = layout.requests;
-    let workspace_selector_area = layout.workspace_selector;
-    let variables_button_area = layout.variables_button;
     let list_area = layout.request_list;
     let scrollbar_area = layout.request_scrollbar;
     let theme = &app.global_config.theme;
@@ -292,42 +238,6 @@ pub(super) fn draw_request_list(frame: &mut Frame<'_>, layout: UiLayout, app: &A
         panel_block(title, area, theme).border_style(focus.sidebar_border()),
         area,
     );
-
-    if !workspace_selector_area.is_empty() {
-        let value_width = usize::from(workspace_selector_area.width)
-            .saturating_sub(Line::from(" ▾").width())
-            .saturating_sub(Line::from("▌  ").width());
-        let configuration = format!("{} ▾", truncate(app.active_configuration(), value_width));
-        draw_flat_button_colored(
-            frame,
-            workspace_selector_area,
-            &configuration,
-            app.view.main_buttons.visual_state(
-                MainButton::Workspace,
-                MainButton::Workspace.enabled(app),
-                focus.workspace_focused(),
-            ),
-            theme.secondary,
-            theme,
-            Alignment::Center,
-        );
-    }
-    if !variables_button_area.is_empty() {
-        let label = format!("{} ({})", text.variables(), app.variable_count());
-        draw_flat_button_colored(
-            frame,
-            variables_button_area,
-            &label,
-            app.view.main_buttons.visual_state(
-                MainButton::Variables,
-                MainButton::Variables.enabled(app),
-                focus.variables_focused(),
-            ),
-            theme.accent,
-            theme,
-            Alignment::Center,
-        );
-    }
 
     draw_request_search(frame, layout.request_search, app);
     let request_list_area = list_area;

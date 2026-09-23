@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     config::{
         ApiRequest, DataPart, FileUpload, NameValue, RequestOverride, RequestParam,
-        ResponseExtract, WorkspaceConfig, WorkspaceConfiguration, value_to_string,
+        WorkspaceConfig, WorkspaceConfiguration, value_to_string,
     },
     http::{HttpError, ResponseData},
     i18n::UiText,
@@ -157,11 +157,8 @@ impl RequestRuntimeState {
 pub(crate) struct RequestSession {
     pub(crate) source: ApiRequest,
     pub(crate) draft: RequestDraft,
-    pub(crate) temporary_variables: BTreeMap<String, String>,
     pub(super) runtime: RequestRuntimeState,
-    extract_order: Option<Vec<String>>,
     inactive_headers: BTreeMap<String, Vec<HeaderRow>>,
-    inactive_temporary_variables: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl RequestSession {
@@ -169,22 +166,14 @@ impl RequestSession {
         self.runtime.status()
     }
 
-    pub(super) fn new(
-        source: ApiRequest,
-        configuration: &WorkspaceConfiguration,
-        config: &WorkspaceConfig,
-    ) -> Self {
+    pub(super) fn new(source: ApiRequest, configuration: &WorkspaceConfiguration) -> Self {
         let effective = source.for_configuration(configuration);
-        let temporary_variables = initial_temporary_variables(config, configuration, &effective);
         let draft = RequestDraft::from(&effective);
         Self {
             source,
             draft,
-            temporary_variables,
             runtime: RequestRuntimeState::default(),
-            extract_order: None,
             inactive_headers: BTreeMap::new(),
-            inactive_temporary_variables: BTreeMap::new(),
         }
     }
 
@@ -210,30 +199,7 @@ impl RequestSession {
         effective.form = self.draft.form.clone();
         effective.files = self.draft.files.clone();
         effective.body_parts = self.draft.body_parts.clone();
-        if let Some(order) = &self.extract_order {
-            effective.extracts = ordered_extracts(effective.extracts, order);
-        }
         effective
-    }
-
-    pub(super) fn has_extract_order(&self) -> bool {
-        self.extract_order.is_some()
-    }
-
-    pub(super) fn set_extract_order(&mut self, order: Option<Vec<String>>) {
-        self.extract_order = order;
-    }
-
-    pub(super) fn configured_extract_names(
-        &self,
-        configuration: &WorkspaceConfiguration,
-    ) -> Vec<String> {
-        self.source
-            .for_configuration(configuration)
-            .extracts
-            .iter()
-            .map(|extract| extract.variable.clone())
-            .collect()
     }
 
     fn activate_configuration(
@@ -241,7 +207,6 @@ impl RequestSession {
         previous_name: &str,
         name: &str,
         configuration: &WorkspaceConfiguration,
-        config: &WorkspaceConfig,
     ) {
         let effective = self.source.for_configuration(configuration);
         let mut draft = RequestDraft::from(&effective);
@@ -251,38 +216,7 @@ impl RequestSession {
         let previous = std::mem::replace(&mut self.draft, draft);
         self.inactive_headers
             .insert(previous_name.to_string(), previous.headers);
-        let next_temporary_variables = self
-            .inactive_temporary_variables
-            .remove(name)
-            .unwrap_or_else(|| initial_temporary_variables(config, configuration, &effective));
-        let previous_temporary_variables =
-            std::mem::replace(&mut self.temporary_variables, next_temporary_variables);
-        self.inactive_temporary_variables
-            .insert(previous_name.to_string(), previous_temporary_variables);
         self.runtime.reset();
-    }
-
-    fn sync_temporary_variables(
-        &mut self,
-        configuration: &WorkspaceConfiguration,
-        config: &WorkspaceConfig,
-    ) {
-        let request = self.effective_request(configuration, config);
-        let initial = initial_temporary_variables(config, configuration, &request);
-        self.temporary_variables
-            .retain(|name, _| initial.contains_key(name));
-        for (name, value) in initial {
-            self.temporary_variables.entry(name).or_insert(value);
-        }
-    }
-
-    pub(super) fn reset_temporary_variables(
-        &mut self,
-        config: &WorkspaceConfig,
-        configuration: &WorkspaceConfiguration,
-        request: &ApiRequest,
-    ) {
-        self.temporary_variables = initial_temporary_variables(config, configuration, request);
     }
 
     pub(super) fn has_inactive_header_changes(
@@ -319,9 +253,6 @@ impl RequestSession {
             .request_overrides
             .get(&self.source.id)
             .cloned();
-        let existing_extracts = previous
-            .as_ref()
-            .and_then(|request_override| request_override.extracts.clone());
         let existing_skip_ssl_verification = previous
             .as_ref()
             .and_then(|request_override| request_override.skip_ssl_verification);
@@ -344,7 +275,6 @@ impl RequestSession {
                 .then(|| self.draft.body_parts.clone()),
             form: (self.draft.form != base.form).then(|| self.draft.form.clone()),
             files: (self.draft.files != base.files).then(|| self.draft.files.clone()),
-            extracts: existing_extracts,
         };
         let next = (!next.is_empty()).then_some(next);
         if previous == next {
@@ -411,7 +341,7 @@ impl WorkspaceSession {
             variables,
             requests: requests
                 .into_iter()
-                .map(|request| RequestSession::new(request, configuration, config))
+                .map(|request| RequestSession::new(request, configuration))
                 .collect(),
             selected_request: has_requests.then_some(0),
             configuration_variables,
@@ -439,7 +369,6 @@ impl WorkspaceSession {
                 &self.active_configuration,
                 configuration,
                 &target_configuration,
-                config,
             );
         }
         self.active_configuration = configuration.to_string();
@@ -464,15 +393,6 @@ impl WorkspaceSession {
 
     pub(super) fn current_effective_request(&self, config: &WorkspaceConfig) -> Option<ApiRequest> {
         self.effective_request(config, self.current()?)
-    }
-
-    pub(super) fn sync_current_temporary_variables(&mut self, config: &WorkspaceConfig) {
-        let Some(configuration) = config.configurations.get(&self.active_configuration) else {
-            return;
-        };
-        if let Some(session) = self.current_mut() {
-            session.sync_temporary_variables(configuration, config);
-        }
     }
 
     pub(super) fn effective_request(
@@ -507,22 +427,6 @@ impl WorkspaceSession {
     }
 }
 
-/// 按会话顺序排列提取规则；未列出的规则保持原顺序排在后面。
-fn ordered_extracts(extracts: Vec<ResponseExtract>, order: &[String]) -> Vec<ResponseExtract> {
-    let mut remaining = extracts;
-    let mut ordered = Vec::with_capacity(remaining.len());
-    for name in order {
-        if let Some(index) = remaining
-            .iter()
-            .position(|extract| extract.variable == *name)
-        {
-            ordered.push(remaining.remove(index));
-        }
-    }
-    ordered.extend(remaining);
-    ordered
-}
-
 fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<String, String> {
     let configuration_variables = config
         .configurations
@@ -540,30 +444,6 @@ fn initial_variables(config: &WorkspaceConfig, configuration: &str) -> BTreeMap<
                 .map(value_to_string)
                 .unwrap_or_default();
             (name.clone(), value)
-        })
-        .collect()
-}
-
-fn initial_temporary_variables(
-    config: &WorkspaceConfig,
-    configuration: &WorkspaceConfiguration,
-    request: &ApiRequest,
-) -> BTreeMap<String, String> {
-    crate::template::input_variable_names(request)
-        .into_iter()
-        .filter_map(|name| {
-            let definition = configuration
-                .variables
-                .get(&name)
-                .or_else(|| config.variables.get(&name))?;
-            definition.temporary.then(|| {
-                let value = definition
-                    .default
-                    .as_ref()
-                    .map(value_to_string)
-                    .unwrap_or_default();
-                (name, value)
-            })
         })
         .collect()
 }

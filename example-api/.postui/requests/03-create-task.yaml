@@ -1,10 +1,7 @@
 name: Create task
-description: JSON body and variable extraction.
+description: JSON body with workspace variables.
 method: POST
 url: http://{{host}}/v1/tasks
 headers:
   X-Debug-Token: "{{token}}"
 body: '{"taskId":"{{task_id}}","name":"{{item_name}}","value":"{{item_value}}"}'
-extracts:
-  - variable: task_id
-    path: data.taskId

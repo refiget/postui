@@ -2,9 +2,6 @@ use super::{
     contains,
     focus::FocusStyles,
     layout::{ScrollAreas, UiLayout, inner_scroll_areas},
-    response_toolbar::{
-        draw_response_format_button, draw_response_menu_button, draw_response_zoom_button,
-    },
     widgets::{
         ScrollbarTrackState, draw_scrollbar, edit_input_style, editor_view, label_style,
         panel_block, request_status_style, request_status_symbol, scroll_offset,
@@ -12,7 +9,9 @@ use super::{
         section_style, wrapped_line_count,
     },
 };
-use crate::app::{App, RequestStatus, ResponseTab, ScrollDragTarget};
+use crate::app::{
+    App, RequestStatus, ResponseSelection, ResponseTab, ResponseTextPoint, ScrollDragTarget,
+};
 use ratatui::{
     Frame,
     layout::{Alignment, Margin, Rect},
@@ -20,6 +19,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ResponseLayout {
@@ -166,23 +166,168 @@ pub(super) fn drag_response_scrollbar(app: &mut App, row: u16, areas: UiLayout) 
     app.view.response.scroll.set_offset(offset);
 }
 
+pub(super) fn begin_response_selection(
+    app: &mut App,
+    column: u16,
+    row: u16,
+    areas: UiLayout,
+) -> bool {
+    let Some(point) = response_text_point(app, column, row, areas) else {
+        return false;
+    };
+    app.view.response.selection = Some(ResponseSelection {
+        anchor: point,
+        head: point,
+        text: String::new(),
+        dragging: true,
+    });
+    true
+}
+
+pub(super) fn update_response_selection(app: &mut App, column: u16, row: u16, areas: UiLayout) {
+    let Some(point) = response_text_point(app, column, row, areas) else {
+        return;
+    };
+    let Some((anchor, dragging)) = app
+        .view
+        .response
+        .selection
+        .as_ref()
+        .map(|selection| (selection.anchor, selection.dragging))
+    else {
+        return;
+    };
+    if !dragging {
+        return;
+    }
+    let text = selected_response_text(app, anchor, point);
+    if let Some(selection) = app.view.response.selection.as_mut() {
+        selection.head = point;
+        selection.text = text;
+    }
+}
+
+pub(super) fn finish_response_selection(app: &mut App, column: u16, row: u16, areas: UiLayout) {
+    if !app
+        .view
+        .response
+        .selection
+        .as_ref()
+        .is_some_and(|selection| selection.dragging)
+    {
+        return;
+    }
+    update_response_selection(app, column, row, areas);
+    let text = app
+        .view
+        .response
+        .selection
+        .as_mut()
+        .map(|selection| {
+            selection.dragging = false;
+            selection.text.clone()
+        })
+        .unwrap_or_default();
+    app.copy_response_selection(text);
+}
+
+fn response_text_point(
+    app: &App,
+    column: u16,
+    row: u16,
+    areas: UiLayout,
+) -> Option<ResponseTextPoint> {
+    if app.view.response.active_tab == ResponseTab::Headers {
+        return None;
+    }
+    let content = response_sections(areas.response).body.content;
+    if !contains(content, column, row) {
+        return None;
+    }
+    let document = app.current_response_document()?;
+    let content_line = app
+        .view
+        .response
+        .scroll
+        .offset()
+        .saturating_add(usize::from(row - content.y));
+    let line = content_line.checked_sub(1)?;
+    if line >= document.line_count() {
+        return None;
+    }
+    let text = response_document_line(app, line)?;
+    let display_column = usize::from(column - content.x);
+    Some(ResponseTextPoint {
+        line,
+        grapheme: grapheme_at_column(&text, display_column),
+    })
+}
+
+fn response_document_line(app: &App, line: usize) -> Option<String> {
+    let document = app.current_response_document()?;
+    let rendered = document.visible_lines(line, 1, &app.global_config.theme)?;
+    rendered.first().map(|line| {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    })
+}
+
+fn grapheme_at_column(text: &str, column: usize) -> usize {
+    let mut width = 0_usize;
+    for (index, grapheme) in text.graphemes(true).enumerate() {
+        let next = width.saturating_add(Line::from(grapheme).width());
+        if column < next {
+            return index;
+        }
+        width = next;
+    }
+    text.graphemes(true).count()
+}
+
+fn selected_response_text(app: &App, anchor: ResponseTextPoint, head: ResponseTextPoint) -> String {
+    let (start, end) = if anchor <= head {
+        (anchor, head)
+    } else {
+        (head, anchor)
+    };
+    let mut selected = String::new();
+    for line in start.line..=end.line {
+        let Some(text) = response_document_line(app, line) else {
+            continue;
+        };
+        let graphemes = text.graphemes(true).collect::<Vec<_>>();
+        let from = if line == start.line {
+            start.grapheme.min(graphemes.len())
+        } else {
+            0
+        };
+        let to = if line == end.line {
+            end.grapheme.min(graphemes.len())
+        } else {
+            graphemes.len()
+        };
+        if line > start.line {
+            selected.push('\n');
+        }
+        selected.extend(graphemes[from..to].iter().copied());
+    }
+    selected
+}
+
 pub(super) fn response_sections(area: Rect) -> ResponseLayout {
     let inner = area.inner(Margin::new(1, 1));
     if inner.is_empty() {
         return ResponseLayout::default();
     }
     ResponseLayout {
-        status: Rect::new(
-            inner.x,
-            inner.y.saturating_add(1),
-            inner.width,
-            u16::from(inner.height > 1),
-        ),
+        status: Rect::new(inner.x, inner.y, inner.width, u16::from(inner.height > 0)),
         body: inner_scroll_areas(Rect::new(
             inner.x,
-            inner.y.saturating_add(3),
+            inner.y.saturating_add(2),
             inner.width,
-            inner.height.saturating_sub(3),
+            inner.height.saturating_sub(2),
         )),
     }
 }
@@ -193,14 +338,7 @@ pub(super) fn response_search_area(area: Rect) -> Rect {
         .intersection(area.inner(Margin::new(1, 1)))
 }
 
-pub(super) fn draw_response(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    format_button: Rect,
-    menu_button: Rect,
-    zoom_button: Rect,
-    app: &App,
-) {
+pub(super) fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.global_config.theme;
     let text = app.text();
     let focus = FocusStyles::new(app.view.focus, theme);
@@ -217,9 +355,6 @@ pub(super) fn draw_response(
         );
         return;
     }
-    draw_response_menu_button(frame, menu_button, app);
-    draw_response_format_button(frame, format_button, app);
-    draw_response_zoom_button(frame, zoom_button, app);
     let Some(request) = app.current_request() else {
         return;
     };
@@ -401,6 +536,11 @@ fn render_response_document(
                     }
                 }
             }
+            if let Some(selection) = app.view.response.selection.as_ref() {
+                for (index, line) in visible.iter_mut().enumerate() {
+                    style_response_selection(line, body_start + index, selection, theme);
+                }
+            }
             lines.extend(visible);
         } else {
             lines.push(Line::styled(
@@ -426,6 +566,45 @@ fn render_response_document(
         offset,
         theme,
     );
+}
+
+fn style_response_selection(
+    line: &mut Line<'static>,
+    line_index: usize,
+    selection: &ResponseSelection,
+    theme: &crate::settings::UiTheme,
+) {
+    let (start, end) = selection.ordered();
+    if start == end || line_index < start.line || line_index > end.line {
+        return;
+    }
+    let selected_start = if line_index == start.line {
+        start.grapheme
+    } else {
+        0
+    };
+    let selected_end = if line_index == end.line {
+        end.grapheme
+    } else {
+        usize::MAX
+    };
+    let selection_style = Style::default()
+        .bg(theme.selection)
+        .add_modifier(Modifier::BOLD);
+    let mut grapheme_index = 0;
+    let mut spans = Vec::new();
+    for span in std::mem::take(&mut line.spans) {
+        for grapheme in span.content.graphemes(true) {
+            let style = if (selected_start..selected_end).contains(&grapheme_index) {
+                span.style.patch(selection_style)
+            } else {
+                span.style
+            };
+            spans.push(Span::styled(grapheme.to_string(), style));
+            grapheme_index = grapheme_index.saturating_add(1);
+        }
+    }
+    line.spans = spans;
 }
 
 fn render_response_lines(

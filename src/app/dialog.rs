@@ -5,10 +5,11 @@ use crate::{
 };
 use crossterm::event::KeyEvent;
 
-use super::PreviewTab;
+use super::{ListScrollState, PreviewTab};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum KeyValueField {
+    #[default]
     Name,
     Value,
 }
@@ -60,30 +61,100 @@ pub(crate) struct ParamsDialogRow {
     pub(crate) has_equals: bool,
 }
 
+pub(crate) trait InlineRow {
+    fn column(&self, field: KeyValueField) -> &str;
+}
+
+impl InlineRow for HeaderRow {
+    fn column(&self, field: KeyValueField) -> &str {
+        match field {
+            KeyValueField::Name => &self.name,
+            KeyValueField::Value => &self.value,
+        }
+    }
+}
+
+impl InlineRow for ParamsDialogRow {
+    fn column(&self, field: KeyValueField) -> &str {
+        match field {
+            KeyValueField::Name => &self.key,
+            KeyValueField::Value => &self.value,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigurationsDialog {
     pub(crate) rows: Vec<String>,
     pub(crate) state: tui_assets_rust::DropdownState,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct HeadersDialog {
-    pub(crate) request_id: String,
-    pub(crate) rows: Vec<HeaderRow>,
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InlineTable {
     pub(crate) selected: usize,
-    pub(crate) scroll: super::ListScrollState,
+    pub(crate) scroll: ListScrollState,
     pub(crate) field: KeyValueField,
     pub(crate) editor: Option<EditInput>,
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct HeadersDialog {
+    pub(crate) request_id: String,
+    pub(crate) rows: Vec<HeaderRow>,
+    pub(crate) table: InlineTable,
+    pub(crate) preset_selection: Option<usize>,
+}
+
+pub(crate) const HEADER_PRESETS: &[(&str, &str)] = &[
+    ("Authorization", "Bearer "),
+    ("Accept", "application/json"),
+    ("Content-Type", "application/json"),
+    ("Cookie", ""),
+    ("User-Agent", ""),
+    ("X-Request-Id", ""),
+];
+
+#[derive(Debug, Clone)]
 pub(crate) struct ParamsDialog {
     pub(crate) request_id: String,
     pub(crate) rows: Vec<ParamsDialogRow>,
-    pub(crate) selected: usize,
-    pub(crate) scroll: super::ListScrollState,
-    pub(crate) field: KeyValueField,
-    pub(crate) editor: Option<EditInput>,
+    pub(crate) table: InlineTable,
+}
+
+fn move_row_selection<R>(table: &mut InlineTable, rows: &[R], direction: isize) {
+    table.selected = move_index(table.selected, direction, rows.len());
+}
+
+fn start_cell_edit<R: InlineRow>(table: &mut InlineTable, rows: &[R]) {
+    let Some(row) = rows.get(table.selected) else {
+        return;
+    };
+    table.editor = Some(EditInput::new(row.column(table.field).to_string()));
+}
+
+fn click_cell<R: InlineRow>(
+    table: &mut InlineTable,
+    rows: &[R],
+    index: usize,
+    field: KeyValueField,
+    edit: bool,
+    cursor: Option<usize>,
+) {
+    if index >= rows.len() {
+        return;
+    }
+    let same_cell = table.selected == index && table.field == field;
+    table.selected = index;
+    table.field = field;
+    if !edit {
+        return;
+    }
+    if cursor.is_none() || !same_cell || table.editor.is_none() {
+        table.editor = Some(EditInput::new(rows[index].column(field).to_string()));
+    }
+    if let (Some(editor), Some(column)) = (&mut table.editor, cursor) {
+        editor.place_cursor(column);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +201,29 @@ impl ConfigurationsDialog {
 
 impl HeadersDialog {
     fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
-        if let Some(editor) = &mut self.editor {
+        if let Some(selected) = self.preset_selection {
+            return match shortcuts::resolve(Context::Menu, key, false) {
+                Some(Command::Back) => {
+                    self.preset_selection = None;
+                    DialogAction::None
+                }
+                Some(Command::Up) => {
+                    self.preset_selection =
+                        Some(move_index(selected, -1, HEADER_PRESETS.len() + 1));
+                    DialogAction::None
+                }
+                Some(Command::Down) => {
+                    self.preset_selection = Some(move_index(selected, 1, HEADER_PRESETS.len() + 1));
+                    DialogAction::None
+                }
+                Some(Command::Activate) => {
+                    self.add_preset(selected);
+                    DialogAction::Changed
+                }
+                _ => DialogAction::None,
+            };
+        }
+        if let Some(editor) = &mut self.table.editor {
             return match editor.handle_key(key) {
                 EditAction::Continue => DialogAction::None,
                 EditAction::Confirm => {
@@ -138,7 +231,7 @@ impl HeadersDialog {
                     DialogAction::Changed
                 }
                 EditAction::Cancel => {
-                    self.editor = None;
+                    self.table.editor = None;
                     DialogAction::None
                 }
             };
@@ -147,27 +240,27 @@ impl HeadersDialog {
         match shortcuts::resolve(Context::Headers, key, false) {
             Some(Command::Back) => DialogAction::Cancel,
             Some(Command::Up) => {
-                self.move_selection(-1);
+                move_row_selection(&mut self.table, &self.rows, -1);
                 DialogAction::None
             }
             Some(Command::Down) => {
-                self.move_selection(1);
+                move_row_selection(&mut self.table, &self.rows, 1);
                 DialogAction::None
             }
             Some(Command::Left) => {
-                self.field = KeyValueField::Name;
+                self.table.field = KeyValueField::Name;
                 DialogAction::None
             }
             Some(Command::Right) => {
-                self.field = KeyValueField::Value;
+                self.table.field = KeyValueField::Value;
                 DialogAction::None
             }
             Some(Command::Delete) => DialogAction::RemoveRow {
                 tab: PreviewTab::Headers,
-                index: self.selected,
+                index: self.table.selected,
             },
             Some(Command::Activate) => {
-                self.start_edit();
+                start_cell_edit(&mut self.table, &self.rows);
                 DialogAction::None
             }
             Some(Command::Toggle) => {
@@ -175,37 +268,22 @@ impl HeadersDialog {
                 DialogAction::Changed
             }
             Some(Command::Add) => {
-                self.add_row();
+                self.preset_selection = Some(0);
                 DialogAction::None
             }
             _ => DialogAction::None,
         }
     }
 
-    fn move_selection(&mut self, direction: isize) {
-        self.selected = move_index(self.selected, direction, self.rows.len());
-    }
-
-    fn start_edit(&mut self) {
-        let Some(row) = self.rows.get(self.selected) else {
-            return;
-        };
-        let value = match self.field {
-            KeyValueField::Name => row.name.clone(),
-            KeyValueField::Value => row.value.clone(),
-        };
-        self.editor = Some(EditInput::new(value));
-    }
-
     fn commit_editor(&mut self) {
-        let Some(editor) = self.editor.take() else {
+        let Some(editor) = self.table.editor.take() else {
             return;
         };
-        let Some(row) = self.rows.get_mut(self.selected) else {
+        let Some(row) = self.rows.get_mut(self.table.selected) else {
             return;
         };
         let value = editor.confirmed_value();
-        let changed = match self.field {
+        let changed = match self.table.field {
             KeyValueField::Name if row.name != value => {
                 row.name = value;
                 true
@@ -228,43 +306,57 @@ impl HeadersDialog {
             enabled: true,
             source: HeaderSource::Request,
         });
-        self.selected = self.rows.len().saturating_sub(1);
-        self.field = KeyValueField::Name;
-        self.editor = Some(EditInput::new(String::new()));
+        self.table.selected = self.rows.len().saturating_sub(1);
+        self.table.field = KeyValueField::Name;
+        self.table.editor = Some(EditInput::new(String::new()));
+    }
+
+    fn add_preset(&mut self, selected: usize) {
+        self.preset_selection = None;
+        let Some((name, value)) = HEADER_PRESETS.get(selected).copied() else {
+            self.add_row();
+            return;
+        };
+        if let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| row.name.eq_ignore_ascii_case(name))
+        {
+            self.table.selected = index;
+            self.table.field = KeyValueField::Value;
+            self.table.editor = Some(EditInput::new(self.rows[index].value.clone()));
+            return;
+        }
+        self.rows.push(HeaderRow {
+            name: name.to_string(),
+            value: value.to_string(),
+            enabled: true,
+            source: HeaderSource::Request,
+        });
+        self.table.selected = self.rows.len() - 1;
+        self.table.field = KeyValueField::Value;
+        self.table.editor = Some(EditInput::new(value.to_string()));
+    }
+
+    pub(super) fn open_preset_menu(&mut self) {
+        self.table.editor = None;
+        self.preset_selection = Some(0);
     }
 
     pub(super) fn remove_row(&mut self, index: usize) -> Option<HeaderRow> {
         if index >= self.rows.len() {
             return None;
         }
-        self.editor = None;
+        self.table.editor = None;
         let removed = self.rows.remove(index);
-        self.selected = index.min(self.rows.len().saturating_sub(1));
+        self.table.selected = index.min(self.rows.len().saturating_sub(1));
         Some(removed)
     }
 
     pub(super) fn toggle_selected(&mut self) {
-        if let Some(row) = self.rows.get_mut(self.selected) {
+        if let Some(row) = self.rows.get_mut(self.table.selected) {
             if row.source == HeaderSource::Request {
                 row.enabled = !row.enabled;
-            }
-        }
-    }
-
-    fn click_row(&mut self, index: usize, field: KeyValueField, edit: bool, cursor: Option<usize>) {
-        if index >= self.rows.len() {
-            return;
-        }
-        let same_cell = self.selected == index && self.field == field;
-        self.selected = index;
-        self.field = field;
-        if edit {
-            if cursor.is_none() || !same_cell || self.editor.is_none() {
-                self.editor = None;
-                self.start_edit();
-            }
-            if let (Some(editor), Some(column)) = (&mut self.editor, cursor) {
-                editor.place_cursor(column);
             }
         }
     }
@@ -272,7 +364,7 @@ impl HeadersDialog {
 
 impl ParamsDialog {
     fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
-        if let Some(editor) = &mut self.editor {
+        if let Some(editor) = &mut self.table.editor {
             return match editor.handle_key(key) {
                 EditAction::Continue => DialogAction::None,
                 EditAction::Confirm => {
@@ -280,7 +372,7 @@ impl ParamsDialog {
                     DialogAction::Changed
                 }
                 EditAction::Cancel => {
-                    self.editor = None;
+                    self.table.editor = None;
                     DialogAction::None
                 }
             };
@@ -289,27 +381,27 @@ impl ParamsDialog {
         match shortcuts::resolve(Context::Params, key, false) {
             Some(Command::Back) => DialogAction::Cancel,
             Some(Command::Up) => {
-                self.move_selection(-1);
+                move_row_selection(&mut self.table, &self.rows, -1);
                 DialogAction::None
             }
             Some(Command::Down) => {
-                self.move_selection(1);
+                move_row_selection(&mut self.table, &self.rows, 1);
                 DialogAction::None
             }
             Some(Command::Left) => {
-                self.field = KeyValueField::Name;
+                self.table.field = KeyValueField::Name;
                 DialogAction::None
             }
             Some(Command::Right) => {
-                self.field = KeyValueField::Value;
+                self.table.field = KeyValueField::Value;
                 DialogAction::None
             }
             Some(Command::Delete) => DialogAction::RemoveRow {
                 tab: PreviewTab::Params,
-                index: self.selected,
+                index: self.table.selected,
             },
             Some(Command::Activate) => {
-                self.start_edit();
+                start_cell_edit(&mut self.table, &self.rows);
                 DialogAction::None
             }
             Some(Command::Add) => {
@@ -320,33 +412,15 @@ impl ParamsDialog {
         }
     }
 
-    fn move_selection(&mut self, direction: isize) {
-        self.selected = move_index(self.selected, direction, self.rows.len());
-    }
-
-    fn start_edit(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let Some(row) = self.rows.get(self.selected) else {
-            return;
-        };
-        let value = match self.field {
-            KeyValueField::Name => row.key.clone(),
-            KeyValueField::Value => row.value.clone(),
-        };
-        self.editor = Some(EditInput::new(value));
-    }
-
     fn commit_editor(&mut self) {
-        let Some(editor) = self.editor.take() else {
+        let Some(editor) = self.table.editor.take() else {
             return;
         };
-        let Some(row) = self.rows.get_mut(self.selected) else {
+        let Some(row) = self.rows.get_mut(self.table.selected) else {
             return;
         };
         let value = editor.confirmed_value();
-        match self.field {
+        match self.table.field {
             KeyValueField::Name if row.key != value => row.key = value,
             KeyValueField::Value if row.value != value => {
                 row.value = value;
@@ -385,36 +459,18 @@ impl ParamsDialog {
                 .then_some(DataPartSource::UrlEncoded),
             has_equals: true,
         });
-        self.selected = self.rows.len().saturating_sub(1);
-        self.field = KeyValueField::Name;
-        self.editor = Some(EditInput::new(String::new()));
+        self.table.selected = self.rows.len().saturating_sub(1);
+        self.table.field = KeyValueField::Name;
+        self.table.editor = Some(EditInput::new(String::new()));
     }
 
     pub(super) fn remove_row(&mut self, index: usize) {
         if index >= self.rows.len() {
             return;
         }
-        self.editor = None;
+        self.table.editor = None;
         self.rows.remove(index);
-        self.selected = index.min(self.rows.len().saturating_sub(1));
-    }
-
-    fn click_row(&mut self, index: usize, field: KeyValueField, edit: bool, cursor: Option<usize>) {
-        if index >= self.rows.len() {
-            return;
-        }
-        let same_cell = self.selected == index && self.field == field;
-        self.selected = index;
-        self.field = field;
-        if edit {
-            if cursor.is_none() || !same_cell || self.editor.is_none() {
-                self.editor = None;
-                self.start_edit();
-            }
-            if let (Some(editor), Some(column)) = (&mut self.editor, cursor) {
-                editor.place_cursor(column);
-            }
-        }
+        self.table.selected = index.min(self.rows.len().saturating_sub(1));
     }
 }
 
@@ -427,6 +483,30 @@ impl Dialog {
         }
     }
 
+    pub(crate) fn table_row_count(&self) -> Option<usize> {
+        match self {
+            Self::Configurations(_) => None,
+            Self::Headers(dialog) => Some(dialog.rows.len()),
+            Self::Params(dialog) => Some(dialog.rows.len()),
+        }
+    }
+
+    pub(crate) fn table(&self) -> Option<&InlineTable> {
+        match self {
+            Self::Configurations(_) => None,
+            Self::Headers(dialog) => Some(&dialog.table),
+            Self::Params(dialog) => Some(&dialog.table),
+        }
+    }
+
+    pub(crate) fn table_mut(&mut self) -> Option<&mut InlineTable> {
+        match self {
+            Self::Configurations(_) => None,
+            Self::Headers(dialog) => Some(&mut dialog.table),
+            Self::Params(dialog) => Some(&mut dialog.table),
+        }
+    }
+
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
         match self {
             Self::Configurations(dialog) => dialog.handle_key(key),
@@ -435,44 +515,42 @@ impl Dialog {
         }
     }
 
-    pub(super) fn click_param_row(
+    pub(super) fn click_row(
         &mut self,
+        tab: PreviewTab,
         index: usize,
         field: KeyValueField,
         edit: bool,
         cursor: Option<usize>,
     ) {
-        if let Self::Params(dialog) = self {
-            dialog.click_row(index, field, edit, cursor);
+        match (tab, self) {
+            (PreviewTab::Headers, Self::Headers(dialog)) => {
+                click_cell(&mut dialog.table, &dialog.rows, index, field, edit, cursor);
+            }
+            (PreviewTab::Params, Self::Params(dialog)) => {
+                click_cell(&mut dialog.table, &dialog.rows, index, field, edit, cursor);
+            }
+            _ => {}
         }
     }
 
     pub(super) fn cancel_editor(&mut self) {
-        match self {
-            Self::Configurations(_) => {}
-            Self::Headers(dialog) => dialog.editor = None,
-            Self::Params(dialog) => dialog.editor = None,
+        if let Self::Headers(dialog) = self {
+            dialog.preset_selection = None;
+        }
+        if let Some(table) = self.table_mut() {
+            table.editor = None;
         }
     }
 
     pub(super) fn is_editing(&self) -> bool {
-        match self {
-            Self::Configurations(_) => false,
-            Self::Headers(dialog) => dialog.editor.is_some(),
-            Self::Params(dialog) => dialog.editor.is_some(),
-        }
+        self.table().is_some_and(|table| table.editor.is_some())
     }
 
-    pub(super) fn click_header_row(
-        &mut self,
-        index: usize,
-        field: KeyValueField,
-        edit: bool,
-        cursor: Option<usize>,
-    ) {
-        if let Self::Headers(dialog) = self {
-            dialog.click_row(index, field, edit, cursor);
-        }
+    pub(super) fn paste(&mut self, value: &str) -> bool {
+        self.table_mut()
+            .and_then(|table| table.editor.as_mut())
+            .is_some_and(|editor| editor.paste(value))
     }
 }
 

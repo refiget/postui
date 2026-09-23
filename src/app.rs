@@ -21,7 +21,7 @@ mod dialog;
 mod editing;
 mod error_page;
 mod execution;
-mod extracts;
+mod external_editing;
 mod preview;
 pub(crate) use error_page::ErrorPage;
 mod feedback;
@@ -29,29 +29,26 @@ mod input;
 mod response;
 mod search;
 mod session;
-mod temporary_variables;
 mod variables;
 mod view;
 mod workspace;
 use view::ViewState;
 pub(crate) use view::{
-    AppPrompt, FileValueEditor, Focus, ListScrollState, MainButton, ScrollDragTarget,
-    TemporaryVariableEditor,
+    AppPrompt, ContentEditor, ContentField, ContentFieldSource, ContentTarget, Focus,
+    ListScrollState, ResponseSelection, ResponseTextPoint, ScrollDragTarget,
 };
 use view::{PreviewContentState, ResponseContentState, ViewMode};
 
 pub(crate) use curl_import::{CurlImportFocus, CurlImportPage};
 use dialog::DialogAction;
 pub(crate) use dialog::{
-    ConfigurationsDialog, DataPartSource, Dialog, HeaderRow, HeaderSource, HeadersDialog,
-    KeyValueField, ParamSource, ParamsDialog, ParamsDialogRow,
+    ConfigurationsDialog, DataPartSource, Dialog, HEADER_PRESETS, HeaderRow, HeaderSource,
+    HeadersDialog, InlineRow, InlineTable, KeyValueField, ParamSource, ParamsDialog,
+    ParamsDialogRow,
 };
-pub(crate) use extracts::ExtractsPage;
 pub(crate) use feedback::Feedback;
 pub(crate) use session::RequestStatus;
 pub(crate) use session::{RequestDraft, WorkspaceSession};
-pub(crate) use variables::{VariableRow, VariablesPage};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PreviewTab {
     #[default]
@@ -71,17 +68,11 @@ pub(crate) enum ResponseMenuAction {
     Download,
     CopyBody,
     CopyHeaders,
-    Extract,
 }
 
 impl ResponseMenuAction {
-    pub(crate) const fn all() -> [Self; 4] {
-        [
-            Self::Download,
-            Self::CopyBody,
-            Self::CopyHeaders,
-            Self::Extract,
-        ]
+    pub(crate) const fn all() -> [Self; 3] {
+        [Self::Download, Self::CopyBody, Self::CopyHeaders]
     }
 
     pub(crate) fn from_index(index: usize) -> Option<Self> {
@@ -116,9 +107,8 @@ impl ResponseTab {
 
     fn toggle_format(self) -> Self {
         match self {
-            Self::Raw => Self::Formatted,
             Self::Formatted => Self::Raw,
-            Self::Headers => Self::Formatted,
+            Self::Raw | Self::Headers => Self::Formatted,
         }
     }
 }
@@ -153,6 +143,21 @@ impl PreviewTab {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct EditorRequest {
+    pub(crate) path: PathBuf,
+    pub(crate) outcome: EditorOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditorOutcome {
+    ErrorPage,
+    ReloadWorkspace,
+    TemporaryBody { request_id: String, json: bool },
+    TemporaryParams { request_id: String },
+    TemporaryHeaders { request_id: String },
+}
+
 pub(crate) struct App {
     pub(crate) view: ViewState,
     pub(crate) config: WorkspaceConfig,
@@ -161,6 +166,7 @@ pub(crate) struct App {
     pub(crate) should_quit: bool,
     pub(crate) debug_mode: bool,
     error_page: Option<ErrorPage>,
+    editor_request: Option<EditorRequest>,
     request_files: RequestFileStore,
     request_executor: RequestExecutor,
     response_actions: ResponseActionExecutor,
@@ -211,6 +217,7 @@ impl App {
             should_quit: false,
             debug_mode,
             error_page,
+            editor_request: None,
             request_files,
             request_executor,
             response_actions: ResponseActionExecutor::new(),
@@ -277,8 +284,6 @@ impl App {
             self.config.editable_variables.insert(name.clone());
             self.workspace_state.variables.entry(name).or_default();
         }
-        self.workspace_state
-            .sync_current_temporary_variables(&self.config);
     }
 
     fn request_quit(&mut self) {
@@ -287,6 +292,58 @@ impl App {
             self.view.prompt = Some(AppPrompt::ConfirmQuit);
         } else {
             self.should_quit = true;
+        }
+    }
+
+    fn edit_current_request(&mut self) {
+        let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
+            return;
+        };
+        match self.request_files.source_path(&request_id) {
+            Ok(path) => {
+                tracing::debug!(path = %path.display(), "打开请求源文件的外部编辑器");
+                self.editor_request = Some(EditorRequest {
+                    path,
+                    outcome: EditorOutcome::ReloadWorkspace,
+                });
+            }
+            Err(error) => {
+                tracing::error!(request_id, error = %format!("{error:#}"), "请求源文件路径无效");
+                self.view.notice = Some(Feedback::Error(
+                    self.text().editor_failed(&format!("{error:#}")),
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn take_editor_request(&mut self) -> Option<EditorRequest> {
+        self.editor_request.take()
+    }
+
+    pub(crate) fn finish_editor(&mut self, request: &EditorRequest, result: anyhow::Result<()>) {
+        match &request.outcome {
+            EditorOutcome::TemporaryBody { .. }
+            | EditorOutcome::TemporaryParams { .. }
+            | EditorOutcome::TemporaryHeaders { .. } => {
+                self.finish_temporary_editor(request, result);
+            }
+            EditorOutcome::ReloadWorkspace => match result {
+                Ok(()) => self.reload_workspace(),
+                Err(error) => {
+                    let detail = format!("{error:#}");
+                    tracing::error!(error = %detail, "外部编辑器执行失败");
+                    self.view.notice = Some(Feedback::Error(self.text().editor_failed(&detail)));
+                }
+            },
+            EditorOutcome::ErrorPage => {
+                if let Err(error) = result {
+                    let detail = format!("{error:#}");
+                    tracing::error!(error = %detail, "外部编辑器执行失败");
+                    if let Some(error_page) = self.error_page.as_mut() {
+                        error_page.editor_error = Some(detail);
+                    }
+                }
+            }
         }
     }
 
@@ -363,9 +420,9 @@ impl App {
             }
             self.workspace_state.selected_request = Some(index);
             self.view.preview.active_tab = PreviewTab::Body;
-            self.view.preview.scroll.reset();
-            self.view.preview.temporary_variables = Default::default();
+            self.view.preview.reset_content();
             self.view.response.scroll.reset();
+            self.view.response.selection = None;
             self.view.response.search_match_line = None;
             let Some(request_id) = self.current_request().map(|request| request.id.clone()) else {
                 return;
@@ -382,7 +439,7 @@ impl App {
 
     pub(crate) fn current_resolved_request(&self) -> Option<ResolvedRequest> {
         self.current_effective_request()
-            .map(|request| template::resolve_request(&request, &self.current_request_variables()))
+            .map(|request| template::resolve_request(&request, self.current_request_variables()))
     }
 
     pub(crate) fn current_effective_request(&self) -> Option<ApiRequest> {
@@ -405,11 +462,9 @@ impl App {
         self.config.editable_variables.len()
     }
 
-    /// 主界面被整页内容覆盖：变量页、提取顺序页或 cURL 导入页。
+    /// 主界面被 cURL 导入页覆盖。
     pub(crate) fn full_page_open(&self) -> bool {
-        self.view.variables.is_some()
-            || self.view.extracts.is_some()
-            || self.view.curl_import.is_some()
+        self.view.curl_import.is_some()
     }
 
     pub(crate) fn active_configuration(&self) -> &str {

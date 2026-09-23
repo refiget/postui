@@ -50,8 +50,8 @@ deletion is a separate confirmed disk operation.
 
 ## Focus and scrolling
 
-The home screen focus model uses main containers. `Tab` and `Shift+Tab` move
-between containers. `j` and `k` move within a container. `h` and `l` move among
+The home screen focus model uses main containers. `Tab`, `Shift+Tab`, `Ctrl+N`,
+and `Ctrl+P` move between containers. `j` and `k` move within a container. `h` and `l` move among
 fields or tabs where the focused container exposes a horizontal axis.
 
 Selection and scroll offset are separate state. Moving a request selection does
@@ -68,6 +68,14 @@ paged cache. Search reads document content without constructing render styles.
 
 Switching request, response tab, or document invalidates obsolete search and
 highlight results. Copy and download use `ResponseData`, not formatted text.
+
+## External editor
+
+An editor request holds a file path and its result handling. The terminal event
+loop leaves the alternate screen, runs the editor, restores the screen, and
+applies the result. A request opened from the request list reloads the workspace
+on a successful exit. A file opened from the configuration error page writes
+failures back to that page.
 
 ## Reloading
 

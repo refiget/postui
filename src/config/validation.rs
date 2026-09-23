@@ -1,12 +1,11 @@
 use super::{
     ApiRequest, DataPart, FileUpload, NameValue, RawVariableDefinition, RequestOverride,
-    RequestOverrideDocument, RequestParam, ResponseExtract, VariableDefinition,
-    files::ParsedRequest,
+    RequestOverrideDocument, RequestParam, VariableDefinition, files::ParsedRequest,
 };
 use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderName, HeaderValue};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Component, Path},
 };
 
@@ -44,17 +43,14 @@ pub(super) fn normalize_variables(
             None => VariableDefinition {
                 default: None,
                 secret: false,
-                temporary: true,
             },
             Some(RawVariableDefinition::Value(default)) => VariableDefinition {
                 default: Some(default),
                 secret: false,
-                temporary: true,
             },
             Some(RawVariableDefinition::Definition(definition)) => VariableDefinition {
                 default: definition.value,
                 secret: definition.secret,
-                temporary: definition.temporary,
             },
         };
         if variables.insert(name.clone(), definition).is_some() {
@@ -115,7 +111,6 @@ pub(super) fn normalize_request(
         .collect();
     let form = normalize_params(document.form, &id, "form")?;
     let files = normalize_files(document.files, &id)?;
-    let extracts = normalize_extracts(document.extracts, &id)?;
     let timeout_seconds = document
         .timeout
         .map(validate_timeout)
@@ -138,7 +133,6 @@ pub(super) fn normalize_request(
         query_parts,
         form,
         files,
-        extracts,
     })
 }
 
@@ -176,10 +170,6 @@ pub(super) fn normalize_override(
         .files
         .map(|files| normalize_files(files, request_id))
         .transpose()?;
-    let extracts = raw
-        .extracts
-        .map(|extracts| normalize_extracts(extracts, request_id))
-        .transpose()?;
     let timeout_seconds = raw.timeout.map(validate_timeout).transpose()?;
     let request_override = RequestOverride {
         method,
@@ -191,7 +181,6 @@ pub(super) fn normalize_override(
         body_parts,
         form,
         files,
-        extracts,
     };
     if request_override.is_empty() {
         bail!("Scenario {configuration} request {request_id} override cannot be empty")
@@ -235,26 +224,6 @@ fn normalize_files(files: Vec<FileUpload>, request_id: &str) -> Result<Vec<FileU
     Ok(files)
 }
 
-fn normalize_extracts(
-    extracts: Vec<ResponseExtract>,
-    request_id: &str,
-) -> Result<Vec<ResponseExtract>> {
-    let mut normalized = Vec::with_capacity(extracts.len());
-    let mut names = BTreeSet::new();
-    for mut extract in extracts {
-        normalize_extract(request_id, &mut extract)?;
-        if !names.insert(extract.variable.clone()) {
-            bail!(
-                "Request {} declares response extraction variable more than once: {}",
-                request_id,
-                extract.variable
-            )
-        }
-        normalized.push(extract);
-    }
-    Ok(normalized)
-}
-
 fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
     if file.field.trim().is_empty() {
         bail!("Request {request_id} upload file is missing field")
@@ -271,23 +240,6 @@ fn validate_file(request_id: &str, file: &FileUpload) -> Result<()> {
     {
         bail!("Request {request_id} upload file path cannot contain ..")
     }
-    Ok(())
-}
-
-fn normalize_extract(request_id: &str, extract: &mut ResponseExtract) -> Result<()> {
-    let raw_variable = extract.variable.clone();
-    let Some(variable) = normalize_variable_name(&raw_variable) else {
-        bail!(
-            "Request {} has an invalid response extraction variable: {}",
-            request_id,
-            raw_variable
-        )
-    };
-    if extract.path.trim().is_empty() {
-        bail!("Request {request_id} response extraction is missing path")
-    }
-    extract.variable = variable;
-    extract.path = extract.path.trim().to_string();
     Ok(())
 }
 
