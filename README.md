@@ -1,86 +1,34 @@
 # PostUI
 
-PostUI 是一个跨平台的接口测试工具。接口定义存放在配置文件中，TUI 提供请求编辑和执行操作。
+PostUI is a cross-platform terminal API client. Requests, variables, and scenarios are stored in YAML files.
 
+## Installation
 
-## 特性
-
-### 多主题
-
-![多主题](assets/themes-switches.gif)
-
-### 可编辑
-
-![可编辑](assets/editable.gif)
-
-### 高性能
-
-![高性能](assets/perf.gif)
-
-## 安装
-
-### macOS 和 Linux
+macOS and Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/refiget/postui/main/install.sh | bash
 ```
 
-**注意**: 该操作不会 append `path` 到 `zsh` 或者 `bash`. 如有需要,留意安装后的提示手动 append 即可.
-
-### Windows
+Windows PowerShell:
 
 ```powershell
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/refiget/postui/main/install.ps1).Content))
 ```
 
-安装完成后重新打开 PowerShell，或执行脚本输出的 PATH 命令，再运行 `postui --version`。
+Follow the installer output to configure `PATH`, reopen the terminal, and run `postui --version`.
 
-## 卸载
-
-### macOS 和 Linux
+Uninstall:
 
 ```bash
 postui uninstall
 ```
 
-该命令删除安装器管理的 PostUI 启动文件和程序，并从 `~/.bashrc`、`~/.zshrc`
-删除 PostUI 初始化区块。工作区 `.postui` 和个人配置文件保留。
+The uninstall command preserves `.postui` workspaces and user configuration files.
 
-### Windows
+## Quick Start
 
-在 PowerShell 中运行：
-
-```powershell
-postui uninstall
-```
-
-该命令从当前用户的 PATH 删除 PostUI 安装目录，并在当前进程退出后删除程序目录。
-工作区 `.postui` 和个人配置文件保留。
-
-## 构建
-
-项目使用 Rust 2024 edition，`Cargo.toml` 声明 `rust-version = "1.85"`。
-
-```bash
-cargo build --release
-```
-
-平台发布包使用对应脚本构建：
-
-```bash
-./package-linux.sh
-./package-macos.sh
-./package-macos.sh --target x86_64-apple-darwin
-./package-macos.sh --target aarch64-apple-darwin
-```
-
-```powershell
-.\package-windows.ps1
-```
-
-## 配置
-
-最小工作区只需要一个请求文件：
+Create a request file in your project:
 
 ```text
 .postui/
@@ -89,102 +37,64 @@ cargo build --release
 ```
 
 ```yaml
-# .postui/requests/health.yaml
 name: Health
 method: GET
 url: https://example.test/health
 ```
 
-完整目录可以包含项目默认值和场景配置：
+Start PostUI from the project directory:
 
-```text
-.postui/
-├── postui.yaml
-├── scenarios/
-│   ├── dev.yaml
-│   └── test.yaml
-└── requests/
-    └── health.yaml
+```bash
+postui
 ```
 
-```yaml
-# .postui/postui.yaml
-default_scenario: dev
-headers:
-  Accept: application/json
-variables:
-  token:
-    value:
-    secret: true
-```
+You can also specify a workspace and scenario:
 
 ```bash
 postui /path/to/project
 postui /path/to/project/.postui --scenario test
 ```
 
-未指定路径时，PostUI 从当前目录向上查找最近的 `.postui`。未找到时显示最近工作区，可选择记录或输入目录打开。显式指定的路径无效或工作区无法访问时显示错误。
+Without a path, PostUI searches upward from the current directory for the nearest `.postui` directory. A workspace can contain `postui.yaml`, `scenarios/*.yaml`, and `requests/*.yaml`. Reference variables as `{{name}}`. See the [configuration reference](docs/configuration.md) for available fields and merge rules.
 
-工作区选择页使用个人配置中的语言和主题。`↑` / `↓` 选择，`Enter` 打开，`/` 筛选，`o` 输入目录，`d` 移除最近记录，`q` 退出。目录支持绝对路径、相对路径和 `~/`。最近记录保存在用户应用数据目录的 `recent-workspaces.json`，最多 30 项；移除记录不删除工作区文件。
+## Controls
 
-变量使用 `{{name}}`。Header 使用映射，重复值使用字符串列表。按 `r` 重新读取 YAML。请求列表中的删除操作需要确认，并会删除源文件。
-
-完整字段和合并规则见[配置参考](docs/configuration.md)。
-
-## 个人配置
-
-个人界面配置与工作区配置分开存放，模板见 [config.example.yaml](config.example.yaml)。
-
-```yaml
-language: en
-theme: gruvbox-dark
-max_response_display_bytes: 16777216
-max_response_bytes: 67108864
-```
-
-Linux 默认路径为 `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml`，Windows 默认使用 Roaming AppData。也可以通过 `--config <路径>` 指定文件。
-
-## 操作
-
-响应区域提供 Raw、Formatted 和 Headers 页签。复制与下载使用原始响应内容。JSON 按视口格式化；XML 和表单数据提供格式化视图；其他支持的文本格式使用分页语法高亮。响应操作为下载、复制响应体、复制响应头和提取变量；提取变量按当前请求的 `extracts` 配置读取当前响应。`extracts` 按列表顺序执行，`e` 打开提取顺序页面，可在当前会话内调整顺序。
-
-鼠标单击选择请求，双击发送请求。发送中的请求忽略双击。
-
-| 按键 | 操作 |
+| Key | Action |
 | --- | --- |
-| `Tab` / `Shift+Tab` | 在主页容器之间切换焦点 |
-| `j` / `k` | 在当前容器内移动 |
-| `h` / `l` | 在当前容器的字段或页签间移动 |
-| `Alt+←` / `Alt+→` | 切换请求或响应页签 |
-| `/` | 搜索请求；响应区聚焦时搜索响应内容 |
-| `n` / `N` | 响应区聚焦时跳转到下一处或上一处匹配；其他区域中 `n` 新建请求 |
-| `s` | 发送或取消请求 |
-| `r` | 重新加载工作区 |
-| `c` | 选择场景 |
-| `v` | 打开变量 |
-| `m` | 打开响应操作（下载、复制响应体、复制响应头、提取变量） |
-| `e` | 打开提取顺序页面，调整提取变量顺序 |
-| `u` | 恢复当前请求的临时修改 |
-| `U` | 恢复当前场景的全部临时修改 |
-| `?` / `F1` | 打开当前上下文的快捷键表 |
+| `Tab` / `Shift+Tab` | Move between panels |
+| `j` / `k` | Move the cursor or scroll content |
+| `h` / `l` | Switch request or response tabs |
+| `Enter` | Edit the selected field |
+| `s` | Send or cancel a request |
+| `/` | Search requests or response content |
+| `n` / `N` | Move between response matches; create a request elsewhere |
+| `r` | Reload the workspace |
+| `c` | Select a scenario |
+| `v` | Open variable configuration in an external editor |
+| `e` | Open the request file or edit the active request draft |
+| `m` | Open response actions |
+| `f` | Switch between Raw and Formatted responses |
+| `z` | Expand or restore the response panel |
+| `u` / `U` | Reset request or scenario draft changes |
+| `?` / `F1` | Show shortcuts for the active panel |
 
-参数和请求头使用 `a` 添加、`Enter` 编辑、`Delete` 或 `d` 删除。空格启停请求头。这些表格操作只影响当前会话。
+Press `a` to add a parameter or header and `d` or `Delete` to remove one. Press `Space` to enable or disable a header. Drag over response text with the mouse and release to copy the selection.
 
-侧栏显示请求方法、状态和筛选数量。点击筛选栏或按 `/` 输入筛选条件，`Enter` 确认；输入期间按 `Esc` 保留已确认的筛选。滚轮滚动鼠标所在区域，键盘焦点由点击或 `Tab` 切换。
+PostUI selects an external editor from `$VISUAL`, `$EDITOR`, or the platform default. Request bodies use temporary JSON files; parameters and headers use temporary YAML files. Valid content is applied to the active request draft when the editor closes.
 
-## 本地示例
+## User Configuration
 
-本地接口和请求示例位于 `example-api/`：
+See [config.example.yaml](config.example.yaml) for available settings. The default location is `${XDG_CONFIG_HOME:-$HOME/.config}/postui/config.yaml` on Linux and the Roaming AppData directory on Windows. Use `--config <path>` to load another file.
+
+## Development
+
+PostUI uses Rust 2024 edition and requires Rust 1.85 or later.
 
 ```bash
-./example-api/start.sh
 cargo run -- example-api --scenario local
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo build
 ```
 
-界面素材和交互位于 [design-lab](design-lab/README.md)。
-
-完整前端预览包含临时工作区和内置本地接口，退出后删除本次运行的数据：
-
-```bash
-cargo run --example frontend_preview
-```
+The local API is in `example-api/`; start it with `./example-api/start.sh`. UI references are in [design-lab](design-lab/README.md). Use `package-linux.sh`, `package-macos.sh`, or `package-windows.ps1` for release packaging.
